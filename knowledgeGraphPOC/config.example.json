@@ -1,0 +1,40 @@
+{
+  "llm": {
+    "provider": "gemini",
+    "gemini": {
+      "apiKey": "paste-your-api-key-here",
+      "model": "gemini-2.5-flash"
+    },
+    "ollama": {
+      "baseUrl": "http://localhost:11434",
+      "model": "mistral"
+    }
+  },
+  "graph": {
+    "provider": "neo4j",
+    "neo4j": {
+      "instance": "myGraphDB",
+      "uri": "bolt://localhost:7687",
+      "database": "neo4j",
+      "username": "neo4j",
+      "password": "password"
+    }
+  },
+  "vector": {
+    "provider": "chroma",
+    "chroma": {
+      "path": "http://localhost:8000",
+      "nodeCollection": "kg_nodes",
+      "relationCollection": "kg_relationships"
+    }
+  },
+  "rag": {
+    "topK": 5,
+    "depth": 4
+  },
+  "prompts": {
+    "extractionSystemPath": "./knowledgeGraphPOC/prompts/extraction-system.md",
+    "answerSystemPath": "./knowledgeGraphPOC/prompts/answer-system.md",
+    "contextFormatPath": "./knowledgeGraphPOC/prompts/context-format.md"
+  }
+}

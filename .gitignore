@@ -1,0 +1,10 @@
+.env
+.env.*
+config.json
+.venv/
+__pycache__/
+node_modules/
+package-lock.json
+chroma/
+*.log
+npm-debug.log*

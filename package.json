@@ -1,0 +1,22 @@
+{
+  "name": "llm-learn",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prompt": "node gemini_prompt.js",
+    "rag": "node rag_keyword_demo.js",
+    "neo4j:test": "node neo4j_connection_test.js",
+    "kg:ingest": "node knowledgeGraphPOC/src/cli/ingest.js",
+    "kg:ask": "node knowledgeGraphPOC/src/cli/ask.js",
+    "kg:test-db": "node knowledgeGraphPOC/src/cli/testConnections.js",
+    "kg:test-llm": "node knowledgeGraphPOC/src/cli/testLlm.js",
+    "kg:test-parser": "node knowledgeGraphPOC/src/cli/testParser.js"
+  },
+  "dependencies": {
+    "@chroma-core/default-embed": "^0.1.9",
+    "@google/genai": "^1.50.1",
+    "chromadb": "^3.0.14",
+    "neo4j-driver": "^6.0.1"
+  }
+}
