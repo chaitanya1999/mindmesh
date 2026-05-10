@@ -1,42 +1,67 @@
 {
-  "llm": {
-    "provider": "gemini",
-    "gemini": {
-      "apiKey": "paste-your-api-key-here",
-      "model": "gemini-2.5-flash"
-    },
-    "ollama": {
-      "baseUrl": "http://localhost:11434",
-      "model": "mistral"
-    }
-  },
-  "graph": {
-    "provider": "neo4j",
-    "neo4j": {
-      "instance": "myGraphDB",
-      "uri": "bolt://localhost:7687",
-      "database": "neo4j",
-      "username": "neo4j",
-      "password": "password"
-    }
-  },
-  "vector": {
-    "provider": "chroma",
-    "chroma": {
-      "path": "http://localhost:8000",
-      "tenant": "default_tenant",
-      "database": "default_database",
-      "nodeCollection": "kg_nodes",
-      "relationCollection": "kg_relationships"
-    }
-  },
-  "rag": {
-    "topK": 5,
-    "depth": 4
-  },
-  "prompts": {
-    "extractionSystemPath": "./knowledgeGraphPOC/prompts/extraction-system.md",
-    "answerSystemPath": "./knowledgeGraphPOC/prompts/answer-system.md",
-    "contextFormatPath": "./knowledgeGraphPOC/prompts/context-format.md"
-  }
+	"llm": {
+		"provider": "gemini",
+		"extractionFormat": "json",
+		"gemini": {
+			"apiKey": "paste-your-api-key-here",
+			"model": "gemini-2.5-flash"
+		},
+		"ollama": {
+			"baseUrl": "http://localhost:11434",
+			"model": "mistral"
+		},
+		"custom": {
+			"endpoint": "http://localhost:3001/llm"
+		}
+	},
+	"graph": {
+		"provider": "neo4j",
+		"neo4j": {
+			"instance": "myGraphDB",
+			"uri": "bolt://localhost:7687",
+			"database": "neo4j",
+			"username": "neo4j",
+			"password": "password"
+		}
+	},
+	"vector": {
+		"provider": "chroma",
+		"chroma": {
+			"path": "http://localhost:8000",
+			"tenant": "default_tenant",
+			"database": "default_database",
+			"nodeCollection": "kg_nodes",
+			"relationCollection": "kg_relationships"
+		}
+	},
+	"embedding": {
+		"provider": "gemini",
+		"gemini": {
+			"apiKey": "reuse-gemini-api-key-or-leave-empty-to-use-llm-key",
+			"model": "gemini-embedding-001",
+			"outputDimensionality": 768
+		},
+		"chroma" : {
+			
+		}
+	},
+	"rag": {
+		"topK": 5,
+		"depth": 4
+	},
+	"schema": {
+		"path": "./knowledgeGraphPOC/schema/graphSchema.json",
+		"autoApplySuggestions": false
+	},
+	"logging": {
+		"enabled": false,
+		"directory": "./knowledgeGraphPOC/logs",
+		"scopes": ["ingest"]
+	},
+	"prompts": {
+		"extractionSystemPath": "./knowledgeGraphPOC/prompts/extraction-system.md",
+		"extractionCustomSystemPath": "./knowledgeGraphPOC/prompts/extraction-system-custom.md",
+		"answerSystemPath": "./knowledgeGraphPOC/prompts/answer-system.md",
+		"contextFormatPath": "./knowledgeGraphPOC/prompts/context-format.md"
+	}
 }

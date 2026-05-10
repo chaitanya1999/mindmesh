@@ -61,7 +61,13 @@ const prompts = loadPrompts(config);
 const llmProvider = createLlmProvider(config);
 const graphStore = createGraphStore(config);
 const vectorStore = createVectorStore(config);
-const ingestionService = new IngestionService({ llmProvider, graphStore, vectorStore, prompts });
+const ingestionService = new IngestionService({
+	llmProvider,
+	graphStore,
+	vectorStore,
+	prompts,
+	logging: config.logging,
+});
 const ragService = new HybridRagService({
 	llmProvider,
 	graphStore,
@@ -107,6 +113,9 @@ app.post("/api/ingest", asyncRoute(async (req, res) => {
 		nodes: storedGraph.nodes,
 		relations: storedGraph.relations,
 		triplets: buildTriplets(storedGraph),
+		schemaSuggestions: storedGraph.schemaSuggestions,
+		schemaWarnings: storedGraph.schemaWarnings,
+		persistedSchemaSuggestions: storedGraph.persistedSchemaSuggestions,
 		graph,
 	});
 }));

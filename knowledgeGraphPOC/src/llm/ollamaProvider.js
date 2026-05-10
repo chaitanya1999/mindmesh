@@ -1,9 +1,10 @@
-import { extractJsonObject } from "../ingestion/graphPayload.js";
+import { parseGraphExtraction } from "../ingestion/graphPayload.js";
 
 export class OllamaProvider {
-	constructor({ baseUrl, model }) {
+	constructor({ baseUrl, model, extractionFormat = "json" }) {
 		this.baseUrl = baseUrl.replace(/\/$/, "");
 		this.model = model;
+		this.extractionFormat = extractionFormat;
 	}
 
 	async generateText({ systemPrompt, prompt }) {
@@ -27,13 +28,16 @@ export class OllamaProvider {
 		return body.response ?? "";
 	}
 
-	async extractGraph({ text, systemPrompt }) {
+	async extractGraph({ text, systemPrompt, prompt, debugLogger }) {
+		const extractionPrompt = prompt ?? `Extract graph data from this text:\n\n${text}`;
 		const responseText = await this.generateText({
 			systemPrompt,
-			prompt: `Extract graph data from this text:\n\n${text}`,
+			prompt: extractionPrompt,
 		});
 
-		return extractJsonObject(responseText);
+		debugLogger?.section("Raw LLM Extraction Response", responseText);
+
+		return parseGraphExtraction(responseText, { format: this.extractionFormat });
 	}
 
 	async generateAnswer({ systemPrompt, context, query }) {

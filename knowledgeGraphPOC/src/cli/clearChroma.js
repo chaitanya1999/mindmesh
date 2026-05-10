@@ -4,6 +4,7 @@ import { getConfig, describeRuntime } from "../config.js";
 function parseArgs(argv) {
 	return {
 		yes: argv.includes("--yes"),
+		reset: argv.includes("--reset"),
 		deleteDatabases: argv.includes("--delete-databases"),
 	};
 }
@@ -50,6 +51,37 @@ async function deleteAllCollectionsInDatabase(connection, { tenant, database }) 
 	return collections.length;
 }
 
+function isNotFound(error) {
+	const message = String(error?.message ?? "").toLowerCase();
+	return error?.name === "ChromaNotFoundError"
+		|| message.includes("does not exist")
+		|| message.includes("not found");
+}
+
+async function deleteConfiguredCollections(client, config) {
+	const collectionNames = [
+		config.vector.chroma.nodeCollection,
+		config.vector.chroma.relationCollection,
+	];
+	let deletedCount = 0;
+
+	for (const name of collectionNames) {
+		try {
+			await client.deleteCollection({ name });
+			deletedCount += 1;
+			console.log(`Deleted collection ${name}`);
+		} catch (error) {
+			if (!isNotFound(error)) {
+				throw error;
+			}
+
+			console.log(`Collection ${name} did not exist; skipped.`);
+		}
+	}
+
+	return deletedCount;
+}
+
 async function deleteDatabasesForTenant(adminClient, connection, tenant, keepDatabase) {
 	const databases = await adminClient.listDatabases({ tenant, limit: 1000, offset: 0 });
 
@@ -76,7 +108,7 @@ async function main() {
 	console.log("Knowledge Graph POC Chroma clear");
 	console.log(JSON.stringify({
 		...describeRuntime(config),
-		mode: options.deleteDatabases ? "delete-databases" : "reset",
+		mode: options.deleteDatabases ? "delete-databases" : options.reset ? "reset" : "collections",
 	}, null, 2));
 
 	if (!options.yes) {
@@ -84,14 +116,14 @@ async function main() {
 		console.log("Refusing to clear Chroma without --yes.");
 		console.log("Use one of:");
 		console.log("  npm run kg:clear-chroma -- --yes");
+		console.log("  npm run kg:clear-chroma -- --yes --reset");
 		console.log("  npm run kg:clear-chroma -- --yes --delete-databases");
 		process.exitCode = 1;
 		return;
 	}
 
-	const adminClient = new AdminClient(connection);
-
 	if (options.deleteDatabases) {
+		const adminClient = new AdminClient(connection);
 		await deleteDatabasesForTenant(adminClient, connection, tenant, database);
 		await ensureTenantAndDatabase(adminClient, { tenant, database });
 		console.log(`Chroma databases cleared for tenant ${tenant}. Kept/recreated ${database}.`);
@@ -104,10 +136,17 @@ async function main() {
 		database,
 	});
 
-	await client.reset();
-	await ensureTenantAndDatabase(adminClient, { tenant, database });
-	console.log("Chroma reset complete.");
-	console.log(`Ensured ${tenant}/${database} exists for the application.`);
+	if (options.reset) {
+		const adminClient = new AdminClient(connection);
+		await client.reset();
+		await ensureTenantAndDatabase(adminClient, { tenant, database });
+		console.log("Chroma reset complete.");
+		console.log(`Ensured ${tenant}/${database} exists for the application.`);
+		return;
+	}
+
+	const deletedCount = await deleteConfiguredCollections(client, config);
+	console.log(`Chroma configured collections clear complete. Deleted ${deletedCount} collection(s).`);
 }
 
 main().catch((error) => {

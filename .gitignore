@@ -9,3 +9,4 @@ chroma/
 knowledgeGraphPOC/src/server/public/app.bundle.js
 *.log
 npm-debug.log*
+my_chroma_db/chroma.sqlite3

@@ -20,8 +20,9 @@ function relationDocument(relation) {
 }
 
 export class ChromaVectorStore {
-	constructor(config) {
+	constructor(config, { embeddingProvider = null } = {}) {
 		this.config = config;
+		this.embeddingProvider = embeddingProvider;
 		const url = new URL(config.path);
 		this.client = new ChromaClient({
 			host: url.hostname,
@@ -33,11 +34,17 @@ export class ChromaVectorStore {
 	}
 
 	async getNodeCollection() {
-		return this.client.getOrCreateCollection({ name: this.config.nodeCollection });
+		return this.client.getOrCreateCollection({
+			name: this.config.nodeCollection,
+			embeddingFunction: this.embeddingProvider ? null : undefined,
+		});
 	}
 
 	async getRelationCollection() {
-		return this.client.getOrCreateCollection({ name: this.config.relationCollection });
+		return this.client.getOrCreateCollection({
+			name: this.config.relationCollection,
+			embeddingFunction: this.embeddingProvider ? null : undefined,
+		});
 	}
 
 	async verifyConnectivity() {
@@ -54,9 +61,11 @@ export class ChromaVectorStore {
 		const relationCollection = await this.getRelationCollection();
 
 		if (graphPayload.nodes.length > 0) {
+			const documents = graphPayload.nodes.map(nodeDocument);
 			await nodeCollection.upsert({
 				ids: graphPayload.nodes.map((node) => node.id),
-				documents: graphPayload.nodes.map(nodeDocument),
+				documents,
+				embeddings: this.embeddingProvider ? await this.embeddingProvider.embedDocuments(documents) : undefined,
 				metadatas: graphPayload.nodes.map((node) => ({
 					kind: "node",
 					label: node.label,
@@ -67,9 +76,11 @@ export class ChromaVectorStore {
 		}
 
 		if (graphPayload.relations.length > 0) {
+			const documents = graphPayload.relations.map(relationDocument);
 			await relationCollection.upsert({
 				ids: graphPayload.relations.map((relation) => relation.id),
-				documents: graphPayload.relations.map(relationDocument),
+				documents,
+				embeddings: this.embeddingProvider ? await this.embeddingProvider.embedDocuments(documents) : undefined,
 				metadatas: graphPayload.relations.map((relation) => ({
 					kind: "relation",
 					sourceId: relation.sourceId,
@@ -83,7 +94,8 @@ export class ChromaVectorStore {
 	async queryNodes(query, topK) {
 		const collection = await this.getNodeCollection();
 		const results = await collection.query({
-			queryTexts: [query],
+			queryTexts: this.embeddingProvider ? undefined : [query],
+			queryEmbeddings: this.embeddingProvider ? [await this.embeddingProvider.embedQuery(query)] : undefined,
 			nResults: topK,
 		});
 
@@ -101,26 +113,38 @@ export class ChromaVectorStore {
 	}
 
 	async smokeTest() {
-		const collection = await this.client.getOrCreateCollection({ name: "kg_poc_smoke" });
+		const collectionName = `kg_poc_smoke_${Date.now()}`;
+		const collection = await this.client.getOrCreateCollection({
+			name: collectionName,
+			embeddingFunction: null,
+		});
 		const id = `smoke-${Date.now()}`;
+		const embedding = [1, 0, 0];
 
-		await collection.add({
-			ids: [id],
-			documents: ["knowledge graph poc smoke test"],
-			metadatas: [{ kind: "smoke" }],
-		});
+		try {
+			await collection.add({
+				ids: [id],
+				documents: ["knowledge graph poc smoke test"],
+				embeddings: [embedding],
+				metadatas: [{ kind: "smoke" }],
+			});
 
-		const result = await collection.query({
-			queryTexts: ["knowledge graph smoke"],
-			nResults: 1,
-		});
+			const result = await collection.query({
+				queryEmbeddings: [embedding],
+				nResults: 1,
+			});
 
-		if (!result.ids?.[0]?.includes(id)) {
-			throw new Error("Chroma smoke document was not returned by query.");
-		}
+			if (!result.ids?.[0]?.includes(id)) {
+				throw new Error("Chroma smoke document was not returned by query.");
+			}
 
-		if (typeof collection.delete === "function") {
-			await collection.delete({ ids: [id] });
+			if (typeof collection.delete === "function") {
+				await collection.delete({ ids: [id] });
+			}
+		} finally {
+			if (typeof this.client.deleteCollection === "function") {
+				await this.client.deleteCollection({ name: collectionName });
+			}
 		}
 	}
 }

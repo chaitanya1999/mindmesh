@@ -1,0 +1,72 @@
+{
+	"version": 1,
+	"nodeProperties": {
+		"required": [
+			"name",
+			"label",
+			"type"
+		],
+		"optional": [
+			"description"
+		]
+	},
+	"relationshipProperties": {
+		"required": [
+			"sourceName",
+			"targetName",
+			"relation"
+		],
+		"optional": [
+			"information",
+			"description"
+		]
+	},
+	"nodeTypes": [
+		{
+			"name": "body_part",
+			"description": "A part of the human body"
+		},
+		{
+			"name": "food",
+			"description": "Generic type for all edible items including fruits and vegetables."
+		},
+		{
+			"name": "food_item",
+			"description": "A food item that can be eaten, anything edible"
+		},
+		{
+			"name": "fruit",
+			"description": "A fruit"
+		},
+		{
+			"name": "fruit_item",
+			"description": "A food item that can be either fruit or vegetable, depending on its botanical classification."
+		},
+		{
+			"name": "occupation",
+			"description": "A person's profession or job"
+		},
+		{
+			"name": "person",
+			"description": "A person, a human"
+		},
+		{
+			"name": "Vegetable",
+			"description": "A vegetable"
+		}
+	],
+	"relationshipTypes": [
+		{
+			"name": "is_a_type_of",
+			"description": "Relationship type inferred from extracted RELATION records."
+		},
+		{
+			"name": "uses_for_masturbation",
+			"description": "Using an object for sexual pleasure"
+		}
+	],
+	"suggestions": {
+		"nodeTypes": [],
+		"relationshipTypes": []
+	}
+}

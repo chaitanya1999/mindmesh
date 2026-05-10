@@ -10,7 +10,7 @@ This README is written for humans and AI agents that need to understand or exten
 User text
   -> src/cli/ingest.js
   -> IngestionService
-  -> LLM provider extracts { nodes, relations } JSON
+  -> LLM provider extracts graph records as JSON or custom syntax
   -> normalizeGraphPayload()
   -> Neo4jGraphStore.upsertGraph()
   -> ChromaVectorStore.upsertGraphIndex()
@@ -36,8 +36,10 @@ Web UI
 - LLM providers:
   - Gemini via `@google/genai`, default model `gemini-2.5-flash`.
   - Ollama via local HTTP API, default model `mistral`.
+  - Custom HTTP endpoint via `POST { "text": "prompt" }`, returning a plain string.
 - Graph database: Neo4j using the official `neo4j-driver`.
-- Vector database: ChromaDB using `chromadb` and the default embedding package.
+- Vector database: ChromaDB using `chromadb`.
+- Embeddings: Gemini `gemini-embedding-001` by default; Chroma's default embedder can still be enabled with `KG_EMBEDDING_PROVIDER=chroma`.
 - Web server: Express serving JSON APIs and static HTML/CSS/JS.
 - Graph UI: Graphology for the browser graph model, Graphology force layout for positioning, and Sigma for canvas rendering.
 - Prompt files live under `knowledgeGraphPOC/prompts`.
@@ -50,13 +52,16 @@ Web UI
 - `src/cli/ask.js`: question-answering entry point.
 - `src/cli/testConnections.js`: Neo4j and Chroma connectivity plus write/query smoke tests.
 - `src/cli/testLlm.js`: provider reachability and graph extraction smoke test.
-- `src/cli/testParser.js`: local JSON extraction and graph normalization smoke test.
+- `src/cli/testParser.js`: local JSON/custom extraction and graph normalization smoke test.
 - `src/ingestion/ingestionService.js`: orchestrates extraction, normalization, graph persistence, and vector indexing.
-- `src/ingestion/graphPayload.js`: normalizes LLM graph JSON into stable node and relationship payloads.
+- `src/ingestion/graphPayload.js`: parses and normalizes LLM graph output into stable node and relationship payloads.
+- `schema/graphSchema.json`: schema registry for allowed node types, relationship types, required properties, fallbacks, and LLM-facing descriptions.
+- `src/schema/graphSchema.js`: loads the schema registry and formats the schema catalog injected into extraction prompts.
 - `src/graph/neo4jGraphStore.js`: Neo4j persistence, graph expansion, and smoke test implementation.
 - `src/vector/chromaVectorStore.js`: Chroma collections, node/relation documents, vector query, and smoke test implementation.
+- `src/embedding/geminiEmbeddingProvider.js`: Gemini embedding adapter used to precompute Chroma vectors without downloading Hugging Face models.
 - `src/rag/hybridRagService.js`: vector entry-point retrieval, Neo4j expansion, context formatting, and final answer generation.
-- `src/llm/geminiProvider.js` and `src/llm/ollamaProvider.js`: LLM provider adapters with the same small interface.
+- `src/llm/geminiProvider.js`, `src/llm/ollamaProvider.js`, and `src/llm/customHttpProvider.js`: LLM provider adapters with the same small interface.
 - `src/server/server.js`: Express web entry point for ask, ingest, and graph preview APIs.
 - `src/server/public`: static split-screen KG preview and simulated chat UI.
 
@@ -102,13 +107,83 @@ Supported environment variables:
 
 | Area | Variables |
 | --- | --- |
-| LLM | `KG_LLM_PROVIDER`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_MODEL`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL` |
+| LLM | `KG_LLM_PROVIDER`, `KG_EXTRACTION_FORMAT`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_MODEL`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `KG_CUSTOM_LLM_ENDPOINT` |
+| Embedding | `KG_EMBEDDING_PROVIDER`, `GEMINI_EMBEDDING_MODEL`, `GEMINI_EMBEDDING_DIMENSIONS` |
 | Graph | `KG_GRAPH_PROVIDER`, `NEO4J_INSTANCE`, `NEO4J_URI`, `NEO4J_DATABASE`, `NEO4J_USERNAME`, `NEO4J_PASSWORD` |
 | Vector | `KG_VECTOR_PROVIDER`, `CHROMA_URL`, `CHROMA_TENANT`, `CHROMA_DATABASE`, `CHROMA_NODE_COLLECTION`, `CHROMA_RELATION_COLLECTION` |
 | RAG | `KG_RAG_TOP_K`, `KG_RAG_DEPTH` |
-| Prompts | `KG_EXTRACTION_PROMPT_PATH`, `KG_ANSWER_PROMPT_PATH`, `KG_CONTEXT_PROMPT_PATH` |
+| Schema | `KG_SCHEMA_PATH`, `KG_SCHEMA_AUTO_APPLY_SUGGESTIONS` |
+| Logging | `KG_DEBUG_LOG`, `KG_DEBUG_LOG_DIR`, `KG_DEBUG_LOG_SCOPES` |
+| Prompts | `KG_EXTRACTION_PROMPT_PATH`, `KG_CUSTOM_EXTRACTION_PROMPT_PATH`, `KG_ANSWER_PROMPT_PATH`, `KG_CONTEXT_PROMPT_PATH` |
 
-Only the `gemini`, `ollama`, `neo4j`, and `chroma` provider names are currently implemented.
+Only the `gemini`, `ollama`, `custom`, `neo4j`, `chroma`, and embedding provider names `gemini`/`chroma` are currently implemented.
+
+## Graph Schema
+
+Ingestion is schema-aware. The schema registry lives at `knowledgeGraphPOC/schema/graphSchema.json` and defines:
+
+- allowed node types
+- allowed relationship types
+- suggested node and relationship types pending human approval
+- required and optional node/relationship properties
+- fallback node and relationship types
+- short descriptions that are injected into the extraction prompt
+
+For local/smaller LLMs, prefer `KG_EXTRACTION_FORMAT=custom`. The custom extraction syntax supports schema suggestions without requiring JSON:
+
+```text
+NODE_TYPE_SUGGESTION|type_name|description|reason
+RELATION_TYPE_SUGGESTION|relation_name|description|reason
+```
+
+By default, suggestions are captured for visibility but the graph payload falls back to `concept` and `relates_to` for unknown types. Set `KG_SCHEMA_AUTO_APPLY_SUGGESTIONS=true` or `"autoApplySuggestions": true` in config to accept suggested types in the current ingest and add them to the approved schema arrays.
+
+When auto-apply is off, suggested types are persisted back into `schema/graphSchema.json` under:
+
+```json
+{
+  "suggestions": {
+    "nodeTypes": [],
+    "relationshipTypes": []
+  }
+}
+```
+
+Approved schema terms belong in the top-level `nodeTypes` and `relationshipTypes` arrays. When auto-apply is on, current LLM suggestions are added there automatically; when auto-apply is off, future human-in-the-loop approval can promote entries from `suggestions` into those approved arrays.
+
+## Ingest Debug Logging
+
+Ingestion debug logging is opt-in because logs can contain full user text, prompts, and raw LLM output.
+
+Enable it in `knowledgeGraphPOC/config.json`:
+
+```json
+{
+  "logging": {
+    "enabled": true,
+    "directory": "./knowledgeGraphPOC/logs",
+    "scopes": ["ingest"]
+  }
+}
+```
+
+Or enable it for one shell session:
+
+```powershell
+$env:KG_DEBUG_LOG="true"
+$env:KG_DEBUG_LOG_SCOPES="ingest"
+npm run kg:ingest -- "EKYC Screen uses PAN Verification API."
+```
+
+Each ingest run writes a timestamped `ingest-*.log` file containing:
+
+- runtime/schema settings
+- extraction system prompt sent to the LLM
+- extraction user prompt
+- raw LLM extraction response
+- parsed extraction payload
+- normalized graph payload
+- persisted schema suggestion summary
 
 ## Commands
 
@@ -136,7 +211,15 @@ Clear Chroma data:
 npm run kg:clear-chroma -- --yes
 ```
 
-This calls Chroma `reset()` and then ensures the configured tenant/database exists again. If reset is disabled on the Chroma server, use the admin fallback for the configured tenant:
+By default this deletes only the configured app collections, `kg_nodes` and `kg_relationships`, and does not require Chroma reset/admin permissions.
+
+If your Chroma server allows reset, you can reset the whole server:
+
+```powershell
+npm run kg:clear-chroma -- --yes --reset
+```
+
+If reset is disabled and you need an admin-level tenant/database cleanup, use:
 
 ```powershell
 npm run kg:clear-chroma -- --yes --delete-databases
@@ -204,6 +287,28 @@ Use a provider override for a single CLI run:
 npm run kg:ask -- --provider ollama "What does the EKYC screen use?"
 ```
 
+Use the custom HTTP provider:
+
+```powershell
+$env:KG_CUSTOM_LLM_ENDPOINT="http://localhost:3001/llm"
+npm run kg:test-llm -- --provider custom
+```
+
+The custom endpoint receives a JSON body with a single `text` field containing the full prompt and should return the model output as a plain string.
+
+Use Gemini embeddings, the default, with the same Gemini API key:
+
+```powershell
+$env:GEMINI_API_KEY="your-key"
+$env:KG_EMBEDDING_PROVIDER="gemini"
+```
+
+Use Chroma's default embedding behavior instead:
+
+```powershell
+$env:KG_EMBEDDING_PROVIDER="chroma"
+```
+
 ## Input Handling
 
 `readInput()` returns `{ text, options, source }`.
@@ -219,7 +324,12 @@ Priority order:
 
 ## Graph Extraction Contract
 
-The extraction prompt requires the LLM to return only JSON:
+Set `llm.extractionFormat` or `KG_EXTRACTION_FORMAT` to switch extraction parsing:
+
+- `json`: use the strict JSON prompt and parser.
+- `custom`: use the custom line syntax prompt and parser. This is useful for smaller local instruct models that often produce invalid JSON.
+
+The JSON extraction prompt requires the LLM to return only JSON:
 
 ```json
 {
@@ -239,20 +349,61 @@ The extraction prompt requires the LLM to return only JSON:
       "information": "One-line metadata describing the relation.",
       "description": "Longer description, or empty string"
     }
-  ]
+  ],
+  "schemaSuggestions": {
+    "nodeTypes": [
+      {
+        "name": "lowercase_snake_case_type",
+        "description": "Short description of the proposed node type.",
+        "reason": "Why no existing node type fits."
+      }
+    ],
+    "relationshipTypes": [
+      {
+        "name": "lowercase_snake_case_relation",
+        "description": "Short description of the proposed relationship type.",
+        "reason": "Why no existing relationship type fits."
+      }
+    ]
+  }
 }
 ```
 
-`extractJsonObject()` accepts raw JSON or fenced JSON and throws if no valid JSON object can be parsed.
+`extractJsonObject()` accepts raw JSON or fenced JSON and throws if no valid JSON object can be parsed. `schemaSuggestions` is optional.
+
+The custom extraction prompt requires one record per line:
+
+```text
+NODE|name|label|type|description
+RELATION|source_name|target_name|relation|information|description
+NODE_TYPE_SUGGESTION|type_name|description|reason
+RELATION_TYPE_SUGGESTION|relation_name|description|reason
+```
+
+Example:
+
+```text
+NODE|ekyc_screen|EKYC Screen|screen|Screen that captures identity verification details.
+NODE|pan_api|PAN API|api|API used to verify PAN details.
+RELATION|ekyc_screen|pan_api|uses|EKYC Screen uses PAN API for verification.|Triggered during identity verification.
+```
+
+`extractCustomGraph()` accepts raw or fenced custom graph records, ignores blank/header lines, captures schema suggestion records, and throws if no valid records can be parsed. `parseGraphExtraction()` switches between JSON and custom parsing.
 
 `normalizeGraphPayload()` then:
 
 - Converts node names, node types, and relation names to lowercase snake case.
+- Enforces the loaded graph schema when one is supplied.
+- Replaces unknown node or relationship types with configured fallbacks when suggestions are not auto-applied.
+- Persists new schema suggestions into `schema/graphSchema.json` under the `suggestions` section when auto-apply is off.
+- Promotes current-response schema suggestions into approved `nodeTypes` / `relationshipTypes` when auto-apply is on.
+- Allows current-response suggestions during normalization only when `KG_SCHEMA_AUTO_APPLY_SUGGESTIONS=true`.
 - Creates node IDs as `node:<name>` when no ID is provided.
 - Creates missing endpoint nodes for relations.
 - Creates relationship IDs as `rel:<12-char-sha1>` when no ID is provided.
 - Defaults missing descriptions to empty strings.
 - Defaults missing relation `information` to a sentence derived from source label, relation, and target label.
+- Returns `schemaSuggestions`, `schemaWarnings`, and `persistedSchemaSuggestions` for CLI/API visibility and future human-in-the-loop schema approval.
 
 ## Neo4j Schema
 
@@ -327,6 +478,8 @@ Relationship metadata:
 - `targetId`
 - `relation`
 
+When `KG_EMBEDDING_PROVIDER=gemini`, the app sends document/query text to Gemini, stores explicit embeddings in Chroma, and queries with explicit query embeddings. This avoids Chroma's JavaScript default embedding function and its Hugging Face model download.
+
 The current RAG flow queries only `kg_nodes`; relationship vectors are indexed for future retrieval paths.
 
 ## RAG Flow
@@ -364,7 +517,7 @@ API endpoints:
 
 - `GET /api/graph?limit=150`: returns `{ nodes, relations, limit }`.
 - `POST /api/ask`: accepts `{ "text": "question" }` and returns `{ answer, entryNodes, graph, depth }`.
-- `POST /api/ingest`: accepts `{ "text": "source text" }` and returns `{ nodes, relations, triplets, graph }`.
+- `POST /api/ingest`: accepts `{ "text": "source text" }` and returns `{ nodes, relations, triplets, schemaSuggestions, schemaWarnings, persistedSchemaSuggestions, graph }`.
 - Errors return `{ error: "message" }`.
 
 Ingest responses include `triplets` formatted as:
@@ -411,7 +564,7 @@ To add a provider, create the adapter and update the relevant `providerFactory.j
 - This is a POC, not a hardened service. There is no migration system, no delete/update reconciliation for removed facts, and no automated unit test framework beyond smoke-test scripts.
 - `config.json` may contain local secrets. Inspect `config.example.json` for shape, not private values.
 - Prompt behavior is part of the application contract. Update prompt files and README together when changing extraction or answer semantics.
-- Chroma retrieval depends on its configured embedding implementation. If query quality changes, check collection contents and embedding defaults before changing graph expansion code.
+- Chroma retrieval depends on its configured embedding implementation. If you switch embedding providers or dimensions, clear/recreate Chroma collections before ingesting again.
 - Neo4j relationship type is always `RELATES_TO`; the semantic relation is stored in the `relation` property.
 - `source` is passed into `upsertGraph()` today but is not persisted by `Neo4jGraphStore`.
 - The fallback ingestion text in `src/cli/ingest.js` is intentionally large and domain-specific. It is sample data, not a schema definition.

@@ -49,7 +49,10 @@ async function main() {
 			text: args.textParts.join(" ").trim() || SAMPLE_TEXT,
 			systemPrompt: prompts.extractionSystem,
 		});
-		return normalizeGraphPayload(graph);
+		return normalizeGraphPayload(graph, {
+			schema: prompts.graphSchema,
+			autoApplySuggestions: prompts.schemaAutoApplySuggestions,
+		});
 	});
 
 	if (extracted) {

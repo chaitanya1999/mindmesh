@@ -1,13 +1,14 @@
 import { GoogleGenAI } from "@google/genai";
-import { extractJsonObject } from "../ingestion/graphPayload.js";
+import { parseGraphExtraction } from "../ingestion/graphPayload.js";
 
 export class GeminiProvider {
-	constructor({ apiKey, model }) {
+	constructor({ apiKey, model, extractionFormat = "json" }) {
 		if (!apiKey) {
 			throw new Error("Missing Gemini API key. Set GEMINI_API_KEY, GOOGLE_API_KEY, or config.json apiKey.");
 		}
 
 		this.model = model;
+		this.extractionFormat = extractionFormat;
 		this.ai = new GoogleGenAI({ apiKey });
 	}
 
@@ -20,13 +21,16 @@ export class GeminiProvider {
 		return response.text;
 	}
 
-	async extractGraph({ text, systemPrompt }) {
+	async extractGraph({ text, systemPrompt, prompt, debugLogger }) {
+		const extractionPrompt = prompt ?? `Extract graph data from this text:\n\n${text}`;
 		const responseText = await this.generateText({
 			systemPrompt,
-			prompt: `Extract graph data from this text:\n\n${text}`,
+			prompt: extractionPrompt,
 		});
 
-		return extractJsonObject(responseText);
+		debugLogger?.section("Raw LLM Extraction Response", responseText);
+
+		return parseGraphExtraction(responseText, { format: this.extractionFormat });
 	}
 
 	async generateAnswer({ systemPrompt, context, query }) {

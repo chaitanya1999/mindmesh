@@ -99,7 +99,13 @@ async function main() {
 	const vectorStore = createVectorStore(config);
 
 	try {
-		const service = new IngestionService({ llmProvider, graphStore, vectorStore, prompts });
+		const service = new IngestionService({
+			llmProvider,
+			graphStore,
+			vectorStore,
+			prompts,
+			logging: config.logging,
+		});
 		const graph = await service.ingestText({ text: input.text, source: input.source });
 
 		console.log("Knowledge Graph POC ingestion complete.");
@@ -109,6 +115,12 @@ async function main() {
 			inputSource: input.source,
 			nodes: graph.nodes.length,
 			relations: graph.relations.length,
+			schemaSuggestions: {
+				nodeTypes: graph.schemaSuggestions?.nodeTypes?.length ?? 0,
+				relationshipTypes: graph.schemaSuggestions?.relationshipTypes?.length ?? 0,
+			},
+			schemaWarnings: graph.schemaWarnings?.length ?? 0,
+			persistedSchemaSuggestions: graph.persistedSchemaSuggestions,
 		}, null, 2));
 
 		console.log("\nExtracted nodes:");
@@ -119,6 +131,25 @@ async function main() {
 		console.log("\nExtracted relations:");
 		for (const relation of graph.relations) {
 			console.log(`- ${relation.id} | ${relation.sourceId} -[${relation.relation}]-> ${relation.targetId}`);
+		}
+
+		if (graph.schemaWarnings?.length > 0) {
+			console.log("\nSchema warnings:");
+			for (const warning of graph.schemaWarnings) {
+				console.log(`- ${warning}`);
+			}
+		}
+
+		const suggestedNodeTypes = graph.schemaSuggestions?.nodeTypes ?? [];
+		const suggestedRelationshipTypes = graph.schemaSuggestions?.relationshipTypes ?? [];
+		if (suggestedNodeTypes.length > 0 || suggestedRelationshipTypes.length > 0) {
+			console.log("\nSchema suggestions:");
+			for (const suggestion of suggestedNodeTypes) {
+				console.log(`- node type ${suggestion.name}: ${suggestion.description}${suggestion.reason ? ` (${suggestion.reason})` : ""}`);
+			}
+			for (const suggestion of suggestedRelationshipTypes) {
+				console.log(`- relationship type ${suggestion.name}: ${suggestion.description}${suggestion.reason ? ` (${suggestion.reason})` : ""}`);
+			}
 		}
 	} finally {
 		await graphStore.close();

@@ -25,10 +25,21 @@ function formatRelationship(relationship) {
 	};
 }
 
+function sessionOptions(config) {
+	// Omitting the database lets Neo4j 3.x / single-database deployments use
+	// their default database without triggering multi-database support checks.
+	if (!config.database || config.database === "neo4j") {
+		return {};
+	}
+
+	return { database: config.database };
+}
+
 export class Neo4jGraphStore {
 	constructor(config) {
 		this.config = config;
 		this.driver = neo4j.driver(config.uri, neo4j.auth.basic(config.username, config.password));
+		this.sessionOptions = sessionOptions(config);
 	}
 
 	async verifyConnectivity() {
@@ -36,7 +47,7 @@ export class Neo4jGraphStore {
 	}
 
 	async upsertGraph(graphPayload) {
-		const session = this.driver.session({ database: this.config.database });
+		const session = this.driver.session(this.sessionOptions);
 		const now = new Date().toISOString();
 
 		try {
@@ -82,7 +93,7 @@ export class Neo4jGraphStore {
 	}
 
 	async expandFromNodes(nodeIds, depth) {
-		const session = this.driver.session({ database: this.config.database });
+		const session = this.driver.session(this.sessionOptions);
 		const safeDepth = Math.max(0, Math.min(Number(depth) || 0, 8));
 
 		try {
@@ -124,7 +135,7 @@ export class Neo4jGraphStore {
 	}
 
 	async getGraphPreview(limit = 150) {
-		const session = this.driver.session({ database: this.config.database });
+		const session = this.driver.session(this.sessionOptions);
 		const safeLimit = Math.max(1, Math.min(Number(limit) || 150, 500));
 
 		try {
@@ -159,7 +170,7 @@ export class Neo4jGraphStore {
 	}
 
 	async smokeTest() {
-		const session = this.driver.session({ database: this.config.database });
+		const session = this.driver.session(this.sessionOptions);
 		const id = `node:kg_poc_smoke_${Date.now()}`;
 
 		try {
