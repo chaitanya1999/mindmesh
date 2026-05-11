@@ -1,0 +1,34 @@
+{
+	"version": 1,
+	"nodeProperties": {
+		"required": [
+			"name",
+			"label",
+			"type"
+		],
+		"optional": [
+			"description"
+		]
+	},
+	"relationshipProperties": {
+		"required": [
+			"sourceName",
+			"targetName",
+			"relation"
+		],
+		"optional": [
+			"information",
+			"description"
+		]
+	},
+	"nodeTypes": [
+		
+	],
+	"relationshipTypes": [
+		
+	],
+	"suggestions": {
+		"nodeTypes": [],
+		"relationshipTypes": []
+	}
+}

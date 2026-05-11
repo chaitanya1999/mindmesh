@@ -1,6 +1,7 @@
 .env
 .env.*
 config.json
+knowledgeGraphPOC/schema/graphSchema.json
 .venv/
 __pycache__/
 node_modules/
