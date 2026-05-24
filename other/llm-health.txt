@@ -1,0 +1,4 @@
+curl -X 'GET' \
+  'https://<base url>/health?model=gpt-4o' \
+  -H 'accept: application/json' \
+  -H 'Authorization: Bearer '

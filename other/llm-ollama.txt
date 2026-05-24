@@ -1,0 +1,10 @@
+curl http://192.168.1.6:80/api/chat -d '{
+  "model": "qwen3-coder:30b",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hello!"
+    }
+  ],
+  "stream": false
+}'

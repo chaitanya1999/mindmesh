@@ -1,24 +1,33 @@
 {
 	"llm": {
-		"provider": "gemini",
-		"extractionFormat": "json",
+		"provider": "custom",
+		"extractionFormat": "custom",
 		"gemini": {
-			"apiKey": "paste-your-api-key-here",
-			"model": "gemini-2.5-flash"
+			"apiKey": "",
+			"model": "gemma-4-31b-it"
 		},
 		"ollama": {
-			"baseUrl": "http://localhost:11434",
-			"model": "mistral",
-			"think": false,
-			"temperature": null
+			"baseUrl": "",
+			"model": "gemma4:31b-cloud"
 		},
 		"custom": {
-			"endpoint": "http://localhost:3001/llm"
+			"subProvider" : "openai",
+			"openai" : {
+				"endpoint" : "",
+				"bridgedEndpoint" : "",
+				"apiKey" : "",
+				"model" : "gpt-5-mini"
+			},
+			"gemini" : {
+				"endpoint" : "",
+				"bridgedEndpoint" : "",
+				"apiKey" : ""
+			}
 		},
 		"hub": {
-			"baseUrl": "https://hub-proxy-service.thankfulfield-16b4d5d6.eastus.azurecontainerapps.io",
+			"baseUrl": "",
 			"apiKey": "",
-			"model": "gpt-4.1-nano"
+			"model": "gpt-5.2-CIO"
 		}
 	},
 	"graph": {
@@ -26,9 +35,9 @@
 		"neo4j": {
 			"instance": "myGraphDB",
 			"uri": "bolt://localhost:7687",
-			"database": "neo4j",
+			"database": "knowledgeGraph",
 			"username": "neo4j",
-			"password": "password"
+			"password": ""
 		}
 	},
 	"vector": {
@@ -43,15 +52,15 @@
 		}
 	},
 	"embedding": {
-		"provider": "gemini",
+		"provider": "chroma",
 		"gemini": {
-			"apiKey": "reuse-gemini-api-key-or-leave-empty-to-use-llm-key",
+			"apiKey": "",
 			"model": "gemini-embedding-001",
 			"outputDimensionality": 768
 		},
 		"hub": {
-			"baseUrl": "leave-empty-to-use-llm-hub-base-url",
-			"apiKey": "leave-empty-to-use-llm-hub-api-key",
+			"baseUrl": "",
+			"apiKey": "",
 			"model": "embeddings",
 			"encodingFormat": "float",
 			"dimensions": 512,
@@ -80,7 +89,7 @@
 	},
 	"schema": {
 		"path": "./schema/graphSchema.json",
-		"autoApplySuggestions": false
+		"autoApplySuggestions": true
 	},
 	"logging": {
 		"enabled": false,

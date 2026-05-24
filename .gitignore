@@ -1,13 +1,16 @@
 .env
 .env.*
-config.json
-knowledgeGraphPOC/schema/graphSchema.json
+schema/graphSchema.json
 .venv/
 __pycache__/
 node_modules/
 package-lock.json
 chroma/
-knowledgeGraphPOC/src/server/public/app.bundle.js
+chroma_data/
 *.log
 npm-debug.log*
 my_chroma_db/chroma.sqlite3
+llm-api-call.txt
+schema/graphSchema 2.json
+embedding_request.txt
+embedding_response.txt

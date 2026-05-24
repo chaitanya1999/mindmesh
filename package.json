@@ -1,5 +1,5 @@
 {
-	"name": "llm-learn",
+	"name": "mindmesh",
 	"version": "0.1.0",
 	"private": true,
 	"type": "module",
@@ -7,24 +7,33 @@
 		"prompt": "node gemini_prompt.js",
 		"rag": "node rag_keyword_demo.js",
 		"neo4j:test": "node neo4j_connection_test.js",
-		"kg:ingest": "node knowledgeGraphPOC/src/cli/ingest.js",
-		"kg:ask": "node knowledgeGraphPOC/src/cli/ask.js",
-		"kg:web:build": "esbuild knowledgeGraphPOC/src/server/public/app.js --bundle --format=esm --outfile=knowledgeGraphPOC/src/server/public/app.bundle.js",
-		"kg:web": "npm run kg:web:build && node knowledgeGraphPOC/src/server/server.js",
-		"kg:test-db": "node knowledgeGraphPOC/src/cli/testConnections.js",
-		"kg:test-llm": "node knowledgeGraphPOC/src/cli/testLlm.js",
-		"kg:test-parser": "node knowledgeGraphPOC/src/cli/testParser.js",
-		"kg:clear-chroma": "node knowledgeGraphPOC/src/cli/clearChroma.js"
+		"kg:ingest": "node src/cli/ingest.js",
+		"kg:ask": "node src/cli/ask.js",
+		"kg:web:build": "esbuild src/server/public/app.js --bundle --format=esm --jsx=automatic --jsx-import-source=preact --loader:.js=jsx --outfile=src/server/public/app.bundle.js",
+		"kg:web": "npm run kg:web:build && node src/server/server.js",
+		"kg:test-db": "node src/cli/testConnections.js",
+		"kg:test-llm": "node src/cli/testLlm.js",
+		"kg:test-parser": "node src/cli/testParser.js",
+		"kg:clear-chroma": "node src/cli/clearChroma.js",
+		"kg:reindex-vectors": "node src/cli/reindexVectors.js",
+		"chroma:start": "chroma run --path ./chroma_data"
 	},
 	"dependencies": {
 		"@chroma-core/default-embed": "^0.1.9",
 		"@google/genai": "^1.50.1",
+		"@sigma/edge-curve": "^3.1.0",
 		"chromadb": "^3.0.14",
 		"esbuild": "^0.28.0",
 		"express": "^5.2.1",
 		"graphology": "^0.26.0",
 		"graphology-layout-force": "^0.2.4",
+		"mammoth": "^1.12.0",
+		"multer": "^2.1.1",
 		"neo4j-driver": "^6.0.1",
-		"sigma": "^3.0.2"
+		"neovis.js": "^2.1.0",
+		"pdf-parse": "^2.4.5",
+		"preact": "^10.29.1",
+		"sigma": "^3.0.2",
+		"word-extractor": "^1.0.4"
 	}
 }
