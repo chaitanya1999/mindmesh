@@ -9,7 +9,7 @@ import WordExtractor from "word-extractor";
 import { getConfig, describeRuntime } from "../config.js";
 import { createGraphStore } from "../graph/providerFactory.js";
 import { IngestionService } from "../ingestion/ingestionService.js";
-import { normalizeGraphPayload, parseGraphExtraction, toSnakeCase } from "../ingestion/graphPayload.js";
+import { encodePipelineField, normalizeGraphPayload, parseGraphExtraction, toSnakeCase } from "../ingestion/graphPayload.js";
 import { countReviewSignals } from "../ingestion/reviewSignals.js";
 import { KgJobsService } from "../jobs/kgJobsService.js";
 import { createLlmProvider } from "../llm/providerFactory.js";
@@ -258,7 +258,7 @@ function graphNameFromId(id) {
 }
 
 function safePipeField(value) {
-	return String(value ?? "").replaceAll("|", " ").trim();
+	return encodePipelineField(value);
 }
 
 function nodePipelineRecord(recordType, node) {
@@ -460,7 +460,7 @@ async function requireHitlNote(id) {
 function parseHitlResponse(llmResponse) {
 	try {
 		const graphSchema = loadGraphSchema({ schema: prompts.graphSchema });
-		const extractedGraph = parseGraphExtraction(llmResponse, { format: prompts.extractionFormat });
+		const extractedGraph = parseGraphExtraction(llmResponse);
 		const graphPayload = normalizeGraphPayload(extractedGraph, {
 			schema: graphSchema,
 			autoApplySuggestions: prompts.schemaAutoApplySuggestions,

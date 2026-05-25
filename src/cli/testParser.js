@@ -1,4 +1,4 @@
-import { extractCustomGraph, extractJsonObject, normalizeGraphPayload, parseGraphExtraction } from "../ingestion/graphPayload.js";
+import { extractCustomGraph, normalizeGraphPayload, parseGraphExtraction } from "../ingestion/graphPayload.js";
 import { IngestionService } from "../ingestion/ingestionService.js";
 import { countReviewSignals } from "../ingestion/reviewSignals.js";
 import fs from "node:fs/promises";
@@ -10,8 +10,6 @@ import { formatExtractionGraphContext } from "../rag/graphContext.js";
 import { buildOllamaMessages, extractOllamaText, OllamaProvider } from "../llm/ollamaProvider.js";
 import { buildHubMessages, extractHubChatContent } from "../llm/hubChatProvider.js";
 
-const rawJson = '{"nodes":[{"label":"EKYC Screen","name":"ekyc_screen","type":"screen","description":""}],"relations":[]}';
-const fencedJson = '```json\n{"nodes":[],"relations":[{"sourceName":"EKYC Screen","targetName":"PAN API","relation":"uses"}]}\n```';
 const customGraph = [
 	"NODE|ekyc_screen|EKYC Screen|screen|Screen that captures identity details.",
 	"NODE|pan_api|PAN API|api|API that verifies PAN details.",
@@ -72,19 +70,31 @@ function assert(condition, message) {
 	}
 }
 
-const rawPayload = normalizeGraphPayload(extractJsonObject(rawJson));
-assert(rawPayload.nodes[0].id === "node:ekyc_screen", "Raw JSON parser failed.");
-
-const fencedPayload = normalizeGraphPayload(extractJsonObject(fencedJson));
-assert(fencedPayload.nodes.length === 2, "Fenced JSON parser or endpoint normalization failed.");
-assert(fencedPayload.relations.length === 1, "Relation normalization failed.");
+// JSON LLM extraction support was removed; tests focus on custom pipeline parsing.
 
 const customPayload = normalizeGraphPayload(extractCustomGraph(customGraph));
 assert(customPayload.nodes.length === 2, "Custom graph parser failed.");
 assert(customPayload.relations[0].relation === "uses", "Custom relation parser failed.");
 
-const switchedPayload = normalizeGraphPayload(parseGraphExtraction(customGraph, { format: "custom" }));
-assert(switchedPayload.nodes[0].id === "node:ekyc_screen", "Switchable parser failed.");
+const switchedPayload = normalizeGraphPayload(parseGraphExtraction(customGraph));
+assert(switchedPayload.nodes[0].id === "node:ekyc_screen", "Parser failed.");
+
+// Escaped field tests
+const escapedNewline = extractCustomGraph("NODE_CREATE|abc|ABC|screen|Line one\\nLine two|");
+assert(escapedNewline.nodes[0].description === "Line one\nLine two", "Escaped newline decode failed.");
+
+const escapedPipe = extractCustomGraph("NODE_CREATE|abc|ABC|screen|Uses value A\\|B|");
+assert(escapedPipe.nodes[0].description === "Uses value A|B", "Escaped pipe decode failed.");
+
+const escapedBackslash = extractCustomGraph("NODE_CREATE|abc|ABC|screen|Has \\\\ slash|");
+assert(escapedBackslash.nodes[0].description === "Has \\ slash", "Escaped backslash decode failed.");
+
+const escapedLiteralBackslashN = extractCustomGraph("NODE_CREATE|abc|ABC|screen|Literal \\\\n text|");
+assert(escapedLiteralBackslashN.nodes[0].description === "Literal \\n text", "Escaped literal backslash-n decode failed.");
+
+const escapedRelationFields = extractCustomGraph("RELATION_CREATE|abc|xyz|uses|Line one\\nLine two|Description with A\\|B|");
+assert(escapedRelationFields.relations[0].information === "Line one\nLine two", "Escaped relation information decode failed.");
+assert(escapedRelationFields.relations[0].description === "Description with A|B", "Escaped relation description decode failed.");
 
 const suggestionPayload = extractCustomGraph(customGraphWithSuggestion);
 assert(suggestionPayload.schemaSuggestions.relationshipTypes[0].name === "validates_with", "Custom schema suggestion parser failed.");
@@ -250,11 +260,11 @@ const service = new IngestionService({
 			indexedGraph = graph;
 		},
 	},
-	prompts: {
-		...runtimePrompts,
-		extractionSystemTemplate: "Schema:\n{{GRAPH_SCHEMA}}\nContext:\n{{EXISTING_GRAPH_CONTEXT}}\nInput:\n{{USER_INPUT}}",
-		schemaAutoApplySuggestions: false,
-	},
+		prompts: {
+			...runtimePrompts,
+			extractionSystemTemplate: "Schema:\n{{GRAPH_SCHEMA}}\nContext:\n{{EXISTING_GRAPH_CONTEXT}}\nInput:\n{{USER_INPUT}}",
+			schemaAutoApplySuggestions: false,
+		},
 	ingestion: {
 		contextEnabled: true,
 		contextTopK: 2,
@@ -309,12 +319,11 @@ const pendingContextService = new IngestionService({
 		},
 		async upsertGraphIndex() {},
 	},
-	prompts: {
-		...runtimePrompts,
-		extractionSystemTemplate: "Schema:\n{{GRAPH_SCHEMA}}\nContext:\n{{EXISTING_GRAPH_CONTEXT}}\nInput:\n{{USER_INPUT}}",
-		extractionFormat: "custom",
-		schemaAutoApplySuggestions: false,
-	},
+		prompts: {
+			...runtimePrompts,
+			extractionSystemTemplate: "Schema:\n{{GRAPH_SCHEMA}}\nContext:\n{{EXISTING_GRAPH_CONTEXT}}\nInput:\n{{USER_INPUT}}",
+			schemaAutoApplySuggestions: false,
+		},
 	ingestion: {
 		contextEnabled: true,
 		contextTopK: 2,
@@ -500,12 +509,11 @@ const duplicatePendingHitlService = new IngestionService({
 			return { id: note.id, document: note.llmResponse, metadata: { createdAt: note.createdAt } };
 		},
 	},
-	prompts: {
-		...runtimePrompts,
-		extractionSystemTemplate: "Schema:\n{{GRAPH_SCHEMA}}\nContext:\n{{EXISTING_GRAPH_CONTEXT}}\nInput:\n{{USER_INPUT}}",
-		extractionFormat: "custom",
-		schemaAutoApplySuggestions: false,
-	},
+		prompts: {
+			...runtimePrompts,
+			extractionSystemTemplate: "Schema:\n{{GRAPH_SCHEMA}}\nContext:\n{{EXISTING_GRAPH_CONTEXT}}\nInput:\n{{USER_INPUT}}",
+			schemaAutoApplySuggestions: false,
+		},
 	ingestion: {
 		mode: "hitl",
 		contextEnabled: true,
@@ -573,7 +581,8 @@ assert(failureLogged, "Ingestion service should write debug log details when ing
 
 let invalidFailed = false;
 try {
-	extractJsonObject("not json");
+	const invalidPayload = extractCustomGraph("not json");
+	invalidFailed = invalidPayload.warnings?.some((warning) => warning.includes("did not contain graph mutation records"));
 } catch {
 	invalidFailed = true;
 }

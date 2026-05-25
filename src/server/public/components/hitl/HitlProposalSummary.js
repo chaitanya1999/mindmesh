@@ -1,4 +1,5 @@
 import {
+	displayPipelineText,
 	displayNameFromIdentifier,
 	relationLabel,
 } from "../../lib/hitlProposal.js";
@@ -67,12 +68,12 @@ function CurrentProposed({ current, proposed, type }) {
 				<div>
 					<span>Current</span>
 					<strong>{relationLabel(current.relation)}</strong>
-					<small>{current.information || current.description || "No extra detail."}</small>
+					<small class="multiline-text">{displayPipelineText(current.information || current.description) || "No extra detail."}</small>
 				</div>
 				<div>
 					<span>Proposed</span>
 					<strong>{relationLabel(proposed.relation)}</strong>
-					<small>{proposed.information || proposed.description || proposed.metadata || "No extra detail."}</small>
+					<small class="multiline-text">{displayPipelineText(proposed.information || proposed.description || proposed.metadata) || "No extra detail."}</small>
 				</div>
 			</div>
 		);
@@ -83,12 +84,12 @@ function CurrentProposed({ current, proposed, type }) {
 			<div>
 				<span>Current</span>
 				<strong>{current.label || displayNameFromIdentifier(current.name || current.id)}</strong>
-				<small>{current.description || "No description."}</small>
+				<small class="multiline-text">{displayPipelineText(current.description) || "No description."}</small>
 			</div>
 			<div>
 				<span>Proposed</span>
 				<strong>{nodeLabel(proposed)}</strong>
-				<small>{proposed.description || proposed.metadata || "No description."}</small>
+				<small class="multiline-text">{displayPipelineText(proposed.description || proposed.metadata) || "No description."}</small>
 			</div>
 		</div>
 	);
@@ -255,8 +256,8 @@ export function HitlProposalSummary({
 						>
 							<strong>{nodeLabel(record)}</strong>
 							<small>{record.type}</small>
-							{record.description && <small>{record.description}</small>}
-							{record.metadata && <small class="proposal-row-warning">{record.metadata}</small>}
+							{record.description && <small class="multiline-text">{displayPipelineText(record.description)}</small>}
+							{record.metadata && <small class="proposal-row-warning multiline-text">{displayPipelineText(record.metadata)}</small>}
 						</ProposalRow>
 					);
 				})}
@@ -275,8 +276,8 @@ export function HitlProposalSummary({
 							type="relation"
 						>
 							<strong>{relationFact(record)}</strong>
-							<small>{record.information || record.description || "No extra detail."}</small>
-							{record.metadata && <small class="proposal-row-warning">{record.metadata}</small>}
+							<small class="multiline-text">{displayPipelineText(record.information || record.description) || "No extra detail."}</small>
+							{record.metadata && <small class="proposal-row-warning multiline-text">{displayPipelineText(record.metadata)}</small>}
 						</ProposalRow>
 					);
 				})}
@@ -296,7 +297,7 @@ export function HitlProposalSummary({
 							type={isRelation ? "relation" : "node"}
 						>
 							<strong>{isRelation ? relationFact(record) : nodeLabel(record)}</strong>
-							{record.metadata && <small class="proposal-row-warning">{record.metadata}</small>}
+							{record.metadata && <small class="proposal-row-warning multiline-text">{displayPipelineText(record.metadata)}</small>}
 						</ProposalRow>
 					);
 				})}

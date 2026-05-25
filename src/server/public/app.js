@@ -575,8 +575,62 @@ function graphNameFromId(id) {
 	return String(id ?? "").replace(/^node:/i, "");
 }
 
+function encodePipelineField(value) {
+	if (value === undefined || value === null) {
+		return "";
+	}
+
+	return String(value)
+		.replace(/\\/g, "\\\\")
+		.replace(/\|/g, "\\|")
+		.replace(/\r/g, "\\r")
+		.replace(/\n/g, "\\n")
+		.replace(/\t/g, "\\t")
+		.trim();
+}
+
+function decodePipelineField(value) {
+	if (value === undefined || value === null) {
+		return "";
+	}
+
+	const text = String(value);
+	let decoded = "";
+
+	for (let index = 0; index < text.length; index += 1) {
+		const char = text[index];
+		if (char !== "\\" || index + 1 >= text.length) {
+			decoded += char;
+			continue;
+		}
+
+		const escaped = text[index + 1];
+		index += 1;
+
+		if (escaped === "n") {
+			decoded += "\n";
+		} else if (escaped === "r") {
+			decoded += "\r";
+		} else if (escaped === "t") {
+			decoded += "\t";
+		} else if (escaped === "|") {
+			decoded += "|";
+		} else if (escaped === "\\") {
+			decoded += "\\";
+		} else {
+			decoded += `\\${escaped}`;
+		}
+	}
+
+	return decoded.trim();
+}
+
+function displayText(value) {
+	return decodePipelineField(value);
+}
+
 function safePipelineField(value) {
-	return String(value ?? "").replaceAll("|", " ").trim();
+	return encodePipelineField(value);
 }
 
 function pipelineRecordLine(recordType, fields) {
@@ -649,7 +703,29 @@ function withPipelineMarkers(lines) {
 }
 
 function pipelineParts(line) {
-	return String(line ?? "").split("|").map((part) => part.trim());
+	const raw = String(line ?? "");
+	const parts = [];
+	let current = "";
+
+	for (let index = 0; index < raw.length; index += 1) {
+		const char = raw[index];
+		if (char === "\\" && index + 1 < raw.length) {
+			current += char + raw[index + 1];
+			index += 1;
+			continue;
+		}
+
+		if (char === "|") {
+			parts.push(current.trim());
+			current = "";
+			continue;
+		}
+
+		current += char;
+	}
+
+	parts.push(current.trim());
+	return parts.map(decodePipelineField);
 }
 
 function isNodeRecord(parts) {
@@ -1421,8 +1497,8 @@ function createNeoVisGraphData(graph) {
 				label: truncate(node.label, 42),
 				name: node.name,
 				type: node.type,
-				description: node.description,
-				metadata: node.metadata,
+				description: displayText(node.description),
+				metadata: displayText(node.metadata),
 				size: nodeSizeForLinkCount(linkCountByNodeId.get(node.id), 1.12),
 				borderWidth: 0,
 				borderWidthSelected: GRAPH_SELECTED_NODE_BORDER_WIDTH,
@@ -1436,8 +1512,8 @@ function createNeoVisGraphData(graph) {
 				title: neoVisTitle([
 					["Label", node.label],
 					["Type", node.type],
-					["Description", node.description],
-					["Metadata", node.metadata],
+					["Description", displayText(node.description)],
+					["Metadata", displayText(node.metadata)],
 					["HITL", node.pendingHitl ? `${node.pendingOperation || "pending"} by ${node.ingestedBy || "unknown"}` : ""],
 				]),
 			},
@@ -1498,9 +1574,9 @@ function createNeoVisGraphData(graph) {
 					targetId: relation.targetId,
 					relation: relation.relation,
 					label: truncate(relationLabel(relation.relation), 32),
-					information: relation.information,
-					description: relation.description,
-					metadata: relation.metadata,
+					information: displayText(relation.information),
+					description: displayText(relation.description),
+					metadata: displayText(relation.metadata),
 					width: edgeStyle.width,
 					color: {
 						color: edgeStyle.color,
@@ -1520,9 +1596,9 @@ function createNeoVisGraphData(graph) {
 					},
 					title: neoVisTitle([
 						["Relation", relationLabel(relation.relation)],
-						["Information", relation.information],
-						["Description", relation.description],
-						["Metadata", relation.metadata],
+						["Information", displayText(relation.information)],
+						["Description", displayText(relation.description)],
+						["Metadata", displayText(relation.metadata)],
 						["HITL", relation.pendingHitl ? `${relation.pendingOperation || "pending"} by ${relation.ingestedBy || "unknown"}` : ""],
 					]),
 				},
@@ -2788,15 +2864,15 @@ function MutationContent({ mutation }) {
 						<div class="triplet" key={`node-${node.id ?? node.name}-${index}`}>
 							<strong>{operationVerb(node.operation)} node</strong>
 							{`: ${node.label || displayNameFromIdentifier(node.name || node.id)}`}
-							{node.description && <div>{node.description}</div>}
-							{node.metadata && <div>{node.metadata}</div>}
+							{node.description && <div class="multiline-text">{displayText(node.description)}</div>}
+							{node.metadata && <div class="multiline-text">{displayText(node.metadata)}</div>}
 						</div>
 					))}
 					{nodeDeletes.map((node, index) => (
 						<div class="triplet" key={`node-delete-${node.id ?? node.name}-${index}`}>
 							<strong>Deleted node</strong>
 							{`: ${nodeLabel(node.name || node.id)}`}
-							{node.metadata && <div>{node.metadata}</div>}
+							{node.metadata && <div class="multiline-text">{displayText(node.metadata)}</div>}
 						</div>
 					))}
 					{relations.map((relation, index) => {
@@ -2812,9 +2888,9 @@ function MutationContent({ mutation }) {
 									{` ${relationLabel(relation.relation)} `}
 									<strong>{targetLabel}</strong>
 								</div>
-								{relation.information && <div>{relation.information}</div>}
-								{relation.description && <div>{relation.description}</div>}
-								{relation.metadata && <div>{relation.metadata}</div>}
+								{relation.information && <div class="multiline-text">{displayText(relation.information)}</div>}
+								{relation.description && <div class="multiline-text">{displayText(relation.description)}</div>}
+								{relation.metadata && <div class="multiline-text">{displayText(relation.metadata)}</div>}
 							</div>
 						);
 					})}
@@ -3231,7 +3307,7 @@ function createNodeDraft(node) {
 		label: node?.label ?? "",
 		name: node?.name ?? "",
 		type: node?.type ?? "concept",
-		description: node?.description ?? "",
+		description: displayText(node?.description),
 	};
 }
 
@@ -3240,8 +3316,8 @@ function createRelationDraft(relation) {
 		sourceId: relation?.sourceId ?? "",
 		targetId: relation?.targetId ?? "",
 		relation: relation?.relation ?? "relates_to",
-		information: relation?.information ?? "",
-		description: relation?.description ?? "",
+		information: displayText(relation?.information),
+		description: displayText(relation?.description),
 	};
 }
 
@@ -3446,7 +3522,7 @@ function DetailPanel({
 				{selectedNode.metadata && (
 					<div class="detail-kv">
 						<span>Metadata</span>
-						<strong>{selectedNode.metadata}</strong>
+						<strong class="multiline-text">{displayText(selectedNode.metadata)}</strong>
 					</div>
 				)}
 				<NodeForm
@@ -3489,7 +3565,7 @@ function DetailPanel({
 				{selectedRelation.metadata && (
 					<div class="detail-kv">
 						<span>Metadata</span>
-						<strong>{selectedRelation.metadata}</strong>
+						<strong class="multiline-text">{displayText(selectedRelation.metadata)}</strong>
 					</div>
 				)}
 				<RelationForm

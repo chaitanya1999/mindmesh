@@ -103,6 +103,7 @@ Never emit RELATION_UPDATE for source, target, or relation type changes.
 EXTRACTION RULES:
 
 - Use one record per line.
+- Do not split a single record across multiple physical lines; encode line breaks inside fields as \\n.
 - Every RELATION_CREATE or RELATION_UPDATE endpoint must have a corresponding NODE_CREATE or NODE_UPDATE record in the same output.
 - RELATION_DELETE endpoints do not need corresponding node records unless those nodes are independently created or updated by the new input.
 - If you emit NODE_DELETE for a node, do not also emit NODE_CREATE or NODE_UPDATE for the same node in the same output.
@@ -133,7 +134,7 @@ EXTRACTION RULES:
     - relation names
 - Labels remain human readable.
 - Leave optional fields empty if no meaningful value exists.
-- Do not use pipe characters inside field values.
+- If you need to include a pipe, newline, tab, or backslash in a field, encode it using backslash escapes: \\|, \\n, \\r, \\t, or \\\\ respectively.
 - Prefer omission over inference.
 - Do not invent facts.
 - Description / Information must not be redundant for example information on relation must not re-state what the relation itself implicitly denotes.

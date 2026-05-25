@@ -74627,6 +74627,45 @@ var import_neovis = __toESM(require_neovis_without_dependencies(), 1);
 var HITL_CHIP_DENSITY_KEY = "mindmesh.hitlChipDensity";
 var START_MARKERS = /* @__PURE__ */ new Set(["<start#$#$>", "start#$#$"]);
 var END_MARKERS = /* @__PURE__ */ new Set(["</end#$#$>", "<end#$#$>", "end#$#$"]);
+function decodePipelineField(value) {
+  if (value === void 0 || value === null) {
+    return "";
+  }
+  const text = String(value);
+  let decoded = "";
+  for (let index2 = 0; index2 < text.length; index2 += 1) {
+    const char = text[index2];
+    if (char !== "\\" || index2 + 1 >= text.length) {
+      decoded += char;
+      continue;
+    }
+    const escaped = text[index2 + 1];
+    index2 += 1;
+    if (escaped === "n") {
+      decoded += "\n";
+    } else if (escaped === "r") {
+      decoded += "\r";
+    } else if (escaped === "t") {
+      decoded += "	";
+    } else if (escaped === "|") {
+      decoded += "|";
+    } else if (escaped === "\\") {
+      decoded += "\\";
+    } else {
+      decoded += `\\${escaped}`;
+    }
+  }
+  return decoded.trim();
+}
+function displayPipelineText(value) {
+  return decodePipelineField(value);
+}
+function encodePipelineField(value) {
+  if (value === void 0 || value === null) {
+    return "";
+  }
+  return String(value).replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\t/g, "\\t").trim();
+}
 function truncateText(value, length2 = 34) {
   const text = String(value ?? "");
   return text.length > length2 ? `${text.slice(0, length2 - 1)}...` : text;
@@ -74664,10 +74703,28 @@ function pipelineEditorText(text) {
   return pipelineLines(text).join("\n");
 }
 function pipelineParts(line) {
-  return String(line ?? "").split("|").map((part) => part.trim());
+  const raw = String(line ?? "");
+  const parts = [];
+  let cur = "";
+  for (let i3 = 0; i3 < raw.length; i3 += 1) {
+    const ch = raw[i3];
+    if (ch === "\\" && i3 + 1 < raw.length) {
+      cur += ch + raw[i3 + 1];
+      i3 += 1;
+      continue;
+    }
+    if (ch === "|") {
+      parts.push(cur.trim());
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  parts.push(cur.trim());
+  return parts.map((p3) => decodePipelineField(p3));
 }
 function safePipelineField(value) {
-  return String(value ?? "").replaceAll("|", " ").trim();
+  return encodePipelineField(value);
 }
 function pipelineRecordLine(recordType, fields) {
   return [recordType, ...fields].map(safePipelineField).join("|");
@@ -75046,12 +75103,12 @@ function CurrentProposed({ current, proposed, type }) {
       /* @__PURE__ */ u3("div", { children: [
         /* @__PURE__ */ u3("span", { children: "Current" }),
         /* @__PURE__ */ u3("strong", { children: relationLabel(current.relation) }),
-        /* @__PURE__ */ u3("small", { children: current.information || current.description || "No extra detail." })
+        /* @__PURE__ */ u3("small", { class: "multiline-text", children: displayPipelineText(current.information || current.description) || "No extra detail." })
       ] }),
       /* @__PURE__ */ u3("div", { children: [
         /* @__PURE__ */ u3("span", { children: "Proposed" }),
         /* @__PURE__ */ u3("strong", { children: relationLabel(proposed.relation) }),
-        /* @__PURE__ */ u3("small", { children: proposed.information || proposed.description || proposed.metadata || "No extra detail." })
+        /* @__PURE__ */ u3("small", { class: "multiline-text", children: displayPipelineText(proposed.information || proposed.description || proposed.metadata) || "No extra detail." })
       ] })
     ] });
   }
@@ -75059,12 +75116,12 @@ function CurrentProposed({ current, proposed, type }) {
     /* @__PURE__ */ u3("div", { children: [
       /* @__PURE__ */ u3("span", { children: "Current" }),
       /* @__PURE__ */ u3("strong", { children: current.label || displayNameFromIdentifier(current.name || current.id) }),
-      /* @__PURE__ */ u3("small", { children: current.description || "No description." })
+      /* @__PURE__ */ u3("small", { class: "multiline-text", children: displayPipelineText(current.description) || "No description." })
     ] }),
     /* @__PURE__ */ u3("div", { children: [
       /* @__PURE__ */ u3("span", { children: "Proposed" }),
       /* @__PURE__ */ u3("strong", { children: nodeLabel(proposed) }),
-      /* @__PURE__ */ u3("small", { children: proposed.description || proposed.metadata || "No description." })
+      /* @__PURE__ */ u3("small", { class: "multiline-text", children: displayPipelineText(proposed.description || proposed.metadata) || "No description." })
     ] })
   ] });
 }
@@ -75215,8 +75272,8 @@ function HitlProposalSummary({
           children: [
             /* @__PURE__ */ u3("strong", { children: nodeLabel(record) }),
             /* @__PURE__ */ u3("small", { children: record.type }),
-            record.description && /* @__PURE__ */ u3("small", { children: record.description }),
-            record.metadata && /* @__PURE__ */ u3("small", { class: "proposal-row-warning", children: record.metadata })
+            record.description && /* @__PURE__ */ u3("small", { class: "multiline-text", children: displayPipelineText(record.description) }),
+            record.metadata && /* @__PURE__ */ u3("small", { class: "proposal-row-warning multiline-text", children: displayPipelineText(record.metadata) })
           ]
         },
         record.key
@@ -75235,8 +75292,8 @@ function HitlProposalSummary({
           type: "relation",
           children: [
             /* @__PURE__ */ u3("strong", { children: relationFact(record) }),
-            /* @__PURE__ */ u3("small", { children: record.information || record.description || "No extra detail." }),
-            record.metadata && /* @__PURE__ */ u3("small", { class: "proposal-row-warning", children: record.metadata })
+            /* @__PURE__ */ u3("small", { class: "multiline-text", children: displayPipelineText(record.information || record.description) || "No extra detail." }),
+            record.metadata && /* @__PURE__ */ u3("small", { class: "proposal-row-warning multiline-text", children: displayPipelineText(record.metadata) })
           ]
         },
         record.key
@@ -75256,7 +75313,7 @@ function HitlProposalSummary({
           type: isRelation ? "relation" : "node",
           children: [
             /* @__PURE__ */ u3("strong", { children: isRelation ? relationFact(record) : nodeLabel(record) }),
-            record.metadata && /* @__PURE__ */ u3("small", { class: "proposal-row-warning", children: record.metadata })
+            record.metadata && /* @__PURE__ */ u3("small", { class: "proposal-row-warning multiline-text", children: displayPipelineText(record.metadata) })
           ]
         },
         record.key
@@ -76132,8 +76189,47 @@ function relationLabel2(relation) {
 function graphNameFromId2(id2) {
   return String(id2 ?? "").replace(/^node:/i, "");
 }
+function encodePipelineField2(value) {
+  if (value === void 0 || value === null) {
+    return "";
+  }
+  return String(value).replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\t/g, "\\t").trim();
+}
+function decodePipelineField2(value) {
+  if (value === void 0 || value === null) {
+    return "";
+  }
+  const text = String(value);
+  let decoded = "";
+  for (let index2 = 0; index2 < text.length; index2 += 1) {
+    const char = text[index2];
+    if (char !== "\\" || index2 + 1 >= text.length) {
+      decoded += char;
+      continue;
+    }
+    const escaped = text[index2 + 1];
+    index2 += 1;
+    if (escaped === "n") {
+      decoded += "\n";
+    } else if (escaped === "r") {
+      decoded += "\r";
+    } else if (escaped === "t") {
+      decoded += "	";
+    } else if (escaped === "|") {
+      decoded += "|";
+    } else if (escaped === "\\") {
+      decoded += "\\";
+    } else {
+      decoded += `\\${escaped}`;
+    }
+  }
+  return decoded.trim();
+}
+function displayText(value) {
+  return decodePipelineField2(value);
+}
 function safePipelineField2(value) {
-  return String(value ?? "").replaceAll("|", " ").trim();
+  return encodePipelineField2(value);
 }
 function pipelineRecordLine2(recordType, fields) {
   return [recordType, ...fields].map(safePipelineField2).join("|");
@@ -76192,7 +76288,25 @@ function withPipelineMarkers(lines) {
   return lines.filter(Boolean).join("\n");
 }
 function pipelineParts2(line) {
-  return String(line ?? "").split("|").map((part) => part.trim());
+  const raw = String(line ?? "");
+  const parts = [];
+  let current = "";
+  for (let index2 = 0; index2 < raw.length; index2 += 1) {
+    const char = raw[index2];
+    if (char === "\\" && index2 + 1 < raw.length) {
+      current += char + raw[index2 + 1];
+      index2 += 1;
+      continue;
+    }
+    if (char === "|") {
+      parts.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  parts.push(current.trim());
+  return parts.map(decodePipelineField2);
 }
 function isNodeRecord(parts) {
   return ["NODE", "NODE_CREATE", "NODE_UPDATE"].includes(parts[0]?.toUpperCase());
@@ -76802,8 +76916,8 @@ function createNeoVisGraphData(graph) {
         label: truncate(node.label, 42),
         name: node.name,
         type: node.type,
-        description: node.description,
-        metadata: node.metadata,
+        description: displayText(node.description),
+        metadata: displayText(node.metadata),
         size: nodeSizeForLinkCount(linkCountByNodeId.get(node.id), 1.12),
         borderWidth: 0,
         borderWidthSelected: GRAPH_SELECTED_NODE_BORDER_WIDTH,
@@ -76817,8 +76931,8 @@ function createNeoVisGraphData(graph) {
         title: neoVisTitle([
           ["Label", node.label],
           ["Type", node.type],
-          ["Description", node.description],
-          ["Metadata", node.metadata],
+          ["Description", displayText(node.description)],
+          ["Metadata", displayText(node.metadata)],
           ["HITL", node.pendingHitl ? `${node.pendingOperation || "pending"} by ${node.ingestedBy || "unknown"}` : ""]
         ])
       },
@@ -76874,9 +76988,9 @@ function createNeoVisGraphData(graph) {
           targetId: relation.targetId,
           relation: relation.relation,
           label: truncate(relationLabel2(relation.relation), 32),
-          information: relation.information,
-          description: relation.description,
-          metadata: relation.metadata,
+          information: displayText(relation.information),
+          description: displayText(relation.description),
+          metadata: displayText(relation.metadata),
           width: edgeStyle.width,
           color: {
             color: edgeStyle.color,
@@ -76894,9 +77008,9 @@ function createNeoVisGraphData(graph) {
           },
           title: neoVisTitle([
             ["Relation", relationLabel2(relation.relation)],
-            ["Information", relation.information],
-            ["Description", relation.description],
-            ["Metadata", relation.metadata],
+            ["Information", displayText(relation.information)],
+            ["Description", displayText(relation.description)],
+            ["Metadata", displayText(relation.metadata)],
             ["HITL", relation.pendingHitl ? `${relation.pendingOperation || "pending"} by ${relation.ingestedBy || "unknown"}` : ""]
           ])
         },
@@ -77995,13 +78109,13 @@ function MutationContent({ mutation }) {
           " node"
         ] }),
         `: ${node.label || displayNameFromIdentifier2(node.name || node.id)}`,
-        node.description && /* @__PURE__ */ u3("div", { children: node.description }),
-        node.metadata && /* @__PURE__ */ u3("div", { children: node.metadata })
+        node.description && /* @__PURE__ */ u3("div", { class: "multiline-text", children: displayText(node.description) }),
+        node.metadata && /* @__PURE__ */ u3("div", { class: "multiline-text", children: displayText(node.metadata) })
       ] }, `node-${node.id ?? node.name}-${index2}`)),
       nodeDeletes.map((node, index2) => /* @__PURE__ */ u3("div", { class: "triplet", children: [
         /* @__PURE__ */ u3("strong", { children: "Deleted node" }),
         `: ${nodeLabel2(node.name || node.id)}`,
-        node.metadata && /* @__PURE__ */ u3("div", { children: node.metadata })
+        node.metadata && /* @__PURE__ */ u3("div", { class: "multiline-text", children: displayText(node.metadata) })
       ] }, `node-delete-${node.id ?? node.name}-${index2}`)),
       relations.map((relation, index2) => {
         const triplet = triplets[index2];
@@ -78017,9 +78131,9 @@ function MutationContent({ mutation }) {
             ` ${relationLabel2(relation.relation)} `,
             /* @__PURE__ */ u3("strong", { children: targetLabel })
           ] }),
-          relation.information && /* @__PURE__ */ u3("div", { children: relation.information }),
-          relation.description && /* @__PURE__ */ u3("div", { children: relation.description }),
-          relation.metadata && /* @__PURE__ */ u3("div", { children: relation.metadata })
+          relation.information && /* @__PURE__ */ u3("div", { class: "multiline-text", children: displayText(relation.information) }),
+          relation.description && /* @__PURE__ */ u3("div", { class: "multiline-text", children: displayText(relation.description) }),
+          relation.metadata && /* @__PURE__ */ u3("div", { class: "multiline-text", children: displayText(relation.metadata) })
         ] }, `relation-${relation.id ?? index2}`);
       }),
       relationDeletes.map((relation, index2) => /* @__PURE__ */ u3("div", { class: "triplet", children: [
@@ -78359,7 +78473,7 @@ function createNodeDraft(node) {
     label: node?.label ?? "",
     name: node?.name ?? "",
     type: node?.type ?? "concept",
-    description: node?.description ?? ""
+    description: displayText(node?.description)
   };
 }
 function createRelationDraft(relation) {
@@ -78367,8 +78481,8 @@ function createRelationDraft(relation) {
     sourceId: relation?.sourceId ?? "",
     targetId: relation?.targetId ?? "",
     relation: relation?.relation ?? "relates_to",
-    information: relation?.information ?? "",
-    description: relation?.description ?? ""
+    information: displayText(relation?.information),
+    description: displayText(relation?.description)
   };
 }
 function NodeForm({
@@ -78512,7 +78626,7 @@ function DetailPanel({
       ] }),
       selectedNode.metadata && /* @__PURE__ */ u3("div", { class: "detail-kv", children: [
         /* @__PURE__ */ u3("span", { children: "Metadata" }),
-        /* @__PURE__ */ u3("strong", { children: selectedNode.metadata })
+        /* @__PURE__ */ u3("strong", { class: "multiline-text", children: displayText(selectedNode.metadata) })
       ] }),
       /* @__PURE__ */ u3(
         NodeForm,
@@ -78554,7 +78668,7 @@ function DetailPanel({
       ] }) }),
       selectedRelation.metadata && /* @__PURE__ */ u3("div", { class: "detail-kv", children: [
         /* @__PURE__ */ u3("span", { children: "Metadata" }),
-        /* @__PURE__ */ u3("strong", { children: selectedRelation.metadata })
+        /* @__PURE__ */ u3("strong", { class: "multiline-text", children: displayText(selectedRelation.metadata) })
       ] }),
       /* @__PURE__ */ u3(
         RelationForm,

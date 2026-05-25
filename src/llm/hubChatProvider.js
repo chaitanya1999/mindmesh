@@ -62,7 +62,7 @@ export function extractHubChatContent(body) {
 }
 
 export class HubChatProvider {
-	constructor({ baseUrl, apiKey, model, extractionFormat = "json", temperature = null }) {
+	constructor({ baseUrl, apiKey, model, temperature = null }) {
 		if (!baseUrl) {
 			throw new Error("Missing Hub LLM base URL. Set KG_HUB_LLM_BASE_URL or llm.hub.baseUrl.");
 		}
@@ -78,7 +78,6 @@ export class HubChatProvider {
 		this.baseUrl = trimTrailingSlash(baseUrl);
 		this.apiKey = apiKey;
 		this.model = model;
-		this.extractionFormat = extractionFormat;
 		this.temperature = temperature;
 	}
 
@@ -131,7 +130,7 @@ export class HubChatProvider {
 		debugLogger?.section("Raw LLM Extraction Response", responseText);
 
 		return {
-			graph: parseGraphExtraction(responseText, { format: this.extractionFormat }),
+			graph: parseGraphExtraction(responseText),
 			rawResponse: responseText,
 		};
 	}

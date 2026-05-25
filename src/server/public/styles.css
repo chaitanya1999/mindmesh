@@ -2232,6 +2232,10 @@ button:focus-visible {
 	color: var(--muted);
 }
 
+.multiline-text {
+	white-space: pre-line !important;
+}
+
 .direction-badge {
 	display: inline-grid;
 	place-items: center;

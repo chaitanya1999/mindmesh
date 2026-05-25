@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { normalizeGraphPayload, parseGraphExtraction, toSnakeCase } from "./graphPayload.js";
+import { normalizeGraphPayload, parseGraphExtraction, toSnakeCase, encodePipelineField } from "./graphPayload.js";
 import { countReviewSignals } from "./reviewSignals.js";
 import { createDebugLogger } from "../logging/debugLogger.js";
 import { buildExtractionPrompt } from "../prompts/promptRegistry.js";
@@ -198,7 +198,7 @@ function reconcileExtractionWithPendingHitl(extractedGraph, pendingHitl) {
 }
 
 function safePipeField(value) {
-	return String(value ?? "").replaceAll("|", " ").trim();
+	return encodePipelineField(value);
 }
 
 function graphRecordLine(recordType, fields) {
@@ -324,7 +324,7 @@ export class IngestionService {
 			}
 
 			try {
-				const extractedGraph = parseGraphExtraction(llmResponse, { format: this.prompts.extractionFormat });
+				const extractedGraph = parseGraphExtraction(llmResponse);
 				const graphPayload = normalizeGraphPayload(extractedGraph, {
 					schema: graphSchema,
 					autoApplySuggestions: this.prompts.schemaAutoApplySuggestions,
@@ -580,7 +580,6 @@ export class IngestionService {
 				source,
 				userName: userName || this.ingestion.hitlDefaultUserName,
 				ingestionMode: this.ingestion.mode,
-				extractionFormat: this.prompts.extractionFormat,
 				schemaAutoApplySuggestions: this.prompts.schemaAutoApplySuggestions,
 				schemaPath: graphSchema.path,
 				ingestContextEnabled: this.ingestion.contextEnabled,
@@ -627,9 +626,7 @@ export class IngestionService {
 
 			if (this.ingestion.mode === "hitl") {
 				logIngest(debugLogger, "[ingest] HITL mode enabled; storing pending proposal in vector store.");
-				const hitlResponse = this.prompts.extractionFormat === "custom"
-					? customGraphResponseFromPayload(graphPayload)
-					: rawResponse;
+				const hitlResponse = customGraphResponseFromPayload(graphPayload);
 				const pendingProposal = await this.storeHitlProposal({
 					text,
 					source,

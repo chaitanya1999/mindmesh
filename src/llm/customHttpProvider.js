@@ -7,14 +7,12 @@ function buildPrompt({ systemPrompt, prompt }) {
 export class CustomHttpProvider {
 	constructor(customConfig) {
 		// console.log(customConfig);
-		let { subProvider, extractionFormat = "json" } = customConfig;
-		
+		let { subProvider } = customConfig;
 		this.customConfig = customConfig;
 		this.subProvider = subProvider;
 		this.subProviderConfig = customConfig[this.subProvider];
 		let endpoint = customConfig[subProvider].endpoint;
-		this.extractionFormat = extractionFormat;
-		
+        
 		if (!endpoint) {
 			throw new Error(`Missing custom LLM endpoint. Subprovider - ${subProvider}`);
 		}
@@ -123,7 +121,7 @@ export class CustomHttpProvider {
 		debugLogger?.section("Raw LLM Extraction Response", responseText);
 
 		return {
-			graph: parseGraphExtraction(responseText, { format: this.extractionFormat }),
+			graph: parseGraphExtraction(responseText),
 			rawResponse: responseText,
 		};
 	}

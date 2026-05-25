@@ -14,15 +14,10 @@ function readPrompt(filePath, fallback) {
 }
 
 export function loadPrompts(config) {
-	const extractionFormat = config.prompts.extractionFormat ?? "json";
 	const graphSchema = loadGraphSchema(config);
 	const schemaCatalog = formatSchemaCatalog(graphSchema);
-	const extractionSystemPath = extractionFormat === "custom"
-		? config.prompts.extractionCustomSystemPath
-		: config.prompts.extractionSystemPath;
-	const extractionSystemFallback = extractionFormat === "custom"
-		? "Extract graph nodes and relations using the custom line syntax."
-		: "Extract graph nodes and relations as strict JSON.";
+	const extractionSystemPath = config.prompts.extractionCustomSystemPath;
+	const extractionSystemFallback = "Extract graph nodes and relations using the custom line syntax.";
 	const extractionSystemTemplate = readPrompt(
 		extractionSystemPath,
 		extractionSystemFallback,
@@ -34,7 +29,6 @@ export function loadPrompts(config) {
 			.replaceAll(EXISTING_GRAPH_CONTEXT_PLACEHOLDER, "No existing graph context was retrieved.")
 			.replaceAll(USER_INPUT_PLACEHOLDER, ""),
 		extractionSystemTemplate,
-		extractionFormat,
 		answerSystem: readPrompt(
 			config.prompts.answerSystemPath,
 			"Answer using only the supplied graph context.",

@@ -1,7 +1,6 @@
 {
 	"llm": {
 		"provider": "gemini",
-		"extractionFormat": "json",
 		"gemini": {
 			"apiKey": "paste-your-api-key-here",
 			"model": "gemini-2.5-flash"
@@ -88,7 +87,6 @@
 		"scopes": ["ingest", "ask"]
 	},
 	"prompts": {
-		"extractionSystemPath": "./prompts/extraction-system.md",
 		"extractionCustomSystemPath": "./prompts/extraction-system-custom.md",
 		"answerSystemPath": "./prompts/answer-system.md",
 		"contextFormatPath": "./prompts/context-format.md",

@@ -319,23 +319,81 @@ export function normalizeGraphPayload(payload, { schema = null, autoApplySuggest
 	};
 }
 
-export function extractJsonObject(text) {
-	const raw = String(text ?? "").trim();
-	const fencedMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-	const candidate = fencedMatch ? fencedMatch[1].trim() : raw;
+// Pipeline parsing utilities for custom extraction format.
+export function splitPipelineFields(line) {
+	const parts = [];
+	let current = "";
+	for (let i = 0; i < line.length; i += 1) {
+		const ch = line[i];
 
-	try {
-		return JSON.parse(candidate);
-	} catch {
-		const start = candidate.indexOf("{");
-		const end = candidate.lastIndexOf("}");
-
-		if (start >= 0 && end > start) {
-			return JSON.parse(candidate.slice(start, end + 1));
+		if (ch === "\\" && i + 1 < line.length) {
+			// keep escape sequences intact for decoding later
+			current += ch + line[i + 1];
+			i += 1;
+			continue;
 		}
 
-		throw new Error("LLM response did not contain valid graph JSON.");
+		if (ch === "|") {
+			parts.push(current.trim());
+			current = "";
+			continue;
+		}
+
+		current += ch;
 	}
+
+	parts.push(current.trim());
+	return parts;
+}
+
+export function decodePipelineField(value) {
+	if (value === undefined || value === null) {
+		return "";
+	}
+
+	const text = String(value);
+	let decoded = "";
+
+	for (let index = 0; index < text.length; index += 1) {
+		const char = text[index];
+		if (char !== "\\" || index + 1 >= text.length) {
+			decoded += char;
+			continue;
+		}
+
+		const escaped = text[index + 1];
+		index += 1;
+
+		if (escaped === "n") {
+			decoded += "\n";
+		} else if (escaped === "r") {
+			decoded += "\r";
+		} else if (escaped === "t") {
+			decoded += "\t";
+		} else if (escaped === "|") {
+			decoded += "|";
+		} else if (escaped === "\\") {
+			decoded += "\\";
+		} else {
+			decoded += `\\${escaped}`;
+		}
+	}
+
+	return decoded.trim();
+}
+
+export function encodePipelineField(value) {
+	if (value === undefined || value === null) {
+		return "";
+	}
+
+	return String(value)
+		.replace(/\\/g, "\\\\")
+		.replace(/\|/g, "\\|")
+		.replace(/\r/g, "\\r")
+		.replace(/\n/g, "\\n")
+		.replace(/\t/g, "\\t")
+		.trim();
 }
 
 function stripFence(text) {
@@ -388,13 +446,15 @@ export function extractCustomGraph(text) {
 	const skippedLines = [];
 
 	for (const [index, line] of raw.split(/\r?\n/).entries()) {
-		const trimmed = line.trim().replace(/^[-*]\s+/, "");
+		const trimmedLine = line.trim().replace(/^[-*]\s+/, "");
+		const trimmed = String(trimmedLine);
 
 		if (!trimmed || trimmed.startsWith("#") || trimmed === "GRAPH" || trimmed === "NODES" || trimmed === "RELATIONS") {
 			continue;
 		}
 
-		const parts = trimmed.split("|").map(cleanField);
+		const rawParts = splitPipelineFields(trimmed);
+		const parts = rawParts.map((p) => decodePipelineField(p));
 		const recordType = parts[0]?.toUpperCase();
 
 		if (recordType === "NODE" || recordType === "NODE_CREATE" || recordType === "NODE_UPDATE") {
@@ -509,18 +569,6 @@ export function extractCustomGraph(text) {
 	return payload;
 }
 
-export function parseGraphExtraction(text, { format = "json" } = {}) {
-	if (format === "json") {
-		if (text && typeof text === "object") {
-			return text;
-		}
-
-		return extractJsonObject(text);
-	}
-
-	if (format === "custom") {
-		return extractCustomGraph(text);
-	}
-
-	throw new Error(`Unsupported graph extraction format: ${format}`);
+export function parseGraphExtraction(text) {
+	return extractCustomGraph(text);
 }

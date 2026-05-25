@@ -3,6 +3,60 @@ export const HITL_CHIP_DENSITY_KEY = "mindmesh.hitlChipDensity";
 const START_MARKERS = new Set(["<start#$#$>", "start#$#$"]);
 const END_MARKERS = new Set(["</end#$#$>", "<end#$#$>", "end#$#$"]);
 
+function decodePipelineField(value) {
+	if (value === undefined || value === null) {
+		return "";
+	}
+
+	const text = String(value);
+	let decoded = "";
+
+	for (let index = 0; index < text.length; index += 1) {
+		const char = text[index];
+		if (char !== "\\" || index + 1 >= text.length) {
+			decoded += char;
+			continue;
+		}
+
+		const escaped = text[index + 1];
+		index += 1;
+
+		if (escaped === "n") {
+			decoded += "\n";
+		} else if (escaped === "r") {
+			decoded += "\r";
+		} else if (escaped === "t") {
+			decoded += "\t";
+		} else if (escaped === "|") {
+			decoded += "|";
+		} else if (escaped === "\\") {
+			decoded += "\\";
+		} else {
+			decoded += `\\${escaped}`;
+		}
+	}
+
+	return decoded.trim();
+}
+
+export function displayPipelineText(value) {
+	return decodePipelineField(value);
+}
+
+function encodePipelineField(value) {
+	if (value === undefined || value === null) {
+		return "";
+	}
+
+	return String(value)
+		.replace(/\\/g, "\\\\")
+		.replace(/\|/g, "\\|")
+		.replace(/\r/g, "\\r")
+		.replace(/\n/g, "\\n")
+		.replace(/\t/g, "\\t")
+		.trim();
+}
+
 export function truncateText(value, length = 34) {
 	const text = String(value ?? "");
 	return text.length > length ? `${text.slice(0, length - 1)}...` : text;
@@ -62,11 +116,30 @@ export function pipelineEditorText(text) {
 }
 
 function pipelineParts(line) {
-	return String(line ?? "").split("|").map((part) => part.trim());
+	// split respecting escaped pipes and decode escape sequences
+	const raw = String(line ?? "");
+	const parts = [];
+	let cur = "";
+	for (let i = 0; i < raw.length; i += 1) {
+		const ch = raw[i];
+		if (ch === "\\" && i + 1 < raw.length) {
+			cur += ch + raw[i + 1];
+			i += 1;
+			continue;
+		}
+		if (ch === "|") {
+			parts.push(cur.trim());
+			cur = "";
+			continue;
+		}
+		cur += ch;
+	}
+	parts.push(cur.trim());
+	return parts.map((p) => decodePipelineField(p));
 }
 
 function safePipelineField(value) {
-	return String(value ?? "").replaceAll("|", " ").trim();
+	return encodePipelineField(value);
 }
 
 function pipelineRecordLine(recordType, fields) {

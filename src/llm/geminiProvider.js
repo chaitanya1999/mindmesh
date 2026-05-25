@@ -2,13 +2,12 @@ import { GoogleGenAI } from "@google/genai";
 import { parseGraphExtraction } from "../ingestion/graphPayload.js";
 
 export class GeminiProvider {
-	constructor({ apiKey, model, extractionFormat = "json" }) {
+	constructor({ apiKey, model }) {
 		if (!apiKey) {
 			throw new Error("Missing Gemini API key. Set GEMINI_API_KEY, GOOGLE_API_KEY, or config.json apiKey.");
 		}
 
 		this.model = model;
-		this.extractionFormat = extractionFormat;
 		this.ai = new GoogleGenAI({ apiKey });
 	}
 
@@ -31,7 +30,7 @@ export class GeminiProvider {
 		debugLogger?.section("Raw LLM Extraction Response", responseText);
 
 		return {
-			graph: parseGraphExtraction(responseText, { format: this.extractionFormat }),
+			graph: parseGraphExtraction(responseText),
 			rawResponse: responseText,
 		};
 	}

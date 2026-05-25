@@ -63,7 +63,7 @@ export function extractOllamaText(body) {
 }
 
 export class OllamaProvider {
-	constructor({ baseUrl, model, extractionFormat = "json", think = false, temperature = null }) {
+	constructor({ baseUrl, model, think = false, temperature = null }) {
 		if (!baseUrl) {
 			throw new Error("Missing Ollama base URL. Set OLLAMA_BASE_URL or llm.ollama.baseUrl.");
 		}
@@ -74,7 +74,6 @@ export class OllamaProvider {
 
 		this.baseUrl = trimTrailingSlash(baseUrl);
 		this.model = model;
-		this.extractionFormat = extractionFormat;
 		this.think = normalizeThink(think);
 		this.temperature = temperature;
 	}
@@ -133,7 +132,7 @@ export class OllamaProvider {
 		debugLogger?.section("Raw LLM Extraction Response", responseText);
 
 		return {
-			graph: parseGraphExtraction(responseText, { format: this.extractionFormat }),
+			graph: parseGraphExtraction(responseText),
 			rawResponse: responseText,
 		};
 	}

@@ -110,7 +110,7 @@ Supported environment variables:
 
 | Area | Variables |
 | --- | --- |
-| LLM | `KG_LLM_PROVIDER`, `KG_EXTRACTION_FORMAT`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_MODEL`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `KG_CUSTOM_LLM_ENDPOINT`, `KG_HUB_LLM_BASE_URL`, `KG_HUB_LLM_API_KEY`, `KG_HUB_LLM_MODEL`, `KG_HUB_LLM_TEMPERATURE` |
+| LLM | `KG_LLM_PROVIDER`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_MODEL`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `KG_CUSTOM_LLM_ENDPOINT`, `KG_HUB_LLM_BASE_URL`, `KG_HUB_LLM_API_KEY`, `KG_HUB_LLM_MODEL`, `KG_HUB_LLM_TEMPERATURE` |
 | Embedding | `KG_EMBEDDING_PROVIDER`, `GEMINI_EMBEDDING_MODEL`, `GEMINI_EMBEDDING_DIMENSIONS` |
 | Graph | `KG_GRAPH_PROVIDER`, `NEO4J_INSTANCE`, `NEO4J_URI`, `NEO4J_DATABASE`, `NEO4J_USERNAME`, `NEO4J_PASSWORD` |
 | Vector | `KG_VECTOR_PROVIDER`, `CHROMA_URL`, `CHROMA_TENANT`, `CHROMA_DATABASE`, `CHROMA_NODE_COLLECTION`, `CHROMA_RELATION_COLLECTION` |
@@ -118,7 +118,7 @@ Supported environment variables:
 | Ingestion context | `KG_INGEST_CONTEXT_ENABLED`, `KG_INGEST_CONTEXT_TOP_K`, `KG_INGEST_CONTEXT_DEPTH` |
 | Schema | `KG_SCHEMA_PATH`, `KG_SCHEMA_AUTO_APPLY_SUGGESTIONS` |
 | Logging | `KG_DEBUG_LOG`, `KG_DEBUG_LOG_DIR`, `KG_DEBUG_LOG_SCOPES` |
-| Prompts | `KG_EXTRACTION_PROMPT_PATH`, `KG_CUSTOM_EXTRACTION_PROMPT_PATH`, `KG_ANSWER_PROMPT_PATH`, `KG_CONTEXT_PROMPT_PATH` |
+| Prompts | `KG_CUSTOM_EXTRACTION_PROMPT_PATH`, `KG_ANSWER_PROMPT_PATH`, `KG_CONTEXT_PROMPT_PATH` |
 
 Only the LLM provider names `gemini`, `ollama`, `custom`, and `hub`; graph/vector provider names `neo4j`/`chroma`; and embedding provider names `gemini`/`chroma` are currently implemented.
 
@@ -133,7 +133,7 @@ Ingestion is schema-aware. The schema registry lives at `/schema/graphSchema.jso
 - fallback node and relationship types
 - short descriptions that are injected into the extraction prompt
 
-For local/smaller LLMs, prefer `KG_EXTRACTION_FORMAT=custom`. The custom extraction syntax supports schema suggestions without requiring JSON:
+The custom extraction syntax supports schema suggestions without requiring JSON:
 
 ```text
 NODE_TYPE_SUGGESTION|type_name|description|reason
@@ -325,7 +325,6 @@ Use the hackathon hub provider:
 
 ```powershell
 $env:KG_LLM_PROVIDER="hub"
-$env:KG_EXTRACTION_FORMAT="custom"
 $env:KG_HUB_LLM_API_KEY="your-hackathon-hub-key"
 $env:KG_HUB_LLM_MODEL="gpt-4.1-nano"
 npm run kg:test-llm
@@ -361,54 +360,9 @@ Priority order:
 
 ## Graph Extraction Contract
 
-Set `llm.extractionFormat` or `KG_EXTRACTION_FORMAT` to switch extraction parsing:
+The ingestion pipeline now uses a single, custom line-oriented extraction format. Extraction prompt files are templates. Ingestion renders `{{GRAPH_SCHEMA}}`, `{{EXISTING_GRAPH_CONTEXT}}`, and `{{USER_INPUT}}` into the custom extraction prompt before calling the LLM. Existing graph context is retrieved from Chroma and expanded through Neo4j; it is intended for identity resolution, node-name reuse, disambiguation, and avoiding duplicate facts. New graph facts should still come from `{{USER_INPUT}}`.
 
-- `json`: use the strict JSON prompt and parser.
-- `custom`: use the custom line syntax prompt and parser. This is useful for smaller local instruct models that often produce invalid JSON.
-
-Extraction prompt files are templates. Ingestion renders `{{GRAPH_SCHEMA}}`, `{{EXISTING_GRAPH_CONTEXT}}`, and `{{USER_INPUT}}` into the selected extraction prompt before calling the LLM. Existing graph context is retrieved from Chroma and expanded through Neo4j; it is intended for identity resolution, node-name reuse, disambiguation, and avoiding duplicate facts. New graph facts should still come from `{{USER_INPUT}}`.
-
-The JSON extraction prompt requires the LLM to return only JSON:
-
-```json
-{
-  "nodes": [
-    {
-      "label": "Human readable name",
-      "name": "lowercase_snake_case_name",
-      "type": "concept",
-      "description": "Meaningful source-backed detail, disambiguation, or empty string"
-    }
-  ],
-  "relations": [
-    {
-      "sourceName": "source_node_name",
-      "targetName": "target_node_name",
-      "relation": "lowercase_snake_case_relation",
-      "information": "Short extra qualifier, condition, timing, scope, state, reason, metadata, or empty string",
-      "description": "Longer source-backed explanation, or empty string"
-    }
-  ],
-  "schemaSuggestions": {
-    "nodeTypes": [
-      {
-        "name": "lowercase_snake_case_type",
-        "description": "Short description of the proposed node type.",
-        "reason": "Why no existing node type fits."
-      }
-    ],
-    "relationshipTypes": [
-      {
-        "name": "lowercase_snake_case_relation",
-        "description": "Short description of the proposed relationship type.",
-        "reason": "Why no existing relationship type fits."
-      }
-    ]
-  }
-}
-```
-
-`extractJsonObject()` accepts raw JSON or fenced JSON and throws if no valid JSON object can be parsed. `schemaSuggestions` is optional.
+Records are one-per-line using `|` as an unescaped field separator. To include special characters inside a field you must use backslash escapes: `\\n` for newline, `\\r` for carriage return, `\\t` for tab, `\\|` for a literal pipe, and `\\\\` for a literal backslash. The parser decodes these escapes into their runtime characters.
 
 The custom extraction prompt asks the model to wrap records in explicit demarcators. The parser consumes only the text inside the first delimited block when present, so extra model commentary outside the block is ignored:
 
@@ -433,7 +387,7 @@ RELATION|ekyc_screen|pan_api|uses|during identity verification|Triggered during 
 
 For relationships, `sourceName`, `relation`, and `targetName` already express the core fact. `information` should contain only extra qualifiers such as conditions, timing, scope, state, or reason; leave it empty when it would merely repeat the relation. `description` is reserved for longer source-backed explanation. Node descriptions should add useful context or disambiguation, not restate the label/type.
 
-`extractCustomGraph()` accepts raw, fenced, or demarcated custom graph records. When demarcators are present, text outside them is ignored; otherwise it falls back to parsing the full response. It ignores blank/header lines, captures schema suggestion records, and throws if no valid records can be parsed. `parseGraphExtraction()` switches between JSON and custom parsing.
+`extractCustomGraph()` accepts raw, fenced, or demarcated custom graph records. When demarcators are present, text outside them is ignored; otherwise it falls back to parsing the full response. It ignores blank/header lines, captures schema suggestion records, and throws if no valid records can be parsed.
 
 `normalizeGraphPayload()` then:
 

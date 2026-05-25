@@ -1,7 +1,6 @@
 {
 	"llm": {
 		"provider": "custom",
-		"extractionFormat": "custom",
 		"gemini": {
 			"apiKey": "",
 			"model": "gemma-4-31b-it"
