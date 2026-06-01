@@ -84,25 +84,12 @@ function addImplicitSuggestionsFromPayload(payload, schema, schemaSuggestions) {
 	}
 }
 
-function buildSchemaRules(schema, suggestions, autoApplySuggestions) {
+function buildSchemaRules(schema) {
 	const fallbackNodeType = toSnakeCase(schema?.fallbacks?.nodeType || "concept") || "concept";
 	const fallbackRelationshipType = toSnakeCase(schema?.fallbacks?.relationshipType || "relates_to") || "relates_to";
 	const enforceSchema = Boolean(schema);
 	const allowedNodeTypes = new Set((schema?.nodeTypes ?? []).map((entry) => toSnakeCase(entry.name)).filter(Boolean));
 	const allowedRelationshipTypes = new Set((schema?.relationshipTypes ?? []).map((entry) => toSnakeCase(entry.name)).filter(Boolean));
-
-	allowedNodeTypes.add(fallbackNodeType);
-	allowedRelationshipTypes.add(fallbackRelationshipType);
-
-	if (autoApplySuggestions) {
-		for (const suggestion of suggestions.nodeTypes) {
-			allowedNodeTypes.add(suggestion.name);
-		}
-
-		for (const suggestion of suggestions.relationshipTypes) {
-			allowedRelationshipTypes.add(suggestion.name);
-		}
-	}
 
 	return {
 		enforceSchema,
@@ -113,34 +100,23 @@ function buildSchemaRules(schema, suggestions, autoApplySuggestions) {
 	};
 }
 
-function normalizeNodeType(rawType, schemaRules, warnings) {
+function normalizeNodeType(rawType, schemaRules) {
 	const type = toSnakeCase(rawType || schemaRules.fallbackNodeType) || schemaRules.fallbackNodeType;
-
-	if (!schemaRules.enforceSchema) {
-		return type;
-	}
-
-	if (schemaRules.allowedNodeTypes.has(type)) {
-		return type;
-	}
-
-	warnings.push(`Unknown node type "${type}" was replaced with "${schemaRules.fallbackNodeType}".`);
-	return schemaRules.fallbackNodeType;
+	return type;
 }
 
-function normalizeRelationshipType(rawRelation, schemaRules, warnings) {
+function normalizeRelationshipType(rawRelation, schemaRules) {
 	const relation = toSnakeCase(rawRelation || schemaRules.fallbackRelationshipType) || schemaRules.fallbackRelationshipType;
+	return relation;
+}
 
-	if (!schemaRules.enforceSchema) {
-		return relation;
-	}
-
-	if (schemaRules.allowedRelationshipTypes.has(relation)) {
-		return relation;
-	}
-
-	warnings.push(`Unknown relationship type "${relation}" was replaced with "${schemaRules.fallbackRelationshipType}".`);
-	return schemaRules.fallbackRelationshipType;
+function schemaViolation(kind, value, message, record = {}) {
+	return {
+		kind,
+		value,
+		message,
+		record,
+	};
 }
 
 function preferText(existingValue, nextValue) {
@@ -192,11 +168,12 @@ function mergeNode(existingNode, nextNode, schemaRules) {
 export function normalizeGraphPayload(payload, { schema = null, autoApplySuggestions = false } = {}) {
 	const nodeMap = new Map();
 	const warnings = [...(payload.warnings ?? [])];
+	const schemaViolations = [];
 	const schemaSuggestions = normalizeSuggestions(payload.schemaSuggestions);
-	if (schema && autoApplySuggestions) {
+	if (schema) {
 		addImplicitSuggestionsFromPayload(payload, schema, schemaSuggestions);
 	}
-	const schemaRules = buildSchemaRules(schema, schemaSuggestions, autoApplySuggestions);
+	const schemaRules = buildSchemaRules(schema);
 
 	for (const rawNode of payload.nodes ?? []) {
 		const name = normalizeNodeName(rawNode.name || rawNode.label);
@@ -204,11 +181,18 @@ export function normalizeGraphPayload(payload, { schema = null, autoApplySuggest
 			continue;
 		}
 
+		const nodeType = normalizeNodeType(rawNode.type, schemaRules);
+		if (schemaRules.enforceSchema && !schemaRules.allowedNodeTypes.has(nodeType)) {
+			const message = `Node "${name}" uses unknown node type "${nodeType}".`;
+			warnings.push(message);
+			schemaViolations.push(schemaViolation("nodeType", nodeType, message, { name, label: rawNode.label || labelFromName(name) }));
+		}
+
 		const normalizedNode = {
 			id: rawNode.id || `node:${name}`,
 			label: rawNode.label || labelFromName(name),
 			name,
-			type: normalizeNodeType(rawNode.type, schemaRules, warnings),
+			type: nodeType,
 			description: rawNode.description || "",
 			metadata: rawNode.metadata || "",
 			operation: rawNode.operation || "upsert",
@@ -221,13 +205,23 @@ export function normalizeGraphPayload(payload, { schema = null, autoApplySuggest
 	for (const rawRelation of payload.relations ?? []) {
 		const sourceName = normalizeNodeName(rawRelation.sourceName || rawRelation.source || rawRelation.sourceId);
 		const targetName = normalizeNodeName(rawRelation.targetName || rawRelation.target || rawRelation.targetId);
-		const relation = normalizeRelationshipType(rawRelation.relation, schemaRules, warnings);
+		const relation = normalizeRelationshipType(rawRelation.relation, schemaRules);
 
 		if (!sourceName || !targetName) {
 			continue;
 		}
 
+		if (schemaRules.enforceSchema && !schemaRules.allowedRelationshipTypes.has(relation)) {
+			const message = `Relation "${sourceName}" -> "${targetName}" uses unknown relationship type "${relation}".`;
+			warnings.push(message);
+			schemaViolations.push(schemaViolation("relationshipType", relation, message, { sourceName, targetName, relation }));
+		}
+
 		if (!nodeMap.has(sourceName)) {
+			if (schemaRules.enforceSchema) {
+				const message = `Relation endpoint "${sourceName}" is missing a node record with an approved type.`;
+				warnings.push(message);
+			}
 			nodeMap.set(sourceName, {
 				id: `node:${sourceName}`,
 				label: labelFromName(sourceName),
@@ -240,6 +234,10 @@ export function normalizeGraphPayload(payload, { schema = null, autoApplySuggest
 		}
 
 		if (!nodeMap.has(targetName)) {
+			if (schemaRules.enforceSchema) {
+				const message = `Relation endpoint "${targetName}" is missing a node record with an approved type.`;
+				warnings.push(message);
+			}
 			nodeMap.set(targetName, {
 				id: `node:${targetName}`,
 				label: labelFromName(targetName),
@@ -315,6 +313,7 @@ export function normalizeGraphPayload(payload, { schema = null, autoApplySuggest
 		nodeDeletes: [...nodeDeleteMap.values()],
 		relationDeletes: [...relationDeleteMap.values()],
 		schemaSuggestions,
+		schemaViolations,
 		schemaWarnings: [...new Set(warnings)],
 	};
 }

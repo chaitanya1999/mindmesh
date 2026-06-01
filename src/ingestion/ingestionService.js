@@ -52,6 +52,10 @@ function countSchemaSuggestions(schemaSuggestions = {}) {
 	return (schemaSuggestions.nodeTypes?.length ?? 0) + (schemaSuggestions.relationshipTypes?.length ?? 0);
 }
 
+function hasSchemaViolations(graphPayload) {
+	return (graphPayload.schemaViolations?.length ?? 0) > 0;
+}
+
 function compact(value) {
 	return String(value ?? "").trim();
 }
@@ -441,6 +445,12 @@ export class IngestionService {
 	}
 
 	async applyGraphPayload(graphPayload, { source, debugLogger }) {
+		if (hasSchemaViolations(graphPayload)) {
+			const error = new Error(`Cannot apply graph payload with schema violations: ${graphPayload.schemaViolations.map((violation) => violation.message).join("; ")}`);
+			error.status = 400;
+			throw error;
+		}
+
 		const deletedNodeIds = new Set();
 		const deletedRelationIds = new Set();
 
@@ -536,8 +546,9 @@ export class IngestionService {
 			deletedNodeIds: [],
 			deletedRelationIds: [],
 			schemaSuggestions: graphPayload.schemaSuggestions,
+			schemaViolations: graphPayload.schemaViolations ?? [],
 			schemaWarnings: graphPayload.schemaWarnings,
-			persistedSchemaSuggestions: null,
+			persistedSchemaSuggestions: graphPayload.persistedSchemaSuggestions ?? null,
 		};
 	}
 
@@ -624,9 +635,17 @@ export class IngestionService {
 				`[ingest] Normalized payload has ${graphPayload.nodes.length} node upsert(s), ${graphPayload.relations.length} relation upsert(s), ${graphPayload.nodeDeletes.length} node delete(s), ${graphPayload.relationDeletes.length} relation delete(s), and ${graphPayload.schemaWarnings.length} schema warning(s).`,
 			);
 
-			if (this.ingestion.mode === "hitl") {
-				logIngest(debugLogger, "[ingest] HITL mode enabled; storing pending proposal in vector store.");
-				const hitlResponse = customGraphResponseFromPayload(graphPayload);
+			if (this.ingestion.mode === "hitl" || hasSchemaViolations(graphPayload)) {
+				logIngest(debugLogger, hasSchemaViolations(graphPayload)
+					? "[ingest] Schema violation detected; forcing HITL proposal instead of applying graph mutations."
+					: "[ingest] HITL mode enabled; storing pending proposal in vector store.");
+				if (hasSchemaViolations(graphPayload)) {
+					graphPayload.persistedSchemaSuggestions = persistGraphSchemaSuggestions(graphSchema, graphPayload.schemaSuggestions);
+					debugLogger.json("Persisted Schema Suggestions For HITL Review", graphPayload.persistedSchemaSuggestions);
+				}
+				const hitlResponse = rawResponse && rawExtractedGraph === extractedGraph
+					? rawResponse
+					: customGraphResponseFromPayload(graphPayload);
 				const pendingProposal = await this.storeHitlProposal({
 					text,
 					source,

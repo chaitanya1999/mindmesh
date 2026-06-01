@@ -15,3 +15,14 @@ Readme.md sync
 CLI structure causing issue ? maintainability issue ?
 
 spaces feature --- different knowledge spaces or like Projects. architecture required. separate customizable system prompt , DBs, Vector Collections , etc
+
+Leveraging KG -- agentic ASK -- template CYPHER queries for LLM to perform. Microsoft GraphRAG , microsoft graphrag BLOG techniques , AgentiGraph , flexible graphrag multi agent research paper.
+Leveraging Vector -- all systems worldwide use vectorRAG , inherent nature of brain is vector whereas notebooks and rest other tools act like Graph. Truly leveraging HybridRAG
+
+Past informmation versioning , queryable
+
+BM25 --- VVIMP
+
+IDEA ------ start with VectorRAG over documents. Users thumb -> info ingested into KG.
+
+Diffuse HITL , HITL & ingestion enhancements - agentic - successive prompt produce more triplet or modify existing HITL i.e. HITL itself assisted by AI not fully manual. === Lowering HITL friction.

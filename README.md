@@ -130,7 +130,6 @@ Ingestion is schema-aware. The schema registry lives at `/schema/graphSchema.jso
 - allowed relationship types
 - suggested node and relationship types pending human approval
 - required and optional node/relationship properties
-- fallback node and relationship types
 - short descriptions that are injected into the extraction prompt
 
 The custom extraction syntax supports schema suggestions without requiring JSON:
@@ -140,9 +139,9 @@ NODE_TYPE_SUGGESTION|type_name|description|reason
 RELATION_TYPE_SUGGESTION|relation_name|description|reason
 ```
 
-By default, suggestions are captured for visibility but the graph payload falls back to `concept` and `relates_to` for unknown types. Set `KG_SCHEMA_AUTO_APPLY_SUGGESTIONS=true` or `"autoApplySuggestions": true` in config to accept suggested types in the current ingest and add them to the approved schema arrays.
+Unknown node or relationship types are preserved in the proposed payload, recorded as schema violations, and forced into HITL review instead of being applied to the graph. This happens even when ingestion mode is `auto`; the reviewer must update the schema or edit the proposal to approved types before approval can apply mutations.
 
-When auto-apply is off, suggested types are persisted back into `schema/graphSchema.json` under:
+Suggested types are persisted back into `schema/graphSchema.json` under:
 
 ```json
 {
@@ -153,7 +152,7 @@ When auto-apply is off, suggested types are persisted back into `schema/graphSch
 }
 ```
 
-Approved schema terms belong in the top-level `nodeTypes` and `relationshipTypes` arrays. When auto-apply is on, current LLM suggestions are added there automatically; when auto-apply is off, future human-in-the-loop approval can promote entries from `suggestions` into those approved arrays.
+Approved schema terms belong in the top-level `nodeTypes` and `relationshipTypes` arrays. Suggested entries are review candidates only; they do not become valid graph types until promoted into the approved arrays.
 
 ## Debug Logging
 
@@ -393,10 +392,9 @@ For relationships, `sourceName`, `relation`, and `targetName` already express th
 
 - Converts node names, node types, and relation names to lowercase snake case.
 - Enforces the loaded graph schema when one is supplied.
-- Replaces unknown node or relationship types with configured fallbacks when suggestions are not auto-applied.
-- Persists new schema suggestions into `schema/graphSchema.json` under the `suggestions` section when auto-apply is off.
-- Promotes current-response schema suggestions into approved `nodeTypes` / `relationshipTypes` when auto-apply is on.
-- Allows current-response suggestions during normalization only when `KG_SCHEMA_AUTO_APPLY_SUGGESTIONS=true`.
+- Preserves unknown node or relationship types as schema violations so HITL can review the exact model output.
+- Persists unknown types into `schema/graphSchema.json` under the `suggestions` section for review.
+- Blocks graph application while schema violations are present.
 - Creates node IDs as `node:<name>` when no ID is provided.
 - Creates missing endpoint nodes for relations.
 - Creates relationship IDs as `rel:<12-char-sha1>` when no ID is provided.

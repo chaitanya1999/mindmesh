@@ -76507,7 +76507,8 @@ function snapWorkspaceWidth(value) {
 function normalizeGraph(graph) {
   return {
     nodes: graph?.nodes ?? [],
-    relations: graph?.relations ?? []
+    relations: graph?.relations ?? [],
+    schema: graph?.schema ?? null
   };
 }
 function graphStatsLabel(graph) {
@@ -76527,7 +76528,8 @@ function mergeGraph(currentGraph, nextGraph) {
   }
   return {
     nodes: [...nodeMap.values()],
-    relations: [...relationMap.values()]
+    relations: [...relationMap.values()],
+    schema: next3.schema ?? current.schema ?? null
   };
 }
 function createLinkCountByNodeId(nodes, relations) {
@@ -76556,7 +76558,8 @@ function replaceNode(graph, node) {
   const exists = current.nodes.some((entry) => entry.id === node.id);
   return {
     nodes: exists ? current.nodes.map((entry) => entry.id === node.id ? node : entry) : [node, ...current.nodes],
-    relations: current.relations
+    relations: current.relations,
+    schema: current.schema ?? null
   };
 }
 function replaceRelation(graph, relation) {
@@ -76564,21 +76567,24 @@ function replaceRelation(graph, relation) {
   const exists = current.relations.some((entry) => entry.id === relation.id);
   return {
     nodes: current.nodes,
-    relations: exists ? current.relations.map((entry) => entry.id === relation.id ? relation : entry) : [relation, ...current.relations]
+    relations: exists ? current.relations.map((entry) => entry.id === relation.id ? relation : entry) : [relation, ...current.relations],
+    schema: current.schema ?? null
   };
 }
 function removeNodeFromGraph(graph, nodeId) {
   const current = normalizeGraph(graph);
   return {
     nodes: current.nodes.filter((node) => node.id !== nodeId),
-    relations: current.relations.filter((relation) => relation.sourceId !== nodeId && relation.targetId !== nodeId)
+    relations: current.relations.filter((relation) => relation.sourceId !== nodeId && relation.targetId !== nodeId),
+    schema: current.schema ?? null
   };
 }
 function removeRelationFromGraph(graph, relationId) {
   const current = normalizeGraph(graph);
   return {
     nodes: current.nodes,
-    relations: current.relations.filter((relation) => relation.id !== relationId)
+    relations: current.relations.filter((relation) => relation.id !== relationId),
+    schema: current.schema ?? null
   };
 }
 function getGraphSize(container) {
@@ -78067,7 +78073,9 @@ function buildIngestMutation(result) {
     relationDeletes: result.relationDeletes ?? [],
     deletedNodeIds: result.deletedNodeIds ?? [],
     deletedRelationIds: result.deletedRelationIds ?? [],
-    triplets: result.triplets ?? []
+    triplets: result.triplets ?? [],
+    schemaViolations: result.schemaViolations ?? [],
+    schemaWarnings: result.schemaWarnings ?? []
   };
 }
 function MutationContent({ mutation }) {
@@ -78076,6 +78084,7 @@ function MutationContent({ mutation }) {
   const nodeDeletes = mutation?.nodeDeletes ?? [];
   const relationDeletes = mutation?.relationDeletes ?? [];
   const triplets = mutation?.triplets ?? [];
+  const schemaViolations = mutation?.schemaViolations ?? [];
   const totalMutations = nodes.length + relations.length + nodeDeletes.length + relationDeletes.length;
   const isPendingHitl = mutation?.status === "pending_hitl";
   const summaryParts = [
@@ -78102,6 +78111,10 @@ function MutationContent({ mutation }) {
       summaryParts.join(", "),
       "."
     ] }),
+    schemaViolations.length > 0 && /* @__PURE__ */ u3("div", { class: "triplet-list", children: schemaViolations.map((violation, index2) => /* @__PURE__ */ u3("div", { class: "triplet", children: [
+      /* @__PURE__ */ u3("strong", { children: "Schema review required" }),
+      /* @__PURE__ */ u3("div", { children: violation.message || String(violation) })
+    ] }, `schema-violation-${index2}`)) }),
     totalMutations > 0 && /* @__PURE__ */ u3("div", { class: "triplet-list", children: [
       nodes.map((node, index2) => /* @__PURE__ */ u3("div", { class: "triplet", children: [
         /* @__PURE__ */ u3("strong", { children: [
@@ -78489,6 +78502,7 @@ function NodeForm({
   deleteLabel = "Delete",
   draft: controlledDraft,
   node,
+  nodeTypes = [],
   onCancel,
   onDelete,
   onDraftChange,
@@ -78514,7 +78528,10 @@ function NodeForm({
   return /* @__PURE__ */ u3("form", { class: "edit-form", onSubmit: handleSubmit, children: [
     /* @__PURE__ */ u3(Field, { label: "Label", children: /* @__PURE__ */ u3("input", { value: draft.label, onInput: (event) => updateField("label", event.currentTarget.value), required: true }) }),
     /* @__PURE__ */ u3(Field, { label: "Name", children: /* @__PURE__ */ u3("input", { value: draft.name, onInput: (event) => updateField("name", event.currentTarget.value), placeholder: "auto_from_label" }) }),
-    /* @__PURE__ */ u3(Field, { label: "Type", children: /* @__PURE__ */ u3("input", { value: draft.type, onInput: (event) => updateField("type", event.currentTarget.value), required: true }) }),
+    /* @__PURE__ */ u3(Field, { label: "Type", children: [
+      /* @__PURE__ */ u3("datalist", { id: "node-type-options", children: nodeTypes.map((type) => /* @__PURE__ */ u3("option", { value: type, children: type }, type)) }),
+      /* @__PURE__ */ u3("input", { list: "node-type-options", value: draft.type, onInput: (event) => updateField("type", event.currentTarget.value), required: true })
+    ] }),
     /* @__PURE__ */ u3(Field, { label: "Description", children: /* @__PURE__ */ u3("textarea", { rows: "4", value: draft.description, onInput: (event) => updateField("description", event.currentTarget.value) }) }),
     /* @__PURE__ */ u3("div", { class: "form-actions", children: [
       /* @__PURE__ */ u3("button", { type: "submit", class: "primary", children: saveLabel }),
@@ -78527,6 +78544,7 @@ function RelationForm({
   deleteLabel = "Delete",
   draft: controlledDraft,
   graph,
+  relationshipTypes = [],
   onCancel,
   onDelete,
   onDraftChange,
@@ -78554,7 +78572,10 @@ function RelationForm({
     /* @__PURE__ */ u3("datalist", { id: "node-id-options", children: graph.nodes.map((node) => /* @__PURE__ */ u3("option", { value: node.id, children: node.label }, node.id)) }),
     /* @__PURE__ */ u3(Field, { label: "Source node", children: /* @__PURE__ */ u3("input", { list: "node-id-options", value: draft.sourceId, onInput: (event) => updateField("sourceId", event.currentTarget.value), required: true }) }),
     /* @__PURE__ */ u3(Field, { label: "Target node", children: /* @__PURE__ */ u3("input", { list: "node-id-options", value: draft.targetId, onInput: (event) => updateField("targetId", event.currentTarget.value), required: true }) }),
-    /* @__PURE__ */ u3(Field, { label: "Relation", children: /* @__PURE__ */ u3("input", { value: draft.relation, onInput: (event) => updateField("relation", event.currentTarget.value), required: true }) }),
+    /* @__PURE__ */ u3(Field, { label: "Relation", children: [
+      /* @__PURE__ */ u3("datalist", { id: "relation-type-options", children: relationshipTypes.map((type) => /* @__PURE__ */ u3("option", { value: type, children: type }, type)) }),
+      /* @__PURE__ */ u3("input", { list: "relation-type-options", value: draft.relation, onInput: (event) => updateField("relation", event.currentTarget.value), required: true })
+    ] }),
     /* @__PURE__ */ u3(Field, { label: "Information", children: /* @__PURE__ */ u3("textarea", { rows: "3", value: draft.information, onInput: (event) => updateField("information", event.currentTarget.value) }) }),
     /* @__PURE__ */ u3(Field, { label: "Description", children: /* @__PURE__ */ u3("textarea", { rows: "4", value: draft.description, onInput: (event) => updateField("description", event.currentTarget.value) }) }),
     /* @__PURE__ */ u3("div", { class: "form-actions", children: [
@@ -78600,6 +78621,7 @@ function NodeRelationshipList({ graph, nodeId, onSelectItem }) {
 }
 function DetailPanel({
   graph,
+  nodeTypes = [],
   nodeDeleteLabel = "Delete",
   nodeSaveLabel = "Save node",
   onDeleteNode,
@@ -78607,6 +78629,7 @@ function DetailPanel({
   onSaveNode,
   onSaveRelation,
   onSelectItem,
+  relationshipTypes = [],
   relationDeleteLabel = "Delete",
   relationSaveLabel = "Save relation",
   selectedItem
@@ -78633,6 +78656,7 @@ function DetailPanel({
         {
           deleteLabel: nodeDeleteLabel,
           node: selectedNode,
+          nodeTypes,
           onDelete: () => onDeleteNode(selectedNode),
           onSave: (draft) => onSaveNode(selectedNode.id, draft),
           saveLabel: nodeSaveLabel
@@ -78676,6 +78700,7 @@ function DetailPanel({
           deleteLabel: relationDeleteLabel,
           graph,
           relation: selectedRelation,
+          relationshipTypes,
           onCancel: returnNode ? () => onSelectItem({ type: "node", id: returnNode.id }) : void 0,
           onDelete: () => onDeleteRelation(selectedRelation),
           onSave: (draft) => onSaveRelation(selectedRelation.id, draft),
@@ -79459,6 +79484,8 @@ function App() {
   const messageIdRef = A2(0);
   const shellRef = A2(null);
   const normalizedGraph = T2(() => normalizeGraph(graph), [graph]);
+  const schemaNodeTypes = T2(() => (graph?.schema?.nodeTypes ?? []).map((entry) => entry?.name).filter(Boolean), [graph]);
+  const schemaRelationshipTypes = T2(() => (graph?.schema?.relationshipTypes ?? []).map((entry) => entry?.name).filter(Boolean), [graph]);
   const hitlProposalDirty = Boolean(hitlSelectedNote) && hitlEditedResponse !== hitlOriginalResponse;
   const hitlDraftMode = Boolean(hitlSelectedNote);
   const loadedSearchResults = T2(() => {
@@ -80713,6 +80740,7 @@ function App() {
         DetailPanel,
         {
           graph: normalizedGraph,
+          nodeTypes: schemaNodeTypes,
           nodeDeleteLabel: hitlDeleteLabel,
           nodeSaveLabel: hitlNodeSaveLabel,
           onDeleteNode: deleteHitlDraftNode,
@@ -80720,6 +80748,7 @@ function App() {
           onSaveNode: saveHitlDraftNode,
           onSaveRelation: saveHitlDraftRelation,
           onSelectItem: handleHitlOpenItem,
+          relationshipTypes: schemaRelationshipTypes,
           relationDeleteLabel: hitlDeleteLabel,
           relationSaveLabel: hitlRelationSaveLabel,
           selectedItem
@@ -80729,6 +80758,7 @@ function App() {
         NodeForm,
         {
           draft: createNodeDraftValue,
+          nodeTypes: schemaNodeTypes,
           onCancel: closeCreateModal,
           onDraftChange: setCreateNodeDraftValue,
           onSave: createHitlNode,
@@ -80743,6 +80773,7 @@ function App() {
           onCancel: closeCreateModal,
           onDraftChange: setCreateRelationDraftValue,
           onSave: createHitlRelation,
+          relationshipTypes: schemaRelationshipTypes,
           saveLabel: hitlDraftMode ? "Add to proposal" : "Create directly"
         }
       ) })
@@ -80886,11 +80917,13 @@ function App() {
       DetailPanel,
       {
         graph: normalizedGraph,
+        nodeTypes: schemaNodeTypes,
         onDeleteNode: deleteNode,
         onDeleteRelation: deleteRelation,
         onSaveNode: saveNode,
         onSaveRelation: saveRelation,
         onSelectItem: handleOpenItem,
+        relationshipTypes: schemaRelationshipTypes,
         selectedItem
       }
     ) }),
@@ -80898,6 +80931,7 @@ function App() {
       NodeForm,
       {
         draft: createNodeDraftValue,
+        nodeTypes: schemaNodeTypes,
         onCancel: closeCreateModal,
         onDraftChange: setCreateNodeDraftValue,
         onSave: createNode,
@@ -80912,6 +80946,7 @@ function App() {
         onCancel: closeCreateModal,
         onDraftChange: setCreateRelationDraftValue,
         onSave: createRelation,
+        relationshipTypes: schemaRelationshipTypes,
         saveLabel: "Create relation"
       }
     ) })

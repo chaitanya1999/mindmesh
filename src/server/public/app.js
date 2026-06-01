@@ -999,6 +999,7 @@ function normalizeGraph(graph) {
 	return {
 		nodes: graph?.nodes ?? [],
 		relations: graph?.relations ?? [],
+		schema: graph?.schema ?? null,
 	};
 }
 
@@ -1024,6 +1025,7 @@ function mergeGraph(currentGraph, nextGraph) {
 	return {
 		nodes: [...nodeMap.values()],
 		relations: [...relationMap.values()],
+		schema: next.schema ?? current.schema ?? null,
 	};
 }
 
@@ -1061,6 +1063,7 @@ function replaceNode(graph, node) {
 			? current.nodes.map((entry) => entry.id === node.id ? node : entry)
 			: [node, ...current.nodes],
 		relations: current.relations,
+		schema: current.schema ?? null,
 	};
 }
 
@@ -1072,6 +1075,7 @@ function replaceRelation(graph, relation) {
 		relations: exists
 			? current.relations.map((entry) => entry.id === relation.id ? relation : entry)
 			: [relation, ...current.relations],
+		schema: current.schema ?? null,
 	};
 }
 
@@ -1080,6 +1084,7 @@ function removeNodeFromGraph(graph, nodeId) {
 	return {
 		nodes: current.nodes.filter((node) => node.id !== nodeId),
 		relations: current.relations.filter((relation) => relation.sourceId !== nodeId && relation.targetId !== nodeId),
+		schema: current.schema ?? null,
 	};
 }
 
@@ -1088,6 +1093,7 @@ function removeRelationFromGraph(graph, relationId) {
 	return {
 		nodes: current.nodes,
 		relations: current.relations.filter((relation) => relation.id !== relationId),
+		schema: current.schema ?? null,
 	};
 }
 
@@ -2815,6 +2821,8 @@ function buildIngestMutation(result) {
 		deletedNodeIds: result.deletedNodeIds ?? [],
 		deletedRelationIds: result.deletedRelationIds ?? [],
 		triplets: result.triplets ?? [],
+		schemaViolations: result.schemaViolations ?? [],
+		schemaWarnings: result.schemaWarnings ?? [],
 	};
 }
 
@@ -2824,6 +2832,7 @@ function MutationContent({ mutation }) {
 	const nodeDeletes = mutation?.nodeDeletes ?? [];
 	const relationDeletes = mutation?.relationDeletes ?? [];
 	const triplets = mutation?.triplets ?? [];
+	const schemaViolations = mutation?.schemaViolations ?? [];
 	const totalMutations = nodes.length + relations.length + nodeDeletes.length + relationDeletes.length;
 	const isPendingHitl = mutation?.status === "pending_hitl";
 	const summaryParts = [
@@ -2858,6 +2867,16 @@ function MutationContent({ mutation }) {
 					: `Ingest complete. Applied ${totalMutations} graph mutation${totalMutations === 1 ? "" : "s"}.`}
 			</div>
 			{summaryParts.length > 0 && <div>{isPendingHitl ? "Proposed: " : ""}{summaryParts.join(", ")}.</div>}
+			{schemaViolations.length > 0 && (
+				<div class="triplet-list">
+					{schemaViolations.map((violation, index) => (
+						<div class="triplet" key={`schema-violation-${index}`}>
+							<strong>Schema review required</strong>
+							<div>{violation.message || String(violation)}</div>
+						</div>
+					))}
+				</div>
+			)}
 			{totalMutations > 0 && (
 				<div class="triplet-list">
 					{nodes.map((node, index) => (
@@ -3325,6 +3344,7 @@ function NodeForm({
 	deleteLabel = "Delete",
 	draft: controlledDraft,
 	node,
+	nodeTypes = [],
 	onCancel,
 	onDelete,
 	onDraftChange,
@@ -3360,7 +3380,14 @@ function NodeForm({
 				<input value={draft.name} onInput={(event) => updateField("name", event.currentTarget.value)} placeholder="auto_from_label" />
 			</Field>
 			<Field label="Type">
-				<input value={draft.type} onInput={(event) => updateField("type", event.currentTarget.value)} required />
+				<datalist id="node-type-options">
+					{nodeTypes.map((type) => (
+						<option value={type} key={type}>
+							{type}
+						</option>
+					))}
+				</datalist>
+				<input list="node-type-options" value={draft.type} onInput={(event) => updateField("type", event.currentTarget.value)} required />
 			</Field>
 			<Field label="Description">
 				<textarea rows="4" value={draft.description} onInput={(event) => updateField("description", event.currentTarget.value)} />
@@ -3378,6 +3405,7 @@ function RelationForm({
 	deleteLabel = "Delete",
 	draft: controlledDraft,
 	graph,
+	relationshipTypes = [],
 	onCancel,
 	onDelete,
 	onDraftChange,
@@ -3417,7 +3445,14 @@ function RelationForm({
 				<input list="node-id-options" value={draft.targetId} onInput={(event) => updateField("targetId", event.currentTarget.value)} required />
 			</Field>
 			<Field label="Relation">
-				<input value={draft.relation} onInput={(event) => updateField("relation", event.currentTarget.value)} required />
+				<datalist id="relation-type-options">
+					{relationshipTypes.map((type) => (
+						<option value={type} key={type}>
+							{type}
+						</option>
+					))}
+				</datalist>
+				<input list="relation-type-options" value={draft.relation} onInput={(event) => updateField("relation", event.currentTarget.value)} required />
 			</Field>
 			<Field label="Information">
 				<textarea rows="3" value={draft.information} onInput={(event) => updateField("information", event.currentTarget.value)} />
@@ -3482,6 +3517,7 @@ function NodeRelationshipList({ graph, nodeId, onSelectItem }) {
 
 function DetailPanel({
 	graph,
+	nodeTypes = [],
 	nodeDeleteLabel = "Delete",
 	nodeSaveLabel = "Save node",
 	onDeleteNode,
@@ -3489,6 +3525,7 @@ function DetailPanel({
 	onSaveNode,
 	onSaveRelation,
 	onSelectItem,
+	relationshipTypes = [],
 	relationDeleteLabel = "Delete",
 	relationSaveLabel = "Save relation",
 	selectedItem,
@@ -3528,6 +3565,7 @@ function DetailPanel({
 				<NodeForm
 					deleteLabel={nodeDeleteLabel}
 					node={selectedNode}
+					nodeTypes={nodeTypes}
 					onDelete={() => onDeleteNode(selectedNode)}
 					onSave={(draft) => onSaveNode(selectedNode.id, draft)}
 					saveLabel={nodeSaveLabel}
@@ -3572,6 +3610,7 @@ function DetailPanel({
 					deleteLabel={relationDeleteLabel}
 					graph={graph}
 					relation={selectedRelation}
+					relationshipTypes={relationshipTypes}
 					onCancel={returnNode ? () => onSelectItem({ type: "node", id: returnNode.id }) : undefined}
 					onDelete={() => onDeleteRelation(selectedRelation)}
 					onSave={(draft) => onSaveRelation(selectedRelation.id, draft)}
@@ -4420,6 +4459,16 @@ function App() {
 	const shellRef = useRef(null);
 
 	const normalizedGraph = useMemo(() => normalizeGraph(graph), [graph]);
+	const schemaNodeTypes = useMemo(() => (
+		(graph?.schema?.nodeTypes ?? [])
+			.map((entry) => entry?.name)
+			.filter(Boolean)
+	), [graph]);
+	const schemaRelationshipTypes = useMemo(() => (
+		(graph?.schema?.relationshipTypes ?? [])
+			.map((entry) => entry?.name)
+			.filter(Boolean)
+	), [graph]);
 	const hitlProposalDirty = Boolean(hitlSelectedNote) && hitlEditedResponse !== hitlOriginalResponse;
 	const hitlDraftMode = Boolean(hitlSelectedNote);
 	const loadedSearchResults = useMemo(() => {
@@ -5817,6 +5866,7 @@ function App() {
 					<EntityModal title={detailModalTitle} onClose={closeDetailModal}>
 						<DetailPanel
 							graph={normalizedGraph}
+							nodeTypes={schemaNodeTypes}
 							nodeDeleteLabel={hitlDeleteLabel}
 							nodeSaveLabel={hitlNodeSaveLabel}
 							onDeleteNode={deleteHitlDraftNode}
@@ -5824,6 +5874,7 @@ function App() {
 							onSaveNode={saveHitlDraftNode}
 							onSaveRelation={saveHitlDraftRelation}
 							onSelectItem={handleHitlOpenItem}
+							relationshipTypes={schemaRelationshipTypes}
 							relationDeleteLabel={hitlDeleteLabel}
 							relationSaveLabel={hitlRelationSaveLabel}
 							selectedItem={selectedItem}
@@ -5834,6 +5885,7 @@ function App() {
 					<EntityModal title={hitlDraftMode ? "Add node to proposal" : "Create node directly"} onClose={closeCreateModal}>
 						<NodeForm
 							draft={createNodeDraftValue}
+							nodeTypes={schemaNodeTypes}
 							onCancel={closeCreateModal}
 							onDraftChange={setCreateNodeDraftValue}
 							onSave={createHitlNode}
@@ -5849,6 +5901,7 @@ function App() {
 							onCancel={closeCreateModal}
 							onDraftChange={setCreateRelationDraftValue}
 							onSave={createHitlRelation}
+							relationshipTypes={schemaRelationshipTypes}
 							saveLabel={hitlDraftMode ? "Add to proposal" : "Create directly"}
 						/>
 					</EntityModal>
@@ -5980,11 +6033,13 @@ function App() {
 				<EntityModal title={detailModalTitle} onClose={closeDetailModal}>
 					<DetailPanel
 						graph={normalizedGraph}
+						nodeTypes={schemaNodeTypes}
 						onDeleteNode={deleteNode}
 						onDeleteRelation={deleteRelation}
 						onSaveNode={saveNode}
 						onSaveRelation={saveRelation}
 						onSelectItem={handleOpenItem}
+						relationshipTypes={schemaRelationshipTypes}
 						selectedItem={selectedItem}
 					/>
 				</EntityModal>
@@ -5993,6 +6048,7 @@ function App() {
 				<EntityModal title="Create node" onClose={closeCreateModal}>
 					<NodeForm
 						draft={createNodeDraftValue}
+						nodeTypes={schemaNodeTypes}
 						onCancel={closeCreateModal}
 						onDraftChange={setCreateNodeDraftValue}
 						onSave={createNode}
@@ -6008,6 +6064,7 @@ function App() {
 						onCancel={closeCreateModal}
 						onDraftChange={setCreateRelationDraftValue}
 						onSave={createRelation}
+						relationshipTypes={schemaRelationshipTypes}
 						saveLabel="Create relation"
 					/>
 				</EntityModal>

@@ -310,9 +310,39 @@ function pipelinePayload(lines) {
 	].join("\n");
 }
 
+function currentGraphSchema() {
+	return loadGraphSchema(config);
+}
+
+function withGraphSchema(graph) {
+	return {
+		...graph,
+		schema: currentGraphSchema(),
+	};
+}
+
+function schemaViolationMessages(graphPayload) {
+	return (graphPayload.schemaViolations ?? []).map((violation) => violation.message);
+}
+
+function hasSchemaViolations(graphPayload) {
+	return schemaViolationMessages(graphPayload).length > 0;
+}
+
+function schemaViolationError(graphPayload) {
+	const messages = schemaViolationMessages(graphPayload);
+	const error = new Error(`Schema validation failed: ${messages.join("; ")}`);
+	error.status = 400;
+	error.schemaViolations = graphPayload.schemaViolations ?? [];
+	return error;
+}
+
 async function storeManualHitlProposal({ llmResponse, userInput, userName }) {
 	requireHitlNotesSupport();
-	const { graphPayload } = parseHitlResponse(llmResponse);
+	const { graphSchema, graphPayload } = parseHitlResponse(llmResponse);
+	if (hasSchemaViolations(graphPayload)) {
+		graphPayload.persistedSchemaSuggestions = persistGraphSchemaSuggestions(graphSchema, graphPayload.schemaSuggestions);
+	}
 	const reviewSignals = countReviewSignals(graphPayload);
 	const hitlNote = await vectorStore.upsertHitlNote({
 		id: createHitlNoteId(),
@@ -344,9 +374,10 @@ async function storeManualHitlProposal({ llmResponse, userInput, userName }) {
 		deletedRelationIds: [],
 		triplets: buildTriplets(graphPayload),
 		schemaSuggestions: graphPayload.schemaSuggestions,
+		schemaViolations: graphPayload.schemaViolations ?? [],
 		schemaWarnings: graphPayload.schemaWarnings,
-		persistedSchemaSuggestions: null,
-		graph,
+		persistedSchemaSuggestions: graphPayload.persistedSchemaSuggestions ?? null,
+		graph: withGraphSchema(graph),
 	};
 }
 
@@ -459,7 +490,7 @@ async function requireHitlNote(id) {
 
 function parseHitlResponse(llmResponse) {
 	try {
-		const graphSchema = loadGraphSchema({ schema: prompts.graphSchema });
+		const graphSchema = currentGraphSchema();
 		const extractedGraph = parseGraphExtraction(llmResponse);
 		const graphPayload = normalizeGraphPayload(extractedGraph, {
 			schema: graphSchema,
@@ -471,6 +502,28 @@ function parseHitlResponse(llmResponse) {
 		error.status = 400;
 		throw error;
 	}
+}
+
+function requireSchemaValidHitlResponse(llmResponse) {
+	const result = parseHitlResponse(llmResponse);
+	if (hasSchemaViolations(result.graphPayload)) {
+		throw schemaViolationError(result.graphPayload);
+	}
+
+	return result;
+}
+
+async function pendingProposalForSchemaViolation({ llmResponse, reviewedBy, userInput }) {
+	const { graphPayload } = parseHitlResponse(llmResponse);
+	if (!hasSchemaViolations(graphPayload)) {
+		return null;
+	}
+
+	return storeManualHitlProposal({
+		userName: reviewedBy,
+		userInput,
+		llmResponse,
+	});
 }
 
 function persistHitlSchemaSuggestions(graphSchema, graphPayload) {
@@ -595,6 +648,7 @@ async function buildHitlGraphPreview(limit) {
 		limit,
 		pendingNotes: notes.map(hitlNoteSummary),
 		warnings,
+		schema: currentGraphSchema(),
 	};
 }
 
@@ -626,6 +680,7 @@ async function buildHitlNoteGraphPreview(note, { depth = 2, llmResponse = note.l
 		...previewGraph,
 		depth,
 		note: hitlNoteSummary(note),
+		schema: currentGraphSchema(),
 	};
 }
 
@@ -681,7 +736,7 @@ app.get("/api/graph", asyncRoute(async (req, res) => {
 	const graph = await graphStore.getGraphPreview(limit);
 
 	res.json({
-		...graph,
+		...withGraphSchema(graph),
 		limit,
 	});
 }));
@@ -698,7 +753,7 @@ app.get("/api/nodes/:id/neighborhood", asyncRoute(async (req, res) => {
 	const depth = parseDepth(req.query.depth);
 	const graph = await graphStore.getNodeNeighborhood(req.params.id, depth);
 
-	res.json({ ...graph, depth });
+	res.json({ ...withGraphSchema(graph), depth });
 }));
 
 app.get("/api/nodes/:id/relations", asyncRoute(async (req, res) => {
@@ -902,6 +957,16 @@ app.post("/api/hitl/nodes", asyncRoute(async (req, res) => {
 	requireDirectGraphCrudSupport();
 	const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
 	const node = normalizeManualNode(req.body);
+	const llmResponse = pipelinePayload([nodePipelineRecord("NODE_CREATE", node)]);
+	const pendingProposal = await pendingProposalForSchemaViolation({
+		reviewedBy,
+		userInput: `${reviewedBy} requested node creation for ${node.label}.`,
+		llmResponse,
+	});
+	if (pendingProposal) {
+		res.status(202).json(pendingProposal);
+		return;
+	}
 	const storedNode = await graphStore.upsertNode(node);
 	await vectorStore.upsertNode(storedNode);
 	const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
@@ -911,7 +976,7 @@ app.post("/api/hitl/nodes", asyncRoute(async (req, res) => {
 		applied: true,
 		reviewedBy,
 		node: storedNode,
-		graph,
+		graph: withGraphSchema(graph),
 	});
 }));
 
@@ -919,6 +984,16 @@ app.put("/api/hitl/nodes/:id", asyncRoute(async (req, res) => {
 	requireDirectGraphCrudSupport();
 	const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
 	const node = normalizeManualNode(req.body, req.params.id);
+	const llmResponse = pipelinePayload([nodePipelineRecord("NODE_UPDATE", node)]);
+	const pendingProposal = await pendingProposalForSchemaViolation({
+		reviewedBy,
+		userInput: `${reviewedBy} requested node update for ${node.label}.`,
+		llmResponse,
+	});
+	if (pendingProposal) {
+		res.status(202).json(pendingProposal);
+		return;
+	}
 	const storedNode = await graphStore.upsertNode(node);
 	await vectorStore.upsertNode(storedNode);
 	const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
@@ -928,7 +1003,7 @@ app.put("/api/hitl/nodes/:id", asyncRoute(async (req, res) => {
 		applied: true,
 		reviewedBy,
 		node: storedNode,
-		graph,
+		graph: withGraphSchema(graph),
 	});
 }));
 
@@ -946,7 +1021,7 @@ app.delete("/api/hitl/nodes/:id", asyncRoute(async (req, res) => {
 		reviewedBy,
 		deletedNodeId: result.nodeId,
 		deletedRelationIds: result.relationIds ?? [],
-		graph,
+		graph: withGraphSchema(graph),
 	});
 }));
 
@@ -954,6 +1029,16 @@ app.post("/api/hitl/relations", asyncRoute(async (req, res) => {
 	requireDirectGraphCrudSupport();
 	const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
 	const relation = normalizeManualRelation(req.body);
+	const llmResponse = pipelinePayload([relationPipelineRecord("RELATION_CREATE", relation)]);
+	const pendingProposal = await pendingProposalForSchemaViolation({
+		reviewedBy,
+		userInput: `${reviewedBy} requested relation creation for ${relation.relation}.`,
+		llmResponse,
+	});
+	if (pendingProposal) {
+		res.status(202).json(pendingProposal);
+		return;
+	}
 	const storedRelation = await graphStore.upsertRelation(relation);
 	await vectorStore.upsertRelation(storedRelation);
 	const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
@@ -963,7 +1048,7 @@ app.post("/api/hitl/relations", asyncRoute(async (req, res) => {
 		applied: true,
 		reviewedBy,
 		relation: storedRelation,
-		graph,
+		graph: withGraphSchema(graph),
 	});
 }));
 
@@ -971,6 +1056,16 @@ app.put("/api/hitl/relations/:id", asyncRoute(async (req, res) => {
 	requireDirectGraphCrudSupport();
 	const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
 	const relation = normalizeManualRelation(req.body, req.params.id);
+	const llmResponse = pipelinePayload([relationPipelineRecord("RELATION_UPDATE", relation)]);
+	const pendingProposal = await pendingProposalForSchemaViolation({
+		reviewedBy,
+		userInput: `${reviewedBy} requested relation update for ${relation.relation}.`,
+		llmResponse,
+	});
+	if (pendingProposal) {
+		res.status(202).json(pendingProposal);
+		return;
+	}
 	const storedRelation = await graphStore.upsertRelation(relation);
 	await vectorStore.upsertRelation(storedRelation);
 	const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
@@ -980,7 +1075,7 @@ app.put("/api/hitl/relations/:id", asyncRoute(async (req, res) => {
 		applied: true,
 		reviewedBy,
 		relation: storedRelation,
-		graph,
+		graph: withGraphSchema(graph),
 	});
 }));
 
@@ -996,7 +1091,7 @@ app.delete("/api/hitl/relations/:id", asyncRoute(async (req, res) => {
 		applied: true,
 		reviewedBy,
 		deletedRelationId: result.relationId,
-		graph,
+		graph: withGraphSchema(graph),
 	});
 }));
 
@@ -1004,7 +1099,7 @@ app.post("/api/hitl/notes/:id/approve", asyncRoute(async (req, res) => {
 	const note = await requireHitlNote(req.params.id);
 	const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
 	const llmResponse = requireString(req.body?.llmResponse ?? req.body?.editedResponse ?? note.llmResponse, "llmResponse");
-	const { graphSchema, graphPayload } = parseHitlResponse(llmResponse);
+	const { graphSchema, graphPayload } = requireSchemaValidHitlResponse(llmResponse);
 
 	persistHitlSchemaSuggestions(graphSchema, graphPayload);
 	const storedGraph = await ingestionService.applyGraphPayload(graphPayload, {
@@ -1028,9 +1123,10 @@ app.post("/api/hitl/notes/:id/approve", asyncRoute(async (req, res) => {
 		deletedRelationIds: storedGraph.deletedRelationIds,
 		triplets: buildTriplets(storedGraph),
 		schemaSuggestions: graphPayload.schemaSuggestions,
+		schemaViolations: graphPayload.schemaViolations ?? [],
 		schemaWarnings: graphPayload.schemaWarnings,
 		persistedSchemaSuggestions: graphPayload.persistedSchemaSuggestions,
-		graph,
+		graph: withGraphSchema(graph),
 	});
 }));
 
@@ -1069,9 +1165,10 @@ app.post("/api/ingest", upload.fields([
 		deletedRelationIds: storedGraph.deletedRelationIds,
 		triplets: buildTriplets(storedGraph),
 		schemaSuggestions: storedGraph.schemaSuggestions,
+		schemaViolations: storedGraph.schemaViolations ?? [],
 		schemaWarnings: storedGraph.schemaWarnings,
 		persistedSchemaSuggestions: storedGraph.persistedSchemaSuggestions,
-		graph,
+		graph: withGraphSchema(graph),
 	});
 }));
 

@@ -63,6 +63,20 @@ const schema = {
 		relationshipTypes: [{ name: "validates_with", description: "Pending relationship suggestion." }],
 	},
 };
+const serviceGraphSchema = {
+	...schema,
+	nodeTypes: [
+		...schema.nodeTypes,
+		{ name: "person", description: "Human individual." },
+	],
+	relationshipTypes: [
+		...schema.relationshipTypes,
+		{ name: "contains", description: "Source contains target." },
+		{ name: "manages", description: "Source manages target." },
+		{ name: "owned_by", description: "Source is owned by target." },
+		{ name: "requested_by", description: "Source was requested by target." },
+	],
+};
 
 function assert(condition, message) {
 	if (!condition) {
@@ -165,18 +179,21 @@ assert(duplicateNodePayload.nodes.length === 1, "Normalizer should dedupe identi
 assert(duplicateNodePayload.nodes[0].description === "Created primarily due to a request from John Smith.", "Normalizer should keep useful node descriptions when deduping.");
 
 const strictPayload = normalizeGraphPayload(suggestionPayload, { schema, autoApplySuggestions: false });
-assert(strictPayload.relations[0].relation === "relates_to", "Strict schema fallback failed.");
+assert(strictPayload.relations[0].relation === "validates_with", "Strict schema should preserve unknown relation for review.");
 assert(strictPayload.schemaWarnings.length === 1, "Strict schema warning failed.");
+assert(strictPayload.schemaViolations[0]?.kind === "relationshipType", "Strict schema violation failed.");
 
 const autoAppliedPayload = normalizeGraphPayload(suggestionPayload, { schema, autoApplySuggestions: true });
-assert(autoAppliedPayload.relations[0].relation === "validates_with", "Auto-applied schema suggestion failed.");
+assert(autoAppliedPayload.relations[0].relation === "validates_with", "Schema suggestion relation should be preserved for HITL review.");
+assert(autoAppliedPayload.schemaViolations[0]?.kind === "relationshipType", "Auto-applied schema suggestions must not bypass strict validation.");
 
 const pendingSuggestionPayload = normalizeGraphPayload({
 	nodes: [{ name: "search_step", label: "Search Step", type: "journey_step" }],
 	relations: [],
 }, { schema, autoApplySuggestions: true });
-assert(pendingSuggestionPayload.nodes[0].type === "journey_step", "Auto-applied implicit node suggestion failed.");
+assert(pendingSuggestionPayload.nodes[0].type === "journey_step", "Implicit node suggestion should preserve extracted type.");
 assert(pendingSuggestionPayload.schemaSuggestions.nodeTypes[0].name === "journey_step", "Implicit node suggestion was not captured.");
+assert(pendingSuggestionPayload.schemaViolations[0]?.kind === "nodeType", "Implicit node suggestion must still require schema approval.");
 
 const renderedPrompt = buildExtractionPrompt("Schema:\n{{GRAPH_SCHEMA}}\nContext:\n{{EXISTING_GRAPH_CONTEXT}}\nInput:\n{{USER_INPUT}}", {
 	graphSchema: schema,
@@ -220,6 +237,10 @@ const ollamaChatProvider = new OllamaProvider({ baseUrl: "http://localhost:11434
 assert(ollamaChatProvider.buildRequestBody({ systemPrompt: "S", prompt: "P" }).messages.length === 2, "Ollama chat mode should build messages.");
 
 const runtimePrompts = loadPrompts(getConfig());
+const serviceSchemaDir = await fs.mkdtemp(path.join(os.tmpdir(), "kg-schema-"));
+const serviceSchemaPath = path.join(serviceSchemaDir, "graphSchema.json");
+await fs.writeFile(serviceSchemaPath, `${JSON.stringify(serviceGraphSchema, null, "\t")}\n`, "utf8");
+const serviceGraphSchemaConfig = { path: serviceSchemaPath };
 let capturedVectorQuery = null;
 let capturedGraphExpansion = null;
 let capturedExtractionRequest = null;
@@ -262,6 +283,7 @@ const service = new IngestionService({
 	},
 		prompts: {
 			...runtimePrompts,
+			graphSchema: serviceGraphSchemaConfig,
 			extractionSystemTemplate: "Schema:\n{{GRAPH_SCHEMA}}\nContext:\n{{EXISTING_GRAPH_CONTEXT}}\nInput:\n{{USER_INPUT}}",
 			schemaAutoApplySuggestions: false,
 		},
@@ -321,6 +343,7 @@ const pendingContextService = new IngestionService({
 	},
 		prompts: {
 			...runtimePrompts,
+			graphSchema: serviceGraphSchemaConfig,
 			extractionSystemTemplate: "Schema:\n{{GRAPH_SCHEMA}}\nContext:\n{{EXISTING_GRAPH_CONTEXT}}\nInput:\n{{USER_INPUT}}",
 			schemaAutoApplySuggestions: false,
 		},
@@ -385,6 +408,7 @@ const mutationService = new IngestionService({
 	},
 	prompts: {
 		...runtimePrompts,
+		graphSchema: serviceGraphSchemaConfig,
 		extractionSystemTemplate: "Schema:\n{{GRAPH_SCHEMA}}\nContext:\n{{EXISTING_GRAPH_CONTEXT}}\nInput:\n{{USER_INPUT}}",
 		schemaAutoApplySuggestions: false,
 	},
@@ -438,6 +462,7 @@ const hitlService = new IngestionService({
 	},
 	prompts: {
 		...runtimePrompts,
+		graphSchema: serviceGraphSchemaConfig,
 		extractionSystemTemplate: "Schema:\n{{GRAPH_SCHEMA}}\nContext:\n{{EXISTING_GRAPH_CONTEXT}}\nInput:\n{{USER_INPUT}}",
 		schemaAutoApplySuggestions: false,
 	},
@@ -455,6 +480,56 @@ assert(hitlStoredNote?.userName === "Frontend User", "HITL ingestion should stor
 assert(hitlStoredNote?.userInput === "Draft screen exists.", "HITL ingestion should store the human input.");
 assert(hitlStoredNote?.llmResponse.includes("NODE_CREATE|draft_screen"), "HITL ingestion should store the raw LLM response.");
 assert(hitlGraphTouched === false, "HITL ingestion should not apply graph mutations immediately.");
+
+let forcedHitlStoredNote = null;
+let forcedHitlGraphTouched = false;
+const forcedHitlService = new IngestionService({
+	llmProvider: {
+		async extractGraph() {
+			return {
+				nodes: [{ name: "mystery_box", label: "Mystery Box", type: "hallucinated_widget", description: "" }],
+				relations: [{ sourceName: "mystery_box", targetName: "pan_api", relation: "imagines", information: "" }],
+				schemaSuggestions: { nodeTypes: [], relationshipTypes: [] },
+			};
+		},
+	},
+	graphStore: {
+		async expandFromNodes() {
+			return { nodes: [], relations: [] };
+		},
+		async upsertGraph() {
+			forcedHitlGraphTouched = true;
+			throw new Error("Forced HITL schema test should not touch graph DB.");
+		},
+	},
+	vectorStore: {
+		async queryNodes() {
+			return [];
+		},
+		async upsertHitlNote(note) {
+			forcedHitlStoredNote = note;
+			return { id: note.id, document: note.llmResponse, metadata: { createdAt: note.createdAt } };
+		},
+	},
+	prompts: {
+		...runtimePrompts,
+		graphSchema: serviceGraphSchemaConfig,
+		extractionSystemTemplate: "Schema:\n{{GRAPH_SCHEMA}}\nContext:\n{{EXISTING_GRAPH_CONTEXT}}\nInput:\n{{USER_INPUT}}",
+		schemaAutoApplySuggestions: true,
+	},
+	ingestion: {
+		mode: "auto",
+		contextEnabled: true,
+		contextTopK: 1,
+		contextDepth: 1,
+	},
+});
+const forcedHitlResult = await forcedHitlService.ingestText({ text: "Mystery box imagines PAN API.", source: "test" });
+assert(forcedHitlResult.status === "pending_hitl", "Schema violations should force HITL even when ingestion mode is auto.");
+assert(forcedHitlResult.schemaViolations.length >= 2, "Forced HITL result should expose schema violations.");
+assert(forcedHitlResult.schemaSuggestions.nodeTypes.some((entry) => entry.name === "hallucinated_widget"), "Unknown node type should be captured as a schema suggestion.");
+assert(forcedHitlStoredNote?.llmResponse.includes("hallucinated_widget"), "Forced HITL should store the violating payload for review.");
+assert(forcedHitlGraphTouched === false, "Forced HITL should not apply graph mutations.");
 
 let duplicatePendingHitlStoredNote = null;
 const duplicatePendingHitlService = new IngestionService({
@@ -511,6 +586,7 @@ const duplicatePendingHitlService = new IngestionService({
 	},
 		prompts: {
 			...runtimePrompts,
+			graphSchema: serviceGraphSchemaConfig,
 			extractionSystemTemplate: "Schema:\n{{GRAPH_SCHEMA}}\nContext:\n{{EXISTING_GRAPH_CONTEXT}}\nInput:\n{{USER_INPUT}}",
 			schemaAutoApplySuggestions: false,
 		},
@@ -554,6 +630,7 @@ const failingService = new IngestionService({
 	},
 	prompts: {
 		...runtimePrompts,
+		graphSchema: serviceGraphSchemaConfig,
 		extractionSystemTemplate: "Schema:\n{{GRAPH_SCHEMA}}\nContext:\n{{EXISTING_GRAPH_CONTEXT}}\nInput:\n{{USER_INPUT}}",
 		schemaAutoApplySuggestions: false,
 	},
@@ -588,4 +665,5 @@ try {
 }
 assert(invalidFailed, "Invalid extraction did not fail.");
 
+await fs.rm(serviceSchemaDir, { recursive: true, force: true });
 console.log("[PASS] graph extraction parser smoke tests");
