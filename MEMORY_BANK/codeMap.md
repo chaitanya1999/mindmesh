@@ -81,8 +81,9 @@ Main path:
 ```text
 schema/graphSchema.json
   -> src/schema/graphSchema.js
-  -> extraction prompt schema catalog
+  -> extraction prompt schema catalog (includes property guidance when fields are defined)
   -> graph payload validation/normalization
+  -> optional validatePropertyConstraints() for property-level constraint enforcement
   -> HITL when unknown schema terms appear
   -> editable schema API/UI
 ```
@@ -94,6 +95,28 @@ Important behavior:
 - Unknown types should be preserved for review and must not silently become approved graph terms.
 - Schema can be edited through `GET /api/schema`, `PUT /api/schema`, and the `/schema` route.
 - Schema suggestions can be persisted as suggestions or promoted when `schema.autoApplySuggestions` is enabled.
+
+### Property Descriptors (Schema-Driven Field Guidance)
+
+`schema/graphSchema.json` supports per-property descriptor objects in `nodeProperties.fields` and `relationshipProperties.fields`. Each descriptor includes:
+
+- `name`: property key (e.g., `name`, `label`, `description`, `information`, `metadata`)
+- `description`: brief human-facing guidance for the property
+- `constraints` (optional): machine-readable guidance such as `pattern` (regex), `immutable` flag, `maxLength`, and `allowedValues`
+
+These descriptors are injected into the extraction prompt via the dedicated `{{FIELD_GUIDANCE}}` placeholder in `prompts/extraction-system-custom.md`, positioned immediately after the OUTPUT SYNTAX section. This keeps field-level guidance separate from type-level schema (`{{GRAPH_SCHEMA}}`).
+
+The rendering pipeline:
+```
+schema/graphSchema.json
+  -> src/schema/graphSchema.js::formatFieldGuidance()
+  -> src/prompts/promptRegistry.js (replaces {{FIELD_GUIDANCE}})
+  -> prompts/extraction-system-custom.md (in extraction prompt sent to LLM)
+```
+
+Previously hardcoded field descriptions in the prompt's CRUD RULES and EXTRACTION RULES sections have been removed and replaced by this schema-driven approach. The `graphSchema.json` file is now the single source of truth for field semantics.
+
+Optional runtime validation is available through `validatePropertyConstraints()` in `src/ingestion/graphPayload.js`. It checks payload fields against schema-defined constraints and returns violation objects. This validation is modular and toggleable — callers can use default (warning-only) or `strict` mode that also returns error strings.
 
 ## Provider Flow
 

@@ -179,6 +179,47 @@ Unknown node or relationship types are preserved in the proposed payload, record
 
 The default ingestion mode in `config.example.json` is `auto`. Set `ingestion.mode` to `hitl` to store normal ingestions as pending Chroma HITL proposals instead of immediately mutating Neo4j, or keep `auto` to apply schema-valid ingestions directly.
 
+### Property Descriptors (Schema-Driven Field Guidance)
+
+`schema/graphSchema.json` supports per-property descriptor objects in `nodeProperties.fields` and `relationshipProperties.fields`. Each descriptor includes:
+
+- `name`: property key (e.g., `name`, `label`, `description`, `information`, `metadata`)
+- `description`: brief human-facing guidance for the property
+- `constraints` (optional): machine-readable guidance such as `pattern` (regex), `immutable` flag, `maxLength`, and `allowedValues`
+
+Example node property descriptor:
+
+```json
+{
+  "name": "name",
+  "description": "Unique node identifier used for identity and lookup.",
+  "constraints": {
+    "pattern": "^[a-z0-9_]+$",
+    "immutable": true
+  }
+}
+```
+
+These descriptors are rendered into the extraction prompt by `formatSchemaCatalog()` as "Node property guidance:" and "Relationship property guidance:" sections, injected via the existing `{{GRAPH_SCHEMA}}` placeholder. No changes to `prompts/extraction-system-custom.md` are required — the existing placeholder continues to carry all schema information including the new property guidance.
+
+How to add or modify property descriptors:
+
+1. Edit `schema/graphSchema.json` and add/update entries in `nodeProperties.fields` or `relationshipProperties.fields`.
+2. Each entry requires at minimum a `name` and `description`. The `constraints` object is optional.
+3. The next ingestion run automatically includes the updated guidance in the extraction prompt.
+4. To change enforcement policy, modify the call to `validatePropertyConstraints()` in the ingestion pipeline.
+
+#### Constraint Validation (Optional)
+
+`validatePropertyConstraints()` in `src/ingestion/graphPayload.js` provides optional runtime validation of payload fields against schema-defined constraints. It supports:
+
+- `pattern`: regex validation against field values
+- `maxLength`: maximum string length check
+- `allowedValues`: whitelist of acceptable values
+- `immutable`: documented as a constraint (immutability enforcement requires DB state comparison and is not implemented in the stateless validator)
+
+Validation is modular and toggleable. Callers pass `{ strict: true }` to get both violation objects and error strings, or use the default mode for warning-only violations. This allows teams to choose between document-only guidance (prompt-based) and strict enforcement (ingestion-time) without code changes.
+
 Suggested types are persisted back into `schema/graphSchema.json` under:
 
 ```json

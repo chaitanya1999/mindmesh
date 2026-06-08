@@ -1,4 +1,5 @@
-import { extractCustomGraph, normalizeGraphPayload, parseGraphExtraction } from "../ingestion/graphPayload.js";
+import { extractCustomGraph, normalizeGraphPayload, parseGraphExtraction, validatePropertyConstraints } from "../ingestion/graphPayload.js";
+import { formatFieldGuidance, formatSchemaCatalog } from "../schema/graphSchema.js";
 import { IngestionService } from "../ingestion/ingestionService.js";
 import { countReviewSignals } from "../ingestion/reviewSignals.js";
 import fs from "node:fs/promises";
@@ -173,10 +174,10 @@ assert(duplicateRelationPayload.relations[0].information === "for the ABC projec
 
 const duplicateNodePayload = normalizeGraphPayload(extractCustomGraph([
 	"NODE|xyz_screen|XYZ Screen|screen|Created primarily due to a request from John Smith.",
-	"NODE|xyz_screen|XYZ Screen|screen|",
+	"NODE|xyz_screen|XYZ Screen|screen|Revised description.",
 ].join("\n")));
 assert(duplicateNodePayload.nodes.length === 1, "Normalizer should dedupe identical node names.");
-assert(duplicateNodePayload.nodes[0].description === "Created primarily due to a request from John Smith.", "Normalizer should keep useful node descriptions when deduping.");
+assert(duplicateNodePayload.nodes[0].description === "Revised description.", "Normalizer should prefer newer node description over longer existing one.");
 
 const strictPayload = normalizeGraphPayload(suggestionPayload, { schema, autoApplySuggestions: false });
 assert(strictPayload.relations[0].relation === "validates_with", "Strict schema should preserve unknown relation for review.");
@@ -664,6 +665,103 @@ try {
 	invalidFailed = true;
 }
 assert(invalidFailed, "Invalid extraction did not fail.");
+
+// Property field guidance tests
+const propertyGuidanceSchema = {
+	...schema,
+	nodeProperties: {
+		required: ["name", "label", "type"],
+		optional: ["description"],
+		fields: [
+			{ name: "name", description: "Unique node identifier.", constraints: { pattern: "^[a-z0-9_]+$", immutable: true } },
+			{ name: "label", description: "Human-readable display name." },
+			{ name: "type", description: "Node taxonomy." },
+			{ name: "description", description: "Optional free-text context." },
+		],
+	},
+	relationshipProperties: {
+		required: ["sourceName", "targetName", "relation"],
+		optional: ["information", "description"],
+		fields: [
+			{ name: "sourceName", description: "Source node name.", constraints: { immutable: true } },
+			{ name: "targetName", description: "Target node name.", constraints: { immutable: true } },
+			{ name: "relation", description: "Relation type.", constraints: { pattern: "^[a-z_]+$", immutable: true } },
+			{ name: "information", description: "Single-line contextual note." },
+			{ name: "description", description: "Optional longer rationale." },
+		],
+	},
+};
+
+// formatFieldGuidance should produce node and relationship field sections
+const fieldGuidance = formatFieldGuidance(propertyGuidanceSchema);
+assert(fieldGuidance.includes("Node fields:"), "formatFieldGuidance should include node field section.");
+assert(fieldGuidance.includes("Relationship fields:"), "formatFieldGuidance should include relationship field section.");
+assert(fieldGuidance.includes("pattern: ^[a-z0-9_]+$"), "formatFieldGuidance should render pattern constraints.");
+assert(fieldGuidance.includes("immutable"), "formatFieldGuidance should render immutable constraints.");
+assert(fieldGuidance.includes("Unique node identifier."), "formatFieldGuidance should render property descriptions.");
+
+// formatSchemaCatalog should NOT include field guidance (it's separate via {{FIELD_GUIDANCE}})
+const schemaCatalog = formatSchemaCatalog(propertyGuidanceSchema);
+assert(!schemaCatalog.includes("Node fields:"), "formatSchemaCatalog should NOT include field guidance sections.");
+assert(!schemaCatalog.includes("Relationship fields:"), "formatSchemaCatalog should NOT include relationship field guidance.");
+
+// Constraint validation tests
+// Test with raw (pre-normalization) payload so constraint violations on `name` are visible
+// before toSnakeCase normalizes them
+const rawValidPayload = extractCustomGraph([
+	"NODE|valid_node|Valid Node|screen|A valid node.",
+	"RELATION|valid_node|pan_api|uses|for testing|",
+].join("\n"));
+const rawValidValidation = validatePropertyConstraints(rawValidPayload, propertyGuidanceSchema);
+assert(rawValidValidation.violations.length === 0, "Valid raw payload should have no constraint violations.");
+
+const rawInvalidNamePayload = extractCustomGraph([
+	"NODE|Invalid-Name!|Invalid Name|screen|Has invalid characters.",
+].join("\n"));
+const rawInvalidNameValidation = validatePropertyConstraints(rawInvalidNamePayload, propertyGuidanceSchema);
+assert(rawInvalidNameValidation.violations.length === 1, "Invalid raw node name should produce a constraint violation.");
+assert(rawInvalidNameValidation.violations[0].field === "name", "Violation should reference the 'name' field.");
+assert(rawInvalidNameValidation.violations[0].message.includes("does not match required pattern"), "Violation message should mention pattern mismatch.");
+
+// Strict mode test
+const strictValidation = validatePropertyConstraints(rawInvalidNamePayload, propertyGuidanceSchema, { strict: true });
+assert(strictValidation.errors.length === 1, "Strict mode should return errors.");
+assert(strictValidation.violations.length === 1, "Strict mode should still return violations.");
+
+// Test with normalized payload: pattern validation passes after toSnakeCase normalization
+const normalizedValidPayload = normalizeGraphPayload(extractCustomGraph([
+	"NODE|valid_name|Valid Name|screen||",
+].join("\n")));
+const normalizedValidValidation = validatePropertyConstraints(normalizedValidPayload, propertyGuidanceSchema);
+assert(normalizedValidValidation.violations.length === 0, "Normalized payload with valid name should have no pattern violations.");
+
+const noConstraintsSchema = {
+	...schema,
+	nodeProperties: { required: ["name"], fields: [] },
+	relationshipProperties: { required: ["sourceName"], fields: [] },
+};
+const noConstraintsPayload = normalizeGraphPayload(extractCustomGraph([
+	"NODE|any_name|Any Name|screen||",
+].join("\n")));
+const noConstraintsValidation = validatePropertyConstraints(noConstraintsPayload, noConstraintsSchema);
+assert(noConstraintsValidation.violations.length === 0, "No constraints should produce no violations.");
+
+// Verify field guidance is rendered via {{FIELD_GUIDANCE}} placeholder in extraction prompt
+const promptWithGuidance = buildExtractionPrompt("Guidance:\n{{FIELD_GUIDANCE}}\nSchema:\n{{GRAPH_SCHEMA}}\nInput:\n{{USER_INPUT}}", {
+	graphSchema: propertyGuidanceSchema,
+	userInput: "test input",
+});
+assert(promptWithGuidance.includes("Node fields:"), "Extraction prompt via {{FIELD_GUIDANCE}} should include node field section.");
+assert(promptWithGuidance.includes("Relationship fields:"), "Extraction prompt via {{FIELD_GUIDANCE}} should include relationship field section.");
+assert(!promptWithGuidance.includes("Node property guidance:"), "Old section title should not appear.");
+
+// Verify formatFieldGuidance returns fallback for empty fields
+const emptyFieldGuidance = formatFieldGuidance({
+	...schema,
+	nodeProperties: { required: ["name"], fields: [] },
+	relationshipProperties: { required: ["sourceName"], fields: [] },
+});
+assert(emptyFieldGuidance === "No field descriptions defined in schema.", "Empty fields should produce fallback message.");
 
 await fs.rm(serviceSchemaDir, { recursive: true, force: true });
 console.log("[PASS] graph extraction parser smoke tests");

@@ -150,6 +150,37 @@ function formatTypeList(title, entries) {
 	return [title, ...lines].join("\n");
 }
 
+function formatConstraintText(constraints = {}) {
+	const parts = [];
+	if (constraints.pattern) {
+		parts.push(`pattern: ${constraints.pattern}`);
+	}
+	if (constraints.immutable) {
+		parts.push("immutable");
+	}
+	if (constraints.maxLength !== undefined && constraints.maxLength !== null) {
+		parts.push(`max length: ${constraints.maxLength}`);
+	}
+	if (constraints.allowedValues && Array.isArray(constraints.allowedValues) && constraints.allowedValues.length > 0) {
+		parts.push(`allowed values: ${constraints.allowedValues.join(", ")}`);
+	}
+	return parts.length > 0 ? ` (${parts.join(", ")})` : "";
+}
+
+function formatPropertyGuidance(title, propertyFields = []) {
+	if (!propertyFields || propertyFields.length === 0) {
+		return [title, "- No property descriptors defined."].join("\n");
+	}
+
+	const lines = propertyFields.map((field) => {
+		const description = field.description || "No description.";
+		const constraints = formatConstraintText(field.constraints);
+		return `- ${field.name}: ${description}${constraints}`;
+	});
+
+	return [title, ...lines].join("\n");
+}
+
 export function formatSchemaCatalog(schema) {
 	return [
 		formatTypeList("Approved node types:", schema.nodeTypes),
@@ -163,6 +194,29 @@ export function formatSchemaCatalog(schema) {
 		// `Fallback node type when suggestions are not accepted by runtime: ${schema.fallbacks.nodeType}`,
 		// `Fallback relationship type when suggestions are not accepted by runtime: ${schema.fallbacks.relationshipType}`,
 	].join("\n");
+}
+
+/**
+ * Format property field guidance for injection into {{FIELD_GUIDANCE}} placeholder.
+ * This renders per-property descriptions and constraints for both node and relationship fields.
+ * Used by promptRegistry.js to inject field-level guidance after the OUTPUT SYNTAX section.
+ */
+export function formatFieldGuidance(schema) {
+	const parts = [];
+
+	if (schema.nodeProperties?.fields && schema.nodeProperties.fields.length > 0) {
+		parts.push(formatPropertyGuidance("Node fields:", schema.nodeProperties.fields));
+	}
+
+	if (schema.relationshipProperties?.fields && schema.relationshipProperties.fields.length > 0) {
+		parts.push(formatPropertyGuidance("Relationship fields:", schema.relationshipProperties.fields));
+	}
+
+	if (parts.length === 0) {
+		return "No field descriptions defined in schema.";
+	}
+
+	return parts.join("\n\n");
 }
 
 function entryMap(entries) {

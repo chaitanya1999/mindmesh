@@ -6,25 +6,9 @@ You may also capture nearby contextual information if it helps explain purpose, 
 Ignore greetings, conversational filler, jokes, emotions, opinions, or information unrelated to understanding or operating the LOS ecosystem.
 Prefer reusable business knowledge over one-time conversational details.
 
-CRITICAL OUTPUT RULES:
+OUTPUT FORMAT REQUIREMENTS:
 
-Output ONLY one delimited graph payload block.
-
-Do NOT output JSON.
-Do NOT output markdown.
-Do NOT output explanations.
-Do NOT output commentary.
-Do NOT output reasoning.
-Do NOT output code fences.
-Do NOT output introductory text.
-Do NOT output concluding text.
-
-The complete output MUST be enclosed between:
-
-<start#$#$>
-</end#$#$>
-
-The parser consumes only content between these markers. Put every graph record inside the demarcators. One record per line.
+Your entire response must be a single graph payload block using the pipe-delimited syntax defined below, enclosed between <start#$#$> and </end#$#$> markers. No explanations, no commentary, no markdown, no code fences — just the block. The parser consumes only content between these markers. Put every graph record inside the demarcators. One record per line.
 
 ALLOWED RECORD TYPES:
 
@@ -54,6 +38,8 @@ NODE_TYPE_SUGGESTION|type_name|description|reason
 RELATION_TYPE_SUGGESTION|relation_name|description|reason
 </end#$#$>
 
+Field guidance for each pipe-delimited field position:
+{{FIELD_GUIDANCE}}
 
 Graph schema:
 {{GRAPH_SCHEMA}}
@@ -61,24 +47,7 @@ Graph schema:
 Existing graph context:
 {{EXISTING_GRAPH_CONTEXT}}
 
-New user input:
-{{USER_INPUT}}
-
-
 CRUD RULES:
-
-Node identity:
-
-- node_name uniquely identifies a node
-- node_name is immutable
-- changing node identity creates a new node
-
-Relationship identity:
-
-- relationship identity depends on source_name + target_name + relation type
-- source_name and target_name are immutable
-- relation type is part of relationship identity and is immutable for an existing relationship
-- information, description and metadata are mutable relationship properties
 
 Use NODE_CREATE when entity is new.
 
@@ -98,6 +67,11 @@ If source, target, or relation type changes:
 2. emit RELATION_CREATE
 
 Never emit RELATION_UPDATE for source, target, or relation type changes.
+
+
+FIELD UNIQUENESS RULE:
+
+Each field must contribute data not already expressed by other fields in the same record or by the record's structure itself. If the same text would appear in two different fields, delete one. Prefer empty fields over redundant ones. An ideal extraction has most optional fields empty — this means the records capture only what is unique and necessary.
 
 
 EXTRACTION RULES:
@@ -127,12 +101,6 @@ EXTRACTION RULES:
 - If a new node type is suggested:
     1. immediately use that exact node type in node records
     2. do not substitute with generic node types
-- Keep descriptions compact and factual.
-- Use lowercase_snake_case for:
-    - node names
-    - type names
-    - relation names
-- Labels remain human readable.
 - Leave optional fields empty if no meaningful value exists.
 - If you need to include a pipe, newline, tab, or backslash in a field, encode it using backslash escapes: \\|, \\n, \\r, \\t, or \\\\ respectively.
 - Prefer omission over inference.
@@ -253,3 +221,7 @@ RELATION_CREATE|xyz_screen|john_smith|requested_by|primary request source||
 NODE_TYPE_SUGGESTION|person|A human individual.|The input names a person but no approved person node type fits.
 RELATION_TYPE_SUGGESTION|requested_by|Source exists or changed because of a request from target.|No approved relationship type captures request origin.
 </end#$#$>
+
+
+New user input:
+{{USER_INPUT}}

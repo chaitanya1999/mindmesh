@@ -4,15 +4,19 @@ overengineered config.js that recreates config.json by using firstDefined() with
 
 Graph Schema enforce in node edits , typeahead - DONE
 
-Readme.md sync , MEMORY BANK implementation for multi agent (planner , developer) orchestration
+Readme.md sync , MEMORY BANK implementation for multi agent (planner , developer) orchestration - DONE
 
-information , description , relation , node description --- system prompt must direct LLM for what kind of info goes where via graph schema.
+information , description , relation , node description --- system prompt must direct LLM for what kind of info goes where via graph schema. - DONE
 
 edges ordering / sequence
 
 TESTS
 
-CLI structure causing issue ? maintainability issue ?
+node dragging issue. link select then node dragging issue.
+
+HITL must not save metadata to DB.
+
+CLI structure causing issue ? maintainability issue ? --- DONE. not an issue.
 
 spaces feature --- different knowledge spaces or like Projects. architecture required. separate customizable system prompt , DBs, Vector Collections , etc
 

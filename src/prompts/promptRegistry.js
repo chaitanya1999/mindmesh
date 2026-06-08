@@ -1,9 +1,10 @@
 import fs from "node:fs";
-import { formatSchemaCatalog, loadGraphSchema } from "../schema/graphSchema.js";
+import { formatFieldGuidance, formatSchemaCatalog, loadGraphSchema } from "../schema/graphSchema.js";
 
 const GRAPH_SCHEMA_PLACEHOLDER = "{{GRAPH_SCHEMA}}";
 const EXISTING_GRAPH_CONTEXT_PLACEHOLDER = "{{EXISTING_GRAPH_CONTEXT}}";
 const USER_INPUT_PLACEHOLDER = "{{USER_INPUT}}";
+const FIELD_GUIDANCE_PLACEHOLDER = "{{FIELD_GUIDANCE}}";
 
 function readPrompt(filePath, fallback) {
 	if (!filePath || !fs.existsSync(filePath)) {
@@ -16,6 +17,7 @@ function readPrompt(filePath, fallback) {
 export function loadPrompts(config) {
 	const graphSchema = loadGraphSchema(config);
 	const schemaCatalog = formatSchemaCatalog(graphSchema);
+	const fieldGuidance = formatFieldGuidance(graphSchema);
 	const extractionSystemPath = config.prompts.extractionCustomSystemPath;
 	const extractionSystemFallback = "Extract graph nodes and relations using the custom line syntax.";
 	const extractionSystemTemplate = readPrompt(
@@ -26,6 +28,7 @@ export function loadPrompts(config) {
 	return {
 		extractionSystem: extractionSystemTemplate
 			.replaceAll(GRAPH_SCHEMA_PLACEHOLDER, schemaCatalog)
+			.replaceAll(FIELD_GUIDANCE_PLACEHOLDER, fieldGuidance)
 			.replaceAll(EXISTING_GRAPH_CONTEXT_PLACEHOLDER, "No existing graph context was retrieved.")
 			.replaceAll(USER_INPUT_PLACEHOLDER, ""),
 		extractionSystemTemplate,
@@ -64,6 +67,7 @@ export function buildExtractionPrompt(template, {
 } = {}) {
 	return renderTemplate(template, {
 		[GRAPH_SCHEMA_PLACEHOLDER]: formatSchemaCatalog(graphSchema),
+		[FIELD_GUIDANCE_PLACEHOLDER]: formatFieldGuidance(graphSchema),
 		[EXISTING_GRAPH_CONTEXT_PLACEHOLDER]: existingGraphContext,
 		[USER_INPUT_PLACEHOLDER]: userInput,
 	});

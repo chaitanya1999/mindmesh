@@ -8,6 +8,28 @@
 		],
 		"optional": [
 			"description"
+		],
+		"fields": [
+			{
+				"name": "name",
+				"description": "Unique node identifier used for identity and lookup. Requirements: lowercase_snake_case, immutable once created, globally unique within the graph.",
+				"constraints": {
+					"pattern": "^[a-z0-9_]+$",
+					"immutable": true
+				}
+			},
+			{
+				"name": "label",
+				"description": "Human-readable display name shown in the UI. Can include spaces and capitalization; not used for identity."
+			},
+			{
+				"name": "type",
+				"description": "Node taxonomy; must match one of nodeTypes[].name."
+			},
+			{
+				"name": "description",
+				"description": "Optional free-text context or rationale not modeled as separate nodes; prefer structured graph facts when possible."
+			}
 		]
 	},
 	"relationshipProperties": {
@@ -19,6 +41,42 @@
 		"optional": [
 			"information",
 			"description"
+		],
+		"fields": [
+			{
+				"name": "sourceName",
+				"description": "Source node name. Must reference an existing node; immutable for relation identity.",
+				"constraints": {
+					"immutable": true
+				}
+			},
+			{
+				"name": "targetName",
+				"description": "Target node name. Must reference an existing node; immutable for relation identity.",
+				"constraints": {
+					"immutable": true
+				}
+			},
+			{
+				"name": "relation",
+				"description": "Relation type; must match one of relationshipTypes[].name. Part of relation identity; use lowercase_snake_case.",
+				"constraints": {
+					"pattern": "^[a-z_]+$",
+					"immutable": true
+				}
+			},
+			{
+				"name": "information",
+				"description": "Single-line contextual note about the relationship (e.g., 'on click of Next button'). Use for UX/state/transport details clarifying the link."
+			},
+			{
+				"name": "description",
+				"description": "Optional longer rationale or operational notes about the relation; use sparingly."
+			},
+			{
+				"name": "metadata",
+				"description": "Optional machine-readable flags used by the ingestion engine (e.g., 'AMBIGUITY:<reason>', 'CONTRADICTION:<reason>')."
+			}
 		]
 	},
 	"nodeTypes": [

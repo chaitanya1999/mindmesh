@@ -1,69 +1,33 @@
 # Active Context
 
-This file is rewritten per task. Do not treat it as durable history.
+## Task Complete: Schema-Driven Property Descriptions & Prompt Restructuring
 
-## Task
+Schema-driven field descriptors have been implemented, with field guidance now injected via a dedicated `{{FIELD_GUIDANCE}}` placeholder in the extraction prompt — separate from the type-level `{{GRAPH_SCHEMA}}`. The prompt was restructured for LLM recency bias (user input at the end). Duplicate hardcoded field descriptions were removed from the prompt in favor of schema-driven ones.
 
-Update documentation after the config simplification. `src/config.js` now reads root `config.json` and applies optional `{{KEY}}` replacements from `config.replacements.json` or caller-supplied maps instead of reading application settings from environment variables.
+A new FIELD UNIQUENESS RULE (generic, no field names) was added to combat LLM redundancy where `description`/`information` fields duplicate what the node/relation itself expresses. Specific per-field "MUST NOT" language was strengthened in `graphSchema.json` field descriptors. The `mergeNode` function was fixed to prefer newer descriptions over longer ones, allowing subsequent ingestions to correct bad node descriptions.
 
-## Goal
+`validatePropertyConstraints()` provides optional ingestion-time constraint enforcement.
 
-`README.md` and the Memory Bank should accurately describe the JSON replacement config model, the known loader side effects, and the remaining web-port-only process environment override.
+## Artifacts Changed
 
-## Relevant Code Pathways
+- `schema/graphSchema.json` — added `fields` arrays under `nodeProperties`/`relationshipProperties` with descriptors, constraints, and strengthened non-redundancy language
+- `schema/graphSchema.example.json` — updated with matching `fields` arrays
+- `prompts/extraction-system-custom.md` — restructured order; field descriptions now injected via `{{FIELD_GUIDANCE}}` placeholder; old hardcoded duplicates removed; `{{USER_INPUT}}` moved to absolute end; added FIELD UNIQUENESS RULE; renamed `CRITICAL OUTPUT RULES` to `OUTPUT FORMAT REQUIREMENTS` with positive framing
+- `src/schema/graphSchema.js` — `formatSchemaCatalog()` reverted to original (no field guidance); new `formatFieldGuidance()` export dedicated to `{{FIELD_GUIDANCE}}`
+- `src/prompts/promptRegistry.js` — added `FIELD_GUIDANCE_PLACEHOLDER` rendering with `formatFieldGuidance()`
+- `src/ingestion/graphPayload.js` — `mergeNode` now prefers newer description/metadata over longer; added `validatePropertyConstraints()` (pattern, maxLength, allowedValues checks)
+- `src/cli/testParser.js` — tests updated for new merge behavior and separation of `formatSchemaCatalog()` vs `formatFieldGuidance()`
+- `README.md` — documented property descriptors, constraint validation
+- `MEMORY_BANK/codeMap.md` — documented property descriptor flow
 
-```text
-src/config.js
-  -> reads config.json
-  -> merges caller replacements with config.replacements.json
-  -> replaces {{KEY}} placeholders
-  -> parses JSON and returns runtime config
-```
+## Key Architecture Decisions
 
-```text
-src/server/server.js
-  -> still reads KG_WEB_PORT / PORT directly for server launch port
-```
+1. **`{{FIELD_GUIDANCE}}` is a separate placeholder** — not appended to `{{GRAPH_SCHEMA}}`. Keeps type-level schema and field-level guidance cleanly separated. Positioned immediately after OUTPUT SYNTAX in the prompt.
 
-## Relevant Files
+2. **FIELD UNIQUENESS RULE is generic** — no field names or record types mentioned. Structurally applies to all records regardless of schema.
 
-- `README.md`
-- `MEMORY_BANK/core.md`
-- `MEMORY_BANK/codeMap.md`
-- `MEMORY_BANK/decisions.md`
-- `MEMORY_BANK/activeContext.md`
+3. **`mergeNode` prefers recency** — newer description/metadata from incoming ingestion always replaces existing. Enables correction of bad descriptions over time (e.g., when a node description got polluted with relationship context by the LLM).
 
-## Implementation Plan
+## Verification
 
-1. Replace README env-var precedence docs with the config/replacements model.
-2. Update setup and provider examples to use `config.json` plus `config.replacements.json` placeholders.
-3. Keep `KG_WEB_PORT` / `PORT` documented only as process-level web server port overrides.
-4. Update Memory Bank rules, code map, and durable decisions to remove the old env-var pattern.
-5. Verify the config loader still parses the current config and run the parser smoke test.
-
-## Constraints
-
-- Documentation-only task; do not change `src/config.js`.
-- Do not expose real local secrets from `config.json`.
-- Keep scope limited to README and Memory Bank updates.
-
-## Acceptance Criteria
-
-- README says `config.json` is the complete application config and `config.replacements.json` provides placeholder values.
-- README documents `{{KEY}}` syntax, merge behavior, unresolved placeholders, `strict: true`, and invalid replacement JSON behavior.
-- README no longer instructs users to configure LLM, embedding, graph, vector, RAG, schema, logging, or prompt settings through `$env:*` commands.
-- Memory Bank no longer describes `KG_*` env vars as the application config mechanism.
-- The web port exception remains documented as `KG_WEB_PORT` / `PORT`.
-
-## Test Plan
-
-- `node --input-type=module -e "import { getConfig, describeRuntime } from './src/config.js'; const config = getConfig(); console.log(JSON.stringify(describeRuntime(config), null, 2));"`
-- `npm run kg:test-parser`
-- Skip DB/LLM smoke tests unless local Neo4j, Chroma, and provider credentials are intentionally available.
-
-## Review Checklist
-
-- Did the implementation satisfy every acceptance criterion?
-- Did it avoid touching runtime code?
-- Did it avoid exposing local secrets?
-- Were relevant tests run or clearly skipped with a reason?
+- `npm run kg:test-parser` — all tests pass

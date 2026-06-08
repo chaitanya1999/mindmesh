@@ -160,8 +160,12 @@ function mergeNode(existingNode, nextNode, schemaRules) {
 		...existingNode,
 		label: existingNode.label || nextNode.label,
 		type: shouldUpgradeFallbackType ? nextNode.type : existingNode.type,
-		description: preferText(existingNode.description, nextNode.description),
-		metadata: preferText(existingNode.metadata, nextNode.metadata),
+		description: nextNode.description
+			? nextNode.description
+			: existingNode.description,
+		metadata: nextNode.metadata
+			? nextNode.metadata
+			: existingNode.metadata,
 	};
 }
 
@@ -570,4 +574,97 @@ export function extractCustomGraph(text) {
 
 export function parseGraphExtraction(text) {
 	return extractCustomGraph(text);
+}
+
+/**
+ * Validate node properties against schema constraint definitions.
+ * Returns an array of violation objects with { field, value, constraint, message }.
+ * This is optional and configurable; violations can be attached as metadata
+ * or used to reject mutations depending on ingestion mode and schema.strict config.
+ *
+ * @param {object} graphPayload - Normalized graph payload ({ nodes, relations })
+ * @param {object} schema - Loaded graph schema with nodeProperties.fields and relationshipProperties.fields
+ * @param {object} [options]
+ * @param {boolean} [options.strict=false] - If true, violations are returned as errors (strings); otherwise as warnings
+ * @returns {{ violations: Array<{field:string, value:*, constraint:string, message:string, record:object}>, errors: string[] }}
+ */
+export function validatePropertyConstraints(graphPayload, schema, { strict = false } = {}) {
+	const violations = [];
+	const errors = [];
+
+	const nodeFieldMap = buildFieldMap(schema.nodeProperties?.fields);
+	const relationFieldMap = buildFieldMap(schema.relationshipProperties?.fields);
+
+	for (const node of graphPayload.nodes ?? []) {
+		for (const [fieldName, constraints] of nodeFieldMap) {
+			const value = node[fieldName];
+			const result = checkConstraints(fieldName, value, constraints, node);
+			if (result) {
+				violations.push(result);
+				if (strict) {
+					errors.push(result.message);
+				}
+			}
+		}
+		// Check immutable by comparing against existing node? Not possible without DB lookup here.
+	}
+
+	for (const relation of graphPayload.relations ?? []) {
+		for (const [fieldName, constraints] of relationFieldMap) {
+			const value = relation[fieldName];
+			const result = checkConstraints(fieldName, value, constraints, relation);
+			if (result) {
+				violations.push(result);
+				if (strict) {
+					errors.push(result.message);
+				}
+			}
+		}
+	}
+
+	return { violations, errors };
+}
+
+function buildFieldMap(fields = []) {
+	const map = new Map();
+	for (const field of fields) {
+		if (field.constraints && typeof field.constraints === "object" && Object.keys(field.constraints).length > 0) {
+			map.set(field.name, field.constraints);
+		}
+	}
+	return map;
+}
+
+function checkConstraints(fieldName, value, constraints, record) {
+	if (constraints.pattern && value && !new RegExp(constraints.pattern).test(String(value))) {
+		return {
+			field: fieldName,
+			value,
+			constraint: `pattern: ${constraints.pattern}`,
+			message: `Field "${fieldName}" value "${value}" does not match required pattern ${constraints.pattern}.`,
+			record,
+		};
+	}
+
+	if (constraints.maxLength !== undefined && constraints.maxLength !== null && value && String(value).length > constraints.maxLength) {
+		return {
+			field: fieldName,
+			value,
+			constraint: `maxLength: ${constraints.maxLength}`,
+			message: `Field "${fieldName}" value exceeds maximum length of ${constraints.maxLength}.`,
+			record,
+		};
+	}
+
+	if (constraints.allowedValues && Array.isArray(constraints.allowedValues) && value && !constraints.allowedValues.includes(String(value))) {
+		return {
+			field: fieldName,
+			value,
+			constraint: `allowedValues: [${constraints.allowedValues.join(", ")}]`,
+			message: `Field "${fieldName}" value "${value}" is not in allowed values: ${constraints.allowedValues.join(", ")}.`,
+			record,
+		};
+	}
+
+	return null;
 }

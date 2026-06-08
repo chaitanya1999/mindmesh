@@ -2,9 +2,9 @@
 
 ## Project Purpose
 
-MindMesh is a prototype personal knowledge management system. It extracts graph facts from user text/documents, stores approved facts in Neo4j, indexes approved graph records and pending HITL proposals in ChromaDB, and answers questions with a hybrid vector + graph RAG flow.
+MindMesh is a **HITL-gated, schema-governed institutional knowledge lifecycle system** — not a generic RAG pipeline. Its defining contract: LLMs suggest, humans approve, schema enforces. It manages the full lifecycle of structured knowledge: ingestion, validation, graph mutation, semantic search, scheduled maintenance (synthesis, decay detection, nugget extraction), and human memory refresh. Every write to the knowledge graph passes through either explicit human approval (HITL mode) or schema-validated auto-commit — there are no silent mutations.
 
-The project is intended to become a practical knowledge assistant where user-provided information can be ingested, reviewed, searched, connected, and queried through both semantic retrieval and graph structure.
+Core capabilities: hybrid vector + graph RAG, governed mutable schema, background CRON-driven knowledge jobs, and a conversational query layer over a Neo4j + ChromaDB dual store.
 
 ## Architecture Summary
 
