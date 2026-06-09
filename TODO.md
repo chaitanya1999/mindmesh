@@ -8,6 +8,10 @@ Readme.md sync , MEMORY BANK implementation for multi agent (planner , developer
 
 information , description , relation , node description --- system prompt must direct LLM for what kind of info goes where via graph schema. - DONE
 
+CLI structure causing issue ? maintainability issue ? --- DONE. not an issue.
+
+------------------------------------------------------------------------------------------------------------------------------------
+
 edges ordering / sequence
 
 TESTS
@@ -16,7 +20,7 @@ node dragging issue. link select then node dragging issue.
 
 HITL must not save metadata to DB.
 
-CLI structure causing issue ? maintainability issue ? --- DONE. not an issue.
+Modularize app.js
 
 spaces feature --- different knowledge spaces or like Projects. architecture required. separate customizable system prompt , DBs, Vector Collections , etc
 

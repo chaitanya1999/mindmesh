@@ -1901,18 +1901,25 @@ function syncNeoVisSelection(visualization, graphData, focusedItem, highlightNod
 	}
 
 	const focusCamera = options.focusCamera ?? true;
-	const selectedNodeVisIds = new Set(
+
+	// Visual style sets: full neighborhood for dimming/highlighting (no drag impact)
+	const styleNodeVisIds = new Set(
 		(highlightNodeIds ?? [])
 			.map((nodeId) => graphData.nodeVisIdById.get(nodeId))
 			.filter((nodeId) => nodeId !== undefined),
 	);
-	const selectedRelationVisIds = new Set(
+	const styleRelationVisIds = new Set(
 		(highlightRelationIds ?? [])
 			.map((relationId) => graphData.relationVisIdById.get(relationId))
 			.filter((relationId) => relationId !== undefined),
 	);
 
-	function addConnectedNeighborhood(nodeId) {
+	// Interaction selection sets: only the directly focused item (avoids group drag)
+	const selectionNodeVisIds = new Set();
+	const selectionRelationVisIds = new Set();
+
+	function addConnectedNeighborhood(nodeId, targetSets) {
+		const { nodeSet, relationSet } = targetSets;
 		for (const [relationId, endpoints] of graphData.edgeEndpointById.entries()) {
 			if (endpoints.sourceId !== nodeId && endpoints.targetId !== nodeId) {
 				continue;
@@ -1920,26 +1927,29 @@ function syncNeoVisSelection(visualization, graphData, focusedItem, highlightNod
 
 			const relationVisId = graphData.relationVisIdById.get(relationId);
 			if (relationVisId !== undefined) {
-				selectedRelationVisIds.add(relationVisId);
+				relationSet.add(relationVisId);
 			}
 
 			const neighborId = endpoints.sourceId === nodeId ? endpoints.targetId : endpoints.sourceId;
 			const neighborVisId = graphData.nodeVisIdById.get(neighborId);
 			if (neighborVisId !== undefined) {
-				selectedNodeVisIds.add(neighborVisId);
+				nodeSet.add(neighborVisId);
 			}
 		}
 	}
 
 	for (const nodeId of highlightNodeIds ?? []) {
-		addConnectedNeighborhood(nodeId);
+		addConnectedNeighborhood(nodeId, { nodeSet: styleNodeVisIds, relationSet: styleRelationVisIds });
 	}
 
 	if (focusedItem?.type === "node") {
 		const nodeVisId = graphData.nodeVisIdById.get(focusedItem.id);
 		if (nodeVisId !== undefined) {
-			selectedNodeVisIds.add(nodeVisId);
-			addConnectedNeighborhood(focusedItem.id);
+			// Visual: full neighborhood
+			styleNodeVisIds.add(nodeVisId);
+			addConnectedNeighborhood(focusedItem.id, { nodeSet: styleNodeVisIds, relationSet: styleRelationVisIds });
+			// Selection: just the focused node
+			selectionNodeVisIds.add(nodeVisId);
 			if (focusCamera && !focusedItem.skipCamera) {
 				network.focus(nodeVisId, {
 					animation: { duration: 420, easingFunction: "easeInOutQuad" },
@@ -1950,7 +1960,10 @@ function syncNeoVisSelection(visualization, graphData, focusedItem, highlightNod
 	} else if (focusedItem?.type === "relation") {
 		const relationVisId = graphData.relationVisIdById.get(focusedItem.id);
 		if (relationVisId !== undefined) {
-			selectedRelationVisIds.add(relationVisId);
+			// Visual: relation highlighted
+			styleRelationVisIds.add(relationVisId);
+			// Selection: relation selected for interaction
+			selectionRelationVisIds.add(relationVisId);
 		}
 
 		const endpoints = graphData.edgeEndpointById.get(focusedItem.id);
@@ -1960,7 +1973,9 @@ function syncNeoVisSelection(visualization, graphData, focusedItem, highlightNod
 				.filter((nodeId) => nodeId !== undefined)
 			: [];
 		for (const nodeVisId of endpointVisIds) {
-			selectedNodeVisIds.add(nodeVisId);
+			// Visual: highlight the relation's endpoint nodes
+			styleNodeVisIds.add(nodeVisId);
+			// Do NOT add to selectionNodeVisIds — avoids group drag on connected nodes
 		}
 		if (focusCamera && endpointVisIds.length > 0) {
 			network.fit({
@@ -1970,14 +1985,15 @@ function syncNeoVisSelection(visualization, graphData, focusedItem, highlightNod
 		}
 	}
 
+	// Only select the minimal set for interaction (avoids group drag on click+click-drag)
 	network.setSelection({
-		nodes: [...selectedNodeVisIds],
-		edges: [...selectedRelationVisIds],
+		nodes: [...selectionNodeVisIds],
+		edges: [...selectionRelationVisIds],
 	}, {
 		highlightEdges: true,
 		unselectAll: true,
 	});
-	applyNeoVisSelectionStyles(visualization, graphData, selectedNodeVisIds, selectedRelationVisIds);
+	applyNeoVisSelectionStyles(visualization, graphData, styleNodeVisIds, styleRelationVisIds);
 }
 
 function findNodeNearViewportPoint({ graphologyGraph, point, renderer }) {
@@ -2181,6 +2197,21 @@ function bindInteractionHandlers({
 
 		draggedNodeRef.current = null;
 		renderer.setSetting("enableCameraPanning", true);
+
+		const graphologyGraph = graphologyGraphRef.current;
+		if (graphologyGraph && graphologyGraph.order > 0) {
+			forceLayout.assign(graphologyGraph, {
+				maxIterations: 80,
+				settings: {
+					attraction: 0.0008,
+					repulsion: 0.18,
+					gravity: 0.04,
+					inertia: 0.6,
+					maxMove: 12,
+				},
+			});
+		}
+
 		renderer.refresh();
 	});
 
@@ -2598,7 +2629,57 @@ function NeoVisGraphPreview({
 		}
 
 		function previewSelection(item) {
-			syncNeoVisSelection(visualization, graphDataRef.current, item, [], [], { focusCamera: false });
+			const graphData = graphDataRef.current;
+			if (!visualization?.network || !graphData) {
+				return;
+			}
+
+			const previewNodeVisIds = new Set();
+			const previewRelationVisIds = new Set();
+
+			function addConnectedNeighborhood(nodeId) {
+				for (const [relationId, endpoints] of graphData.edgeEndpointById.entries()) {
+					if (endpoints.sourceId !== nodeId && endpoints.targetId !== nodeId) {
+						continue;
+					}
+
+					const relationVisId = graphData.relationVisIdById.get(relationId);
+					if (relationVisId !== undefined) {
+						previewRelationVisIds.add(relationVisId);
+					}
+
+					const neighborId = endpoints.sourceId === nodeId ? endpoints.targetId : endpoints.sourceId;
+					const neighborVisId = graphData.nodeVisIdById.get(neighborId);
+					if (neighborVisId !== undefined) {
+						previewNodeVisIds.add(neighborVisId);
+					}
+				}
+			}
+
+			if (item?.type === "node") {
+				const nodeVisId = graphData.nodeVisIdById.get(item.id);
+				if (nodeVisId !== undefined) {
+					previewNodeVisIds.add(nodeVisId);
+					addConnectedNeighborhood(item.id);
+				}
+			} else if (item?.type === "relation") {
+				const relationVisId = graphData.relationVisIdById.get(item.id);
+				if (relationVisId !== undefined) {
+					previewRelationVisIds.add(relationVisId);
+				}
+
+				const endpoints = graphData.edgeEndpointById.get(item.id);
+				if (endpoints) {
+					for (const nodeId of [endpoints.sourceId, endpoints.targetId]) {
+						const nodeVisId = graphData.nodeVisIdById.get(nodeId);
+						if (nodeVisId !== undefined) {
+							previewNodeVisIds.add(nodeVisId);
+						}
+					}
+				}
+			}
+
+			applyNeoVisSelectionStyles(visualization, graphData, previewNodeVisIds, previewRelationVisIds);
 		}
 
 		function restoreSelection() {
@@ -2645,6 +2726,8 @@ function NeoVisGraphPreview({
 				return () => {};
 			}
 
+			let isDragging = false;
+
 			const handleClickStage = (params) => {
 				if ((params.nodes?.length ?? 0) === 0 && (params.edges?.length ?? 0) === 0) {
 					lastEdgeClick = { relationId: "", time: 0 };
@@ -2674,27 +2757,48 @@ function NeoVisGraphPreview({
 					}
 				}
 			};
+			const handleDragStart = () => {
+				isDragging = true;
+			};
+			const handleDragEnd = () => {
+				isDragging = false;
+			};
+
 			const handleHoverNode = (params) => {
+				if (isDragging) {
+					return;
+				}
 				const nodeId = graphDataRef.current?.nodeIdByVisId.get(Number(params.node));
 				if (nodeId) {
 					previewSelection({ type: "node", id: nodeId, skipCamera: true });
 				}
 			};
 			const handleBlurNode = () => {
+				if (isDragging) {
+					return;
+				}
 				restoreSelection();
 			};
 			const handleHoverEdge = (params) => {
+				if (isDragging) {
+					return;
+				}
 				const relationId = graphDataRef.current?.relationIdByVisId.get(Number(params.edge));
 				if (relationId) {
 					previewSelection({ type: "relation", id: relationId });
 				}
 			};
 			const handleBlurEdge = () => {
+				if (isDragging) {
+					return;
+				}
 				restoreSelection();
 			};
 
 			network.on("click", handleClickStage);
 			network.on("doubleClick", handleDoubleClick);
+			network.on("dragStart", handleDragStart);
+			network.on("dragEnd", handleDragEnd);
 			network.on("hoverNode", handleHoverNode);
 			network.on("blurNode", handleBlurNode);
 			network.on("hoverEdge", handleHoverEdge);
@@ -2702,6 +2806,8 @@ function NeoVisGraphPreview({
 			return () => {
 				network.off("click", handleClickStage);
 				network.off("doubleClick", handleDoubleClick);
+				network.off("dragStart", handleDragStart);
+				network.off("dragEnd", handleDragEnd);
 				network.off("hoverNode", handleHoverNode);
 				network.off("blurNode", handleBlurNode);
 				network.off("hoverEdge", handleHoverEdge);
