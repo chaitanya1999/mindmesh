@@ -10,17 +10,21 @@ information , description , relation , node description --- system prompt must d
 
 CLI structure causing issue ? maintainability issue ? --- DONE. not an issue.
 
+node dragging issue. link select then node dragging issue.  --- DONE
+
 ------------------------------------------------------------------------------------------------------------------------------------
+
+suggestions within graphSchema.json
+
+MODULARIZE EVERYTHING , app.js
+
+Atomicity , architecture review , code paths visit
 
 edges ordering / sequence
 
 TESTS
 
-node dragging issue. link select then node dragging issue.
-
 HITL must not save metadata to DB.
-
-Modularize app.js
 
 spaces feature --- different knowledge spaces or like Projects. architecture required. separate customizable system prompt , DBs, Vector Collections , etc
 

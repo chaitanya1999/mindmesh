@@ -154,21 +154,21 @@ function SchemaSuggestionRow({ activeRowKey, onDelete, onFocus, onUpdate, record
 					<span>Name</span>
 					<input
 						value={record.name}
-						onInput={(event) => updateField("name", event.currentTarget.value)}
+						onBlur={(event) => updateField("name", event.currentTarget.value)}
 					/>
 				</label>
 				<label class="compact-field">
 					<span>Description</span>
 					<input
 						value={record.description}
-						onInput={(event) => updateField("description", event.currentTarget.value)}
+						onBlur={(event) => updateField("description", event.currentTarget.value)}
 					/>
 				</label>
 				<label class="compact-field">
 					<span>Reason</span>
 					<input
 						value={record.reason}
-						onInput={(event) => updateField("reason", event.currentTarget.value)}
+						onBlur={(event) => updateField("reason", event.currentTarget.value)}
 					/>
 				</label>
 				<button

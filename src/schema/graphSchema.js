@@ -356,3 +356,29 @@ export function promoteGraphSchemaSuggestions(schema, schemaSuggestions = {}) {
 		relationshipTypesAdded: nextRelationshipTypes.added,
 	};
 }
+
+
+export function buildApprovalSchema(baseSchema, schemaSuggestions = {}) {
+    const approvalNodeTypes = new Map(baseSchema.nodeTypes.map(e => [e.name, e]));
+    const approvalRelationTypes = new Map(baseSchema.relationshipTypes.map(e => [e.name, e]));
+    
+    for (const suggestion of (schemaSuggestions.nodeTypes ?? [])) {
+        const name = toSnakeCase(suggestion.name);
+        if (name && !approvalNodeTypes.has(name)) {
+            approvalNodeTypes.set(name, { name, description: suggestion.description || '' });
+        }
+    }
+    
+    for (const suggestion of (schemaSuggestions.relationshipTypes ?? [])) {
+        const name = toSnakeCase(suggestion.name);
+        if (name && !approvalRelationTypes.has(name)) {
+            approvalRelationTypes.set(name, { name, description: suggestion.description || '' });
+        }
+    }
+    
+    return {
+        ...baseSchema,
+        nodeTypes: [...approvalNodeTypes.values()],
+        relationshipTypes: [...approvalRelationTypes.values()],
+    };
+}

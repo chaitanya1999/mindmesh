@@ -21,6 +21,7 @@ import {
 	promoteGraphSchemaSuggestions,
 	readEditableGraphSchema,
 	saveEditableGraphSchema,
+	buildApprovalSchema
 } from "../schema/graphSchema.js";
 import { createVectorStore } from "../vector/providerFactory.js";
 
@@ -48,7 +49,7 @@ const upload = multer({
 			callback(null, true);
 			return;
 		}
-
+		
 		const error = new Error("Only PDF, DOCX, or DOC files can be uploaded.");
 		error.status = 400;
 		callback(error);
@@ -77,10 +78,10 @@ function stableHash(value) {
 
 function labelFromName(name) {
 	return name
-		.split("_")
-		.filter(Boolean)
-		.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-		.join(" ");
+	.split("_")
+	.filter(Boolean)
+	.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+	.join(" ");
 }
 
 function requireString(value, fieldName) {
@@ -90,7 +91,7 @@ function requireString(value, fieldName) {
 		error.status = 400;
 		throw error;
 	}
-
+	
 	return text;
 }
 
@@ -101,7 +102,7 @@ function normalizeManualNode(body, existingId = "") {
 		error.status = 400;
 		throw error;
 	}
-
+	
 	return {
 		id: existingId || body?.id || `node:${name}`,
 		label: String(body?.label || labelFromName(name)).trim(),
@@ -115,7 +116,7 @@ function normalizeManualRelation(body, existingId = "") {
 	const sourceId = requireString(body?.sourceId, "sourceId");
 	const targetId = requireString(body?.targetId, "targetId");
 	const relation = toSnakeCase(body?.relation || "relates_to") || "relates_to";
-
+	
 	return {
 		id: existingId || body?.id || `rel:${stableHash(`${sourceId}:${relation}:${targetId}`)}`,
 		sourceId,
@@ -133,7 +134,7 @@ function requireText(body) {
 		error.status = 400;
 		throw error;
 	}
-
+	
 	return text;
 }
 
@@ -148,20 +149,20 @@ function optionalMemoryMessages(body) {
 
 function fileExtension(file) {
 	return String(file?.originalname ?? "")
-		.split(".")
-		.pop()
-		?.toLowerCase() ?? "";
+	.split(".")
+	.pop()
+	?.toLowerCase() ?? "";
 }
 
 function uploadedFiles(req) {
 	if (Array.isArray(req.files)) {
 		return req.files;
 	}
-
+	
 	if (req.files && typeof req.files === "object") {
 		return Object.values(req.files).flat();
 	}
-
+	
 	return [];
 }
 
@@ -177,27 +178,27 @@ async function extractPdfText(file) {
 
 async function extractWordText(file) {
 	const extension = fileExtension(file);
-
+	
 	if (extension === "docx") {
 		const result = await mammoth.extractRawText({ buffer: file.buffer });
 		return result.value;
 	}
-
+	
 	const document = await wordExtractor.extract(file.buffer);
 	return document.getBody();
 }
 
 async function extractUploadedText(file) {
 	const extension = fileExtension(file);
-
+	
 	if (extension === "pdf") {
 		return extractPdfText(file);
 	}
-
+	
 	if (extension === "doc" || extension === "docx") {
 		return extractWordText(file);
 	}
-
+	
 	const error = new Error("Only PDF, DOCX, or DOC files can be uploaded.");
 	error.status = 400;
 	throw error;
@@ -206,24 +207,24 @@ async function extractUploadedText(file) {
 async function buildIngestText(req) {
 	const text = String(req.body?.text ?? "").trim();
 	const files = uploadedFiles(req);
-
+	
 	if (files.length === 0) {
 		return requireText(req.body);
 	}
-
+	
 	const extractedTexts = await Promise.all(files.map(async (file) => (
 		String(await extractUploadedText(file) ?? "").trim()
 	)));
 	const combinedText = [text, ...extractedTexts]
-		.filter(Boolean)
-		.join("\n\n");
-
+	.filter(Boolean)
+	.join("\n\n");
+	
 	if (!combinedText) {
 		const error = new Error("Uploaded files did not contain readable text.");
 		error.status = 400;
 		throw error;
 	}
-
+	
 	return combinedText;
 }
 
@@ -234,7 +235,7 @@ function requireIngestUserName(req) {
 		error.status = 400;
 		throw error;
 	}
-
+	
 	return userName;
 }
 
@@ -245,7 +246,7 @@ function requireUserName(body, fieldName = "userName") {
 		error.status = 400;
 		throw error;
 	}
-
+	
 	return userName;
 }
 
@@ -361,7 +362,7 @@ async function storeManualHitlProposal({ llmResponse, userInput, userName }) {
 		contradictionCount: reviewSignals.contradictionCount,
 	});
 	const graph = await graphStore.getGraphPreview(DEFAULT_GRAPH_LIMIT);
-
+	
 	return {
 		status: "pending_hitl",
 		applied: false,
@@ -390,11 +391,11 @@ function noteReviewSignals(note) {
 		ambiguityCount: Number(note.ambiguityCount ?? note.metadata?.ambiguityCount ?? 0),
 		contradictionCount: Number(note.contradictionCount ?? note.metadata?.contradictionCount ?? 0),
 	};
-
+	
 	if (!note.llmResponse) {
 		return storedSignals;
 	}
-
+	
 	try {
 		const { graphPayload } = parseHitlResponse(note.llmResponse);
 		return countReviewSignals(graphPayload);
@@ -405,11 +406,11 @@ function noteReviewSignals(note) {
 
 function buildTriplets(graph) {
 	const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
-
+	
 	return graph.relations.map((relation) => {
 		const source = nodeById.get(relation.sourceId);
 		const target = nodeById.get(relation.targetId);
-
+		
 		return {
 			sourceId: relation.sourceId,
 			sourceLabel: source?.label ?? relation.sourceId,
@@ -484,7 +485,7 @@ async function requireHitlNote(id) {
 		error.status = 404;
 		throw error;
 	}
-
+	
 	return note;
 }
 
@@ -496,7 +497,7 @@ function parseHitlResponse(llmResponse) {
 			schema: graphSchema,
 			autoApplySuggestions: prompts.schemaAutoApplySuggestions,
 		});
-
+		
 		return { graphSchema, graphPayload };
 	} catch (error) {
 		error.status = 400;
@@ -504,21 +505,12 @@ function parseHitlResponse(llmResponse) {
 	}
 }
 
-function requireSchemaValidHitlResponse(llmResponse) {
-	const result = parseHitlResponse(llmResponse);
-	if (hasSchemaViolations(result.graphPayload)) {
-		throw schemaViolationError(result.graphPayload);
-	}
-
-	return result;
-}
-
 async function pendingProposalForSchemaViolation({ llmResponse, reviewedBy, userInput }) {
 	const { graphPayload } = parseHitlResponse(llmResponse);
 	if (!hasSchemaViolations(graphPayload)) {
 		return null;
 	}
-
+	
 	return storeManualHitlProposal({
 		userName: reviewedBy,
 		userInput,
@@ -528,8 +520,8 @@ async function pendingProposalForSchemaViolation({ llmResponse, reviewedBy, user
 
 function persistHitlSchemaSuggestions(graphSchema, graphPayload) {
 	graphPayload.persistedSchemaSuggestions = prompts.schemaAutoApplySuggestions
-		? promoteGraphSchemaSuggestions(graphSchema, graphPayload.schemaSuggestions)
-		: persistGraphSchemaSuggestions(graphSchema, graphPayload.schemaSuggestions);
+	? promoteGraphSchemaSuggestions(graphSchema, graphPayload.schemaSuggestions)
+	: persistGraphSchemaSuggestions(graphSchema, graphPayload.schemaSuggestions);
 }
 
 function pendingMarker(note, operation) {
@@ -563,7 +555,7 @@ function ensurePendingEndpointNode(nodeMap, nodeId, note) {
 	if (!nodeId || nodeMap.has(nodeId)) {
 		return;
 	}
-
+	
 	const name = String(nodeId).replace(/^node:/, "");
 	nodeMap.set(nodeId, {
 		id: nodeId,
@@ -578,11 +570,11 @@ function ensurePendingEndpointNode(nodeMap, nodeId, note) {
 function mergeHitlPayloadIntoGraph(baseGraph, note, graphPayload) {
 	const nodeMap = new Map(baseGraph.nodes.map((node) => [node.id, node]));
 	const relationMap = new Map(baseGraph.relations.map((relation) => [relation.id, relation]));
-
+	
 	for (const node of graphPayload.nodes) {
 		mergePendingNode(nodeMap, node, note, node.operation);
 	}
-
+	
 	for (const nodeDelete of graphPayload.nodeDeletes) {
 		const existingNode = nodeMap.get(nodeDelete.id);
 		mergePendingNode(nodeMap, existingNode ? {
@@ -597,13 +589,13 @@ function mergeHitlPayloadIntoGraph(baseGraph, note, graphPayload) {
 			metadata: nodeDelete.metadata || "",
 		}, note, "delete");
 	}
-
+	
 	for (const relation of graphPayload.relations) {
 		ensurePendingEndpointNode(nodeMap, relation.sourceId, note);
 		ensurePendingEndpointNode(nodeMap, relation.targetId, note);
 		mergePendingRelation(relationMap, relation, note, relation.operation);
 	}
-
+	
 	for (const relationDelete of graphPayload.relationDeletes) {
 		ensurePendingEndpointNode(nodeMap, relationDelete.sourceId, note);
 		ensurePendingEndpointNode(nodeMap, relationDelete.targetId, note);
@@ -614,7 +606,7 @@ function mergeHitlPayloadIntoGraph(baseGraph, note, graphPayload) {
 			metadata: relationDelete.metadata || existingRelation.metadata || "",
 		} : relationDelete, note, "delete");
 	}
-
+	
 	return {
 		nodes: [...nodeMap.values()],
 		relations: [...relationMap.values()],
@@ -630,7 +622,7 @@ async function buildHitlGraphPreview(limit) {
 		relations: approvedGraph.relations ?? [],
 	};
 	const warnings = [];
-
+	
 	for (const note of notes) {
 		try {
 			const { graphPayload } = parseHitlResponse(note.llmResponse);
@@ -642,7 +634,7 @@ async function buildHitlGraphPreview(limit) {
 			});
 		}
 	}
-
+	
 	return {
 		...previewGraph,
 		limit,
@@ -655,7 +647,7 @@ async function buildHitlGraphPreview(limit) {
 async function buildHitlNoteGraphPreview(note, { depth = 2, llmResponse = note.llmResponse } = {}) {
 	const { graphPayload } = parseHitlResponse(llmResponse);
 	const pendingNodeIds = new Set();
-
+	
 	for (const node of graphPayload.nodes) {
 		pendingNodeIds.add(node.id);
 	}
@@ -670,12 +662,12 @@ async function buildHitlNoteGraphPreview(note, { depth = 2, llmResponse = note.l
 		pendingNodeIds.add(relationDelete.sourceId);
 		pendingNodeIds.add(relationDelete.targetId);
 	}
-
+	
 	const approvedContext = pendingNodeIds.size > 0
-		? await graphStore.expandFromNodes([...pendingNodeIds], depth)
-		: { nodes: [], relations: [] };
+	? await graphStore.expandFromNodes([...pendingNodeIds], depth)
+	: { nodes: [], relations: [] };
 	const previewGraph = mergeHitlPayloadIntoGraph(approvedContext, note, graphPayload);
-
+	
 	return {
 		...previewGraph,
 		depth,
@@ -734,7 +726,7 @@ app.use(express.static(publicDir));
 app.get("/api/graph", asyncRoute(async (req, res) => {
 	const limit = parseLimit(req.query.limit);
 	const graph = await graphStore.getGraphPreview(limit);
-
+	
 	res.json({
 		...withGraphSchema(graph),
 		limit,
@@ -745,20 +737,20 @@ app.get("/api/nodes/search", asyncRoute(async (req, res) => {
 	const query = String(req.query.q ?? "").trim();
 	const limit = parseSearchLimit(req.query.limit);
 	const nodes = await graphStore.searchNodes(query, limit);
-
+	
 	res.json({ nodes, query, limit });
 }));
 
 app.get("/api/nodes/:id/neighborhood", asyncRoute(async (req, res) => {
 	const depth = parseDepth(req.query.depth);
 	const graph = await graphStore.getNodeNeighborhood(req.params.id, depth);
-
+	
 	res.json({ ...withGraphSchema(graph), depth });
 }));
 
 app.get("/api/nodes/:id/relations", asyncRoute(async (req, res) => {
 	const relations = await graphStore.getRelationsForNode(req.params.id);
-
+	
 	res.json({ relations });
 }));
 
@@ -770,7 +762,7 @@ app.post("/api/nodes", asyncRoute(async (req, res) => {
 		userInput: `${userName} requested node creation for ${node.label}.`,
 		llmResponse: pipelinePayload([nodePipelineRecord("NODE_CREATE", node)]),
 	});
-
+	
 	res.status(202).json(result);
 }));
 
@@ -782,7 +774,7 @@ app.put("/api/nodes/:id", asyncRoute(async (req, res) => {
 		userInput: `${userName} requested node update for ${node.label}.`,
 		llmResponse: pipelinePayload([nodePipelineRecord("NODE_UPDATE", node)]),
 	});
-
+	
 	res.status(202).json(result);
 }));
 
@@ -795,7 +787,7 @@ app.delete("/api/nodes/:id", asyncRoute(async (req, res) => {
 		userInput: `${userName} requested node deletion for ${existingNode?.label || nodeName}.`,
 		llmResponse: pipelinePayload([nodeDeletePipelineRecord(nodeName)]),
 	});
-
+	
 	res.status(202).json(result);
 }));
 
@@ -807,7 +799,7 @@ app.post("/api/relations", asyncRoute(async (req, res) => {
 		userInput: `${userName} requested relation creation for ${relation.relation}.`,
 		llmResponse: pipelinePayload([relationPipelineRecord("RELATION_CREATE", relation)]),
 	});
-
+	
 	res.status(202).json(result);
 }));
 
@@ -815,28 +807,28 @@ app.put("/api/relations/:id", asyncRoute(async (req, res) => {
 	const relation = normalizeManualRelation(req.body, req.params.id);
 	const userName = requireUserName(req.body);
 	const existingRelation = typeof graphStore.getRelation === "function"
-		? await graphStore.getRelation(req.params.id)
-		: null;
+	? await graphStore.getRelation(req.params.id)
+	: null;
 	const lines = existingRelation
-		? [
-			relationDeletePipelineRecord(existingRelation),
-			relationPipelineRecord("RELATION_CREATE", relation),
-		]
-		: [relationPipelineRecord("RELATION_UPDATE", relation)];
+	? [
+		relationDeletePipelineRecord(existingRelation),
+		relationPipelineRecord("RELATION_CREATE", relation),
+	]
+	: [relationPipelineRecord("RELATION_UPDATE", relation)];
 	const result = await storeManualHitlProposal({
 		userName,
 		userInput: `${userName} requested relation update for ${relation.relation}.`,
 		llmResponse: pipelinePayload(lines),
 	});
-
+	
 	res.status(202).json(result);
 }));
 
 app.delete("/api/relations/:id", asyncRoute(async (req, res) => {
 	const userName = requireUserName(req.body);
 	const relation = typeof graphStore.getRelation === "function"
-		? await graphStore.getRelation(req.params.id)
-		: null;
+	? await graphStore.getRelation(req.params.id)
+	: null;
 	if (!relation) {
 		const error = new Error("Relation was not found.");
 		error.status = 404;
@@ -847,7 +839,7 @@ app.delete("/api/relations/:id", asyncRoute(async (req, res) => {
 		userInput: `${userName} requested relation deletion for ${relation.relation}.`,
 		llmResponse: pipelinePayload([relationDeletePipelineRecord(relation)]),
 	});
-
+	
 	res.status(202).json(result);
 }));
 
@@ -860,7 +852,7 @@ app.post("/api/ask", asyncRoute(async (req, res) => {
 		memoryMessages: optionalMemoryMessages(req.body),
 		includeUnverifiedKnowledge: Boolean(req.body?.includeUnverifiedKnowledge),
 	});
-
+	
 	res.json({
 		answer: result.answer,
 		entryNodes: result.entryNodes,
@@ -876,7 +868,7 @@ app.post("/api/jobs/scanner", asyncRoute(async (req, res) => {
 		depth: parseJobDepth(req.body?.depth),
 		nodeId: req.body?.nodeId,
 	});
-
+	
 	res.json(result);
 }));
 
@@ -886,7 +878,7 @@ app.post("/api/jobs/nugget", asyncRoute(async (req, res) => {
 		depth: parseJobDepth(req.body?.depth),
 		nodeId: req.body?.nodeId,
 	});
-
+	
 	res.json(result);
 }));
 
@@ -900,7 +892,7 @@ app.put("/api/schema", asyncRoute(async (req, res) => {
 			rawJson: req.body?.rawJson,
 			schema: req.body?.schema,
 		});
-
+		
 		res.json({
 			...result,
 			status: "saved",
@@ -915,7 +907,7 @@ app.get("/api/hitl/notes", asyncRoute(async (req, res) => {
 	requireHitlNotesSupport();
 	const limit = parseSearchLimit(req.query.limit || 100);
 	const notes = await vectorStore.listHitlNotes({ status: "pending", limit });
-
+	
 	res.json({
 		notes: notes.map(hitlNoteSummary),
 	});
@@ -923,7 +915,7 @@ app.get("/api/hitl/notes", asyncRoute(async (req, res) => {
 
 app.get("/api/hitl/notes/:id", asyncRoute(async (req, res) => {
 	const note = await requireHitlNote(req.params.id);
-
+	
 	res.json({
 		note: hitlNoteDetail(note),
 	});
@@ -933,7 +925,7 @@ app.get("/api/hitl/notes/:id/graph", asyncRoute(async (req, res) => {
 	const note = await requireHitlNote(req.params.id);
 	const depth = parseDepth(req.query.depth ?? 2);
 	const graph = await buildHitlNoteGraphPreview(note, { depth });
-
+	
 	res.json(graph);
 }));
 
@@ -942,14 +934,14 @@ app.post("/api/hitl/notes/:id/graph", asyncRoute(async (req, res) => {
 	const depth = parseDepth(req.body?.depth ?? 2);
 	const llmResponse = requireString(req.body?.llmResponse ?? note.llmResponse, "llmResponse");
 	const graph = await buildHitlNoteGraphPreview(note, { depth, llmResponse });
-
+	
 	res.json(graph);
 }));
 
 app.get("/api/hitl/graph", asyncRoute(async (req, res) => {
 	const limit = parseLimit(req.query.limit);
 	const graph = await buildHitlGraphPreview(limit);
-
+	
 	res.json(graph);
 }));
 
@@ -970,7 +962,7 @@ app.post("/api/hitl/nodes", asyncRoute(async (req, res) => {
 	const storedNode = await graphStore.upsertNode(node);
 	await vectorStore.upsertNode(storedNode);
 	const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
-
+	
 	res.json({
 		status: "applied",
 		applied: true,
@@ -997,7 +989,7 @@ app.put("/api/hitl/nodes/:id", asyncRoute(async (req, res) => {
 	const storedNode = await graphStore.upsertNode(node);
 	await vectorStore.upsertNode(storedNode);
 	const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
-
+	
 	res.json({
 		status: "applied",
 		applied: true,
@@ -1014,7 +1006,7 @@ app.delete("/api/hitl/nodes/:id", asyncRoute(async (req, res) => {
 	await vectorStore.deleteNodes([result.nodeId]);
 	await vectorStore.deleteRelations(result.relationIds ?? []);
 	const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
-
+	
 	res.json({
 		status: "applied",
 		applied: true,
@@ -1042,7 +1034,7 @@ app.post("/api/hitl/relations", asyncRoute(async (req, res) => {
 	const storedRelation = await graphStore.upsertRelation(relation);
 	await vectorStore.upsertRelation(storedRelation);
 	const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
-
+	
 	res.json({
 		status: "applied",
 		applied: true,
@@ -1069,7 +1061,7 @@ app.put("/api/hitl/relations/:id", asyncRoute(async (req, res) => {
 	const storedRelation = await graphStore.upsertRelation(relation);
 	await vectorStore.upsertRelation(storedRelation);
 	const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
-
+	
 	res.json({
 		status: "applied",
 		applied: true,
@@ -1085,7 +1077,7 @@ app.delete("/api/hitl/relations/:id", asyncRoute(async (req, res) => {
 	const result = await graphStore.deleteRelation(req.params.id);
 	await vectorStore.deleteRelations([result.relationId]);
 	const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
-
+	
 	res.json({
 		status: "applied",
 		applied: true,
@@ -1099,18 +1091,38 @@ app.post("/api/hitl/notes/:id/approve", asyncRoute(async (req, res) => {
 	const note = await requireHitlNote(req.params.id);
 	const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
 	const llmResponse = requireString(req.body?.llmResponse ?? req.body?.editedResponse ?? note.llmResponse, "llmResponse");
-	const { graphSchema, graphPayload } = requireSchemaValidHitlResponse(llmResponse);
+	
+	// Step 1: Parse and normalize (first pass to get schema suggestions)
+	const extractedGraph = parseGraphExtraction(llmResponse);
+	const baseSchema = currentGraphSchema();
+	
+	// Step 2: Normalize to extract schema suggestions
+	const explicitSuggestions = extractedGraph.schemaSuggestions;
 
-	persistHitlSchemaSuggestions(graphSchema, graphPayload);
+	
+	// Step 3: Build merged schema with proposed types — in memory only
+	const approvalSchema = buildApprovalSchema(baseSchema, explicitSuggestions);
+	
+	// Step 4: Re-normalize against the merged schema
+	const graphPayload = normalizeGraphPayload(extractedGraph, {
+		schema: approvalSchema,
+		autoApplySuggestions: prompts.schemaAutoApplySuggestions,
+	});
+	
+	// Step 5: Validate — should now pass since merged schema includes the new types
+	if (hasSchemaViolations(graphPayload)) {
+		throw schemaViolationError(graphPayload);
+	}
+	
+	// Step 6: All validation passed — persist both schema AND graph mutations
+	persistHitlSchemaSuggestions(baseSchema, extractedGraph);
 	const storedGraph = await ingestionService.applyGraphPayload(graphPayload, {
 		source: `hitl:${note.id}`,
-		debugLogger: {
-			log: () => {},
-		},
+		debugLogger: { log: () => {} },
 	});
 	await vectorStore.deleteHitlNotes([note.id]);
 	const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
-
+	
 	res.json({
 		status: "approved",
 		applied: true,
@@ -1133,7 +1145,7 @@ app.post("/api/hitl/notes/:id/approve", asyncRoute(async (req, res) => {
 app.delete("/api/hitl/notes/:id", asyncRoute(async (req, res) => {
 	const note = await requireHitlNote(req.params.id);
 	await vectorStore.deleteHitlNotes([note.id]);
-
+	
 	res.json({
 		status: "rejected",
 		deleted: true,
@@ -1152,7 +1164,7 @@ app.post("/api/ingest", upload.fields([
 		userName: requireIngestUserName(req),
 	});
 	const graph = await graphStore.getGraphPreview(DEFAULT_GRAPH_LIMIT);
-
+	
 	res.json({
 		status: storedGraph.status || "applied",
 		applied: storedGraph.applied ?? true,
@@ -1191,11 +1203,11 @@ app.use((req, res) => {
 app.use((error, req, res, _next) => {
 	const status = Number(error.status) || (error.name === "MulterError" ? 400 : 500);
 	const message = status >= 500 ? "Server error. Check the terminal for details." : error.message;
-
+	
 	if (status >= 500) {
 		console.error(error);
 	}
-
+	
 	res.status(status).json({ error: message });
 });
 

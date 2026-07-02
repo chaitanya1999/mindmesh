@@ -75176,7 +75176,7 @@ function SchemaSuggestionRow({ activeRowKey, onDelete, onFocus, onUpdate, record
               "input",
               {
                 value: record.name,
-                onInput: (event) => updateField("name", event.currentTarget.value)
+                onBlur: (event) => updateField("name", event.currentTarget.value)
               }
             )
           ] }),
@@ -75186,7 +75186,7 @@ function SchemaSuggestionRow({ activeRowKey, onDelete, onFocus, onUpdate, record
               "input",
               {
                 value: record.description,
-                onInput: (event) => updateField("description", event.currentTarget.value)
+                onBlur: (event) => updateField("description", event.currentTarget.value)
               }
             )
           ] }),
@@ -75196,7 +75196,7 @@ function SchemaSuggestionRow({ activeRowKey, onDelete, onFocus, onUpdate, record
               "input",
               {
                 value: record.reason,
-                onInput: (event) => updateField("reason", event.currentTarget.value)
+                onBlur: (event) => updateField("reason", event.currentTarget.value)
               }
             )
           ] }),
