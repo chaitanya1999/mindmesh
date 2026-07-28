@@ -59,10 +59,6 @@ const schema = {
 		{ name: "relates_to", description: "Fallback." },
 		{ name: "uses", description: "Uses target." },
 	],
-	suggestions: {
-		nodeTypes: [{ name: "journey_step", description: "Pending node suggestion." }],
-		relationshipTypes: [{ name: "validates_with", description: "Pending relationship suggestion." }],
-	},
 };
 const serviceGraphSchema = {
 	...schema,
@@ -179,19 +175,19 @@ const duplicateNodePayload = normalizeGraphPayload(extractCustomGraph([
 assert(duplicateNodePayload.nodes.length === 1, "Normalizer should dedupe identical node names.");
 assert(duplicateNodePayload.nodes[0].description === "Revised description.", "Normalizer should prefer newer node description over longer existing one.");
 
-const strictPayload = normalizeGraphPayload(suggestionPayload, { schema, autoApplySuggestions: false });
+const strictPayload = normalizeGraphPayload(suggestionPayload, { schema });
 assert(strictPayload.relations[0].relation === "validates_with", "Strict schema should preserve unknown relation for review.");
 assert(strictPayload.schemaWarnings.length === 1, "Strict schema warning failed.");
 assert(strictPayload.schemaViolations[0]?.kind === "relationshipType", "Strict schema violation failed.");
 
-const autoAppliedPayload = normalizeGraphPayload(suggestionPayload, { schema, autoApplySuggestions: true });
-assert(autoAppliedPayload.relations[0].relation === "validates_with", "Schema suggestion relation should be preserved for HITL review.");
-assert(autoAppliedPayload.schemaViolations[0]?.kind === "relationshipType", "Auto-applied schema suggestions must not bypass strict validation.");
+const suggestionReviewPayload = normalizeGraphPayload(suggestionPayload, { schema });
+assert(suggestionReviewPayload.relations[0].relation === "validates_with", "Schema suggestion relation should be preserved for HITL review.");
+assert(suggestionReviewPayload.schemaViolations[0]?.kind === "relationshipType", "Schema violations must still be detected for review.");
 
 const pendingSuggestionPayload = normalizeGraphPayload({
 	nodes: [{ name: "search_step", label: "Search Step", type: "journey_step" }],
 	relations: [],
-}, { schema, autoApplySuggestions: true });
+}, { schema });
 assert(pendingSuggestionPayload.nodes[0].type === "journey_step", "Implicit node suggestion should preserve extracted type.");
 assert(pendingSuggestionPayload.schemaSuggestions.nodeTypes[0].name === "journey_step", "Implicit node suggestion was not captured.");
 assert(pendingSuggestionPayload.schemaViolations[0]?.kind === "nodeType", "Implicit node suggestion must still require schema approval.");
@@ -286,7 +282,6 @@ const service = new IngestionService({
 			...runtimePrompts,
 			graphSchema: serviceGraphSchemaConfig,
 			extractionSystemTemplate: "Schema:\n{{GRAPH_SCHEMA}}\nContext:\n{{EXISTING_GRAPH_CONTEXT}}\nInput:\n{{USER_INPUT}}",
-			schemaAutoApplySuggestions: false,
 		},
 	ingestion: {
 		contextEnabled: true,
@@ -346,7 +341,6 @@ const pendingContextService = new IngestionService({
 			...runtimePrompts,
 			graphSchema: serviceGraphSchemaConfig,
 			extractionSystemTemplate: "Schema:\n{{GRAPH_SCHEMA}}\nContext:\n{{EXISTING_GRAPH_CONTEXT}}\nInput:\n{{USER_INPUT}}",
-			schemaAutoApplySuggestions: false,
 		},
 	ingestion: {
 		contextEnabled: true,
@@ -407,12 +401,11 @@ const mutationService = new IngestionService({
 			mutationIndexedGraph = graph;
 		},
 	},
-	prompts: {
-		...runtimePrompts,
-		graphSchema: serviceGraphSchemaConfig,
-		extractionSystemTemplate: "Schema:\n{{GRAPH_SCHEMA}}\nContext:\n{{EXISTING_GRAPH_CONTEXT}}\nInput:\n{{USER_INPUT}}",
-		schemaAutoApplySuggestions: false,
-	},
+		prompts: {
+			...runtimePrompts,
+			graphSchema: serviceGraphSchemaConfig,
+			extractionSystemTemplate: "Schema:\n{{GRAPH_SCHEMA}}\nContext:\n{{EXISTING_GRAPH_CONTEXT}}\nInput:\n{{USER_INPUT}}",
+		},
 	ingestion: {
 		contextEnabled: true,
 		contextTopK: 1,
@@ -461,12 +454,11 @@ const hitlService = new IngestionService({
 			return { id: note.id, document: note.llmResponse, metadata: { createdAt: note.createdAt } };
 		},
 	},
-	prompts: {
-		...runtimePrompts,
-		graphSchema: serviceGraphSchemaConfig,
-		extractionSystemTemplate: "Schema:\n{{GRAPH_SCHEMA}}\nContext:\n{{EXISTING_GRAPH_CONTEXT}}\nInput:\n{{USER_INPUT}}",
-		schemaAutoApplySuggestions: false,
-	},
+		prompts: {
+			...runtimePrompts,
+			graphSchema: serviceGraphSchemaConfig,
+			extractionSystemTemplate: "Schema:\n{{GRAPH_SCHEMA}}\nContext:\n{{EXISTING_GRAPH_CONTEXT}}\nInput:\n{{USER_INPUT}}",
+		},
 	ingestion: {
 		mode: "hitl",
 		hitlDefaultUserName: "reviewer",
@@ -512,12 +504,11 @@ const forcedHitlService = new IngestionService({
 			return { id: note.id, document: note.llmResponse, metadata: { createdAt: note.createdAt } };
 		},
 	},
-	prompts: {
-		...runtimePrompts,
-		graphSchema: serviceGraphSchemaConfig,
-		extractionSystemTemplate: "Schema:\n{{GRAPH_SCHEMA}}\nContext:\n{{EXISTING_GRAPH_CONTEXT}}\nInput:\n{{USER_INPUT}}",
-		schemaAutoApplySuggestions: true,
-	},
+		prompts: {
+			...runtimePrompts,
+			graphSchema: serviceGraphSchemaConfig,
+			extractionSystemTemplate: "Schema:\n{{GRAPH_SCHEMA}}\nContext:\n{{EXISTING_GRAPH_CONTEXT}}\nInput:\n{{USER_INPUT}}",
+		},
 	ingestion: {
 		mode: "auto",
 		contextEnabled: true,
@@ -589,7 +580,6 @@ const duplicatePendingHitlService = new IngestionService({
 			...runtimePrompts,
 			graphSchema: serviceGraphSchemaConfig,
 			extractionSystemTemplate: "Schema:\n{{GRAPH_SCHEMA}}\nContext:\n{{EXISTING_GRAPH_CONTEXT}}\nInput:\n{{USER_INPUT}}",
-			schemaAutoApplySuggestions: false,
 		},
 	ingestion: {
 		mode: "hitl",
@@ -629,11 +619,10 @@ const failingService = new IngestionService({
 			throw new Error("vector failure");
 		},
 	},
-	prompts: {
-		...runtimePrompts,
-		graphSchema: serviceGraphSchemaConfig,
-		extractionSystemTemplate: "Schema:\n{{GRAPH_SCHEMA}}\nContext:\n{{EXISTING_GRAPH_CONTEXT}}\nInput:\n{{USER_INPUT}}",
-		schemaAutoApplySuggestions: false,
+		prompts: {
+			...runtimePrompts,
+			graphSchema: serviceGraphSchemaConfig,
+			extractionSystemTemplate: "Schema:\n{{GRAPH_SCHEMA}}\nContext:\n{{EXISTING_GRAPH_CONTEXT}}\nInput:\n{{USER_INPUT}}",
 	},
 	logging: {
 		enabled: true,

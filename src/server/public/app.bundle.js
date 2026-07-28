@@ -79008,14 +79008,11 @@ function normalizeSchemaDraft(schema) {
   const nextSchema = {
     ...cloneJson(schema),
     nodeTypes: normalizeSchemaEntries(schema?.nodeTypes),
-    relationshipTypes: normalizeSchemaEntries(schema?.relationshipTypes),
-    suggestions: {
-      nodeTypes: normalizeSchemaEntries(schema?.suggestions?.nodeTypes, { includeReason: true }),
-      relationshipTypes: normalizeSchemaEntries(schema?.suggestions?.relationshipTypes, { includeReason: true })
-    }
+    relationshipTypes: normalizeSchemaEntries(schema?.relationshipTypes)
   };
   delete nextSchema.path;
   delete nextSchema.fallbacks;
+  delete nextSchema.suggestions;
   return nextSchema;
 }
 function formatSchemaJson(schema) {
@@ -79026,16 +79023,6 @@ function updateSchemaEntries(draft, key, updater) {
   return {
     ...draft,
     [key]: updater(Array.isArray(draft?.[key]) ? draft[key] : [])
-  };
-}
-function updateSchemaSuggestions(draft, key, updater) {
-  const currentSuggestions = draft?.suggestions ?? {};
-  return {
-    ...draft,
-    suggestions: {
-      ...currentSuggestions,
-      [key]: updater(Array.isArray(currentSuggestions[key]) ? currentSuggestions[key] : [])
-    }
   };
 }
 function SchemaPropertySummary({ schema }) {
@@ -79111,48 +79098,6 @@ function SchemaEntryList({ entries: entries2, onEntriesChange, title }) {
         }
       )
     ] })
-  ] });
-}
-function SchemaSuggestionSection({ approvedKey, draft, suggestionKey, title, onDraftChange }) {
-  const suggestions = draft?.suggestions?.[suggestionKey] ?? [];
-  function approveSuggestion(index2) {
-    const suggestion = suggestions[index2];
-    onDraftChange((currentDraft) => {
-      const withoutSuggestion = (currentDraft.suggestions?.[suggestionKey] ?? []).filter((_2, suggestionIndex) => suggestionIndex !== index2);
-      const approvedEntries = normalizeSchemaEntries([
-        ...currentDraft[approvedKey] ?? [],
-        { name: suggestion.name, description: suggestion.description }
-      ]);
-      return updateSchemaSuggestions(
-        { ...currentDraft, [approvedKey]: approvedEntries },
-        suggestionKey,
-        () => withoutSuggestion
-      );
-    });
-  }
-  function rejectSuggestion(index2) {
-    onDraftChange((currentDraft) => updateSchemaSuggestions(
-      currentDraft,
-      suggestionKey,
-      (currentSuggestions) => currentSuggestions.filter((_2, suggestionIndex) => suggestionIndex !== index2)
-    ));
-  }
-  return /* @__PURE__ */ u3("section", { class: "schema-section", children: [
-    /* @__PURE__ */ u3("div", { class: "hitl-section-header", children: [
-      /* @__PURE__ */ u3("h3", { children: title }),
-      /* @__PURE__ */ u3("span", { children: suggestions.length })
-    ] }),
-    suggestions.length === 0 ? /* @__PURE__ */ u3("p", { class: "muted-copy", children: "No pending suggestions." }) : /* @__PURE__ */ u3("div", { class: "schema-suggestion-list", children: suggestions.map((suggestion, index2) => /* @__PURE__ */ u3("article", { class: "schema-suggestion-card", children: [
-      /* @__PURE__ */ u3("div", { children: [
-        /* @__PURE__ */ u3("strong", { children: suggestion.name }),
-        /* @__PURE__ */ u3("p", { children: suggestion.description || "No description." }),
-        suggestion.reason && /* @__PURE__ */ u3("small", { children: suggestion.reason })
-      ] }),
-      /* @__PURE__ */ u3("div", { class: "schema-suggestion-actions", children: [
-        /* @__PURE__ */ u3("button", { type: "button", class: "primary compact-button", onClick: () => approveSuggestion(index2), children: "Approve" }),
-        /* @__PURE__ */ u3("button", { type: "button", class: "compact-button danger-button", onClick: () => rejectSuggestion(index2), children: "Reject" })
-      ] })
-    ] }, `${title}-${suggestion.name}-${index2}`)) })
   ] });
 }
 function SchemaPanel() {
@@ -79262,7 +79207,6 @@ function SchemaPanel() {
     (message || errorMessage || hasStructuredChanges || hasUnappliedJson) && /* @__PURE__ */ u3("div", { class: `status-line${errorMessage ? " error-status" : ""}`, children: errorMessage || (hasUnappliedJson ? "JSON has unapplied edits." : hasStructuredChanges ? "Unsaved schema changes." : message) }),
     /* @__PURE__ */ u3("div", { class: "schema-tabs", role: "tablist", "aria-label": "Schema views", children: [
       { id: "types", label: "Types" },
-      { id: "suggestions", label: "Suggestions" },
       { id: "json", label: "JSON" }
     ].map((tab) => /* @__PURE__ */ u3(
       "button",
@@ -79291,28 +79235,6 @@ function SchemaPanel() {
             title: "Relationship types",
             entries: relationshipTypes,
             onEntriesChange: (entries2) => changeDraft((currentDraft) => updateSchemaEntries(currentDraft, "relationshipTypes", () => entries2))
-          }
-        )
-      ] }),
-      activeTab === "suggestions" && /* @__PURE__ */ u3(S, { children: [
-        /* @__PURE__ */ u3(
-          SchemaSuggestionSection,
-          {
-            approvedKey: "nodeTypes",
-            draft,
-            suggestionKey: "nodeTypes",
-            title: "Suggested node types",
-            onDraftChange: changeDraft
-          }
-        ),
-        /* @__PURE__ */ u3(
-          SchemaSuggestionSection,
-          {
-            approvedKey: "relationshipTypes",
-            draft,
-            suggestionKey: "relationshipTypes",
-            title: "Suggested relationship types",
-            onDraftChange: changeDraft
           }
         )
       ] }),

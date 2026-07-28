@@ -4,7 +4,7 @@ import { countReviewSignals } from "./reviewSignals.js";
 import { createDebugLogger } from "../logging/debugLogger.js";
 import { buildExtractionPrompt } from "../prompts/promptRegistry.js";
 import { formatExtractionGraphContext } from "../rag/graphContext.js";
-import { loadGraphSchema, persistGraphSchemaSuggestions, promoteGraphSchemaSuggestions } from "../schema/graphSchema.js";
+import { loadGraphSchema } from "../schema/graphSchema.js";
 
 function previewText(value, maxLength = 180) {
 	const text = String(value ?? "").replace(/\s+/g, " ").trim();
@@ -331,7 +331,6 @@ export class IngestionService {
 				const extractedGraph = parseGraphExtraction(llmResponse);
 				const graphPayload = normalizeGraphPayload(extractedGraph, {
 					schema: graphSchema,
-					autoApplySuggestions: this.prompts.schemaAutoApplySuggestions,
 				});
 
 				for (const node of graphPayload.nodes) {
@@ -548,7 +547,6 @@ export class IngestionService {
 			schemaSuggestions: graphPayload.schemaSuggestions,
 			schemaViolations: graphPayload.schemaViolations ?? [],
 			schemaWarnings: graphPayload.schemaWarnings,
-			persistedSchemaSuggestions: graphPayload.persistedSchemaSuggestions ?? null,
 		};
 	}
 
@@ -591,7 +589,6 @@ export class IngestionService {
 				source,
 				userName: userName || this.ingestion.hitlDefaultUserName,
 				ingestionMode: this.ingestion.mode,
-				schemaAutoApplySuggestions: this.prompts.schemaAutoApplySuggestions,
 				schemaPath: graphSchema.path,
 				ingestContextEnabled: this.ingestion.contextEnabled,
 				ingestContextTopK: this.ingestion.contextTopK,
@@ -627,7 +624,6 @@ export class IngestionService {
 			logIngest(debugLogger, "[ingest] Normalizing graph payload...");
 			const graphPayload = normalizeGraphPayload(extractedGraph, {
 				schema: graphSchema,
-				autoApplySuggestions: this.prompts.schemaAutoApplySuggestions,
 			});
 			debugLogger.json("Normalized Graph Payload", graphPayload);
 			logIngest(
@@ -639,10 +635,6 @@ export class IngestionService {
 				logIngest(debugLogger, hasSchemaViolations(graphPayload)
 					? "[ingest] Schema violation detected; forcing HITL proposal instead of applying graph mutations."
 					: "[ingest] HITL mode enabled; storing pending proposal in vector store.");
-				if (hasSchemaViolations(graphPayload)) {
-					graphPayload.persistedSchemaSuggestions = persistGraphSchemaSuggestions(graphSchema, graphPayload.schemaSuggestions);
-					debugLogger.json("Persisted Schema Suggestions For HITL Review", graphPayload.persistedSchemaSuggestions);
-				}
 				const hitlResponse = rawResponse && rawExtractedGraph === extractedGraph
 					? rawResponse
 					: customGraphResponseFromPayload(graphPayload);
@@ -662,16 +654,6 @@ export class IngestionService {
 
 				return pendingProposal;
 			}
-
-			logIngest(debugLogger, "[ingest] Persisting schema suggestions...");
-			graphPayload.persistedSchemaSuggestions = this.prompts.schemaAutoApplySuggestions
-				? promoteGraphSchemaSuggestions(graphSchema, graphPayload.schemaSuggestions)
-				: persistGraphSchemaSuggestions(graphSchema, graphPayload.schemaSuggestions);
-			debugLogger.json("Persisted Schema Suggestions", graphPayload.persistedSchemaSuggestions);
-			logIngest(
-				debugLogger,
-				`[ingest] Persisted schema suggestions: nodeTypesAdded=${graphPayload.persistedSchemaSuggestions.nodeTypesAdded}, relationshipTypesAdded=${graphPayload.persistedSchemaSuggestions.relationshipTypesAdded}.`,
-			);
 
 			logIngest(debugLogger, "[ingest] Applying graph mutations to graph store and vector index...");
 			const storedGraph = await this.applyGraphPayload(graphPayload, { source, debugLogger });

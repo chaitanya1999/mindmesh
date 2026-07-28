@@ -169,7 +169,7 @@ function mergeNode(existingNode, nextNode, schemaRules) {
 	};
 }
 
-export function normalizeGraphPayload(payload, { schema = null, autoApplySuggestions = false } = {}) {
+export function normalizeGraphPayload(payload, { schema = null } = {}) {
 	const nodeMap = new Map();
 	const warnings = [...(payload.warnings ?? [])];
 	const schemaViolations = [];

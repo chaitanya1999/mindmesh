@@ -3965,13 +3965,10 @@ function normalizeSchemaDraft(schema) {
 		...cloneJson(schema),
 		nodeTypes: normalizeSchemaEntries(schema?.nodeTypes),
 		relationshipTypes: normalizeSchemaEntries(schema?.relationshipTypes),
-		suggestions: {
-			nodeTypes: normalizeSchemaEntries(schema?.suggestions?.nodeTypes, { includeReason: true }),
-			relationshipTypes: normalizeSchemaEntries(schema?.suggestions?.relationshipTypes, { includeReason: true }),
-		},
 	};
 	delete nextSchema.path;
 	delete nextSchema.fallbacks;
+	delete nextSchema.suggestions;
 	return nextSchema;
 }
 
@@ -3983,17 +3980,6 @@ function updateSchemaEntries(draft, key, updater) {
 	return {
 		...draft,
 		[key]: updater(Array.isArray(draft?.[key]) ? draft[key] : []),
-	};
-}
-
-function updateSchemaSuggestions(draft, key, updater) {
-	const currentSuggestions = draft?.suggestions ?? {};
-	return {
-		...draft,
-		suggestions: {
-			...currentSuggestions,
-			[key]: updater(Array.isArray(currentSuggestions[key]) ? currentSuggestions[key] : []),
-		},
 	};
 }
 
@@ -4067,64 +4053,6 @@ function SchemaEntryList({ entries, onEntriesChange, title }) {
 					Add {title.toLowerCase().replace(/s$/, "")}
 				</button>
 			</div>
-		</section>
-	);
-}
-
-function SchemaSuggestionSection({ approvedKey, draft, suggestionKey, title, onDraftChange }) {
-	const suggestions = draft?.suggestions?.[suggestionKey] ?? [];
-
-	function approveSuggestion(index) {
-		const suggestion = suggestions[index];
-		onDraftChange((currentDraft) => {
-			const withoutSuggestion = (currentDraft.suggestions?.[suggestionKey] ?? [])
-				.filter((_, suggestionIndex) => suggestionIndex !== index);
-			const approvedEntries = normalizeSchemaEntries([
-				...(currentDraft[approvedKey] ?? []),
-				{ name: suggestion.name, description: suggestion.description },
-			]);
-
-			return updateSchemaSuggestions(
-				{ ...currentDraft, [approvedKey]: approvedEntries },
-				suggestionKey,
-				() => withoutSuggestion,
-			);
-		});
-	}
-
-	function rejectSuggestion(index) {
-		onDraftChange((currentDraft) => updateSchemaSuggestions(
-			currentDraft,
-			suggestionKey,
-			(currentSuggestions) => currentSuggestions.filter((_, suggestionIndex) => suggestionIndex !== index),
-		));
-	}
-
-	return (
-		<section class="schema-section">
-			<div class="hitl-section-header">
-				<h3>{title}</h3>
-				<span>{suggestions.length}</span>
-			</div>
-			{suggestions.length === 0 ? (
-				<p class="muted-copy">No pending suggestions.</p>
-			) : (
-				<div class="schema-suggestion-list">
-					{suggestions.map((suggestion, index) => (
-						<article class="schema-suggestion-card" key={`${title}-${suggestion.name}-${index}`}>
-							<div>
-								<strong>{suggestion.name}</strong>
-								<p>{suggestion.description || "No description."}</p>
-								{suggestion.reason && <small>{suggestion.reason}</small>}
-							</div>
-							<div class="schema-suggestion-actions">
-								<button type="button" class="primary compact-button" onClick={() => approveSuggestion(index)}>Approve</button>
-								<button type="button" class="compact-button danger-button" onClick={() => rejectSuggestion(index)}>Reject</button>
-							</div>
-						</article>
-					))}
-				</div>
-			)}
 		</section>
 	);
 }
@@ -4260,7 +4188,6 @@ function SchemaPanel() {
 			<div class="schema-tabs" role="tablist" aria-label="Schema views">
 				{[
 					{ id: "types", label: "Types" },
-					{ id: "suggestions", label: "Suggestions" },
 					{ id: "json", label: "JSON" },
 				].map((tab) => (
 					<button
@@ -4286,24 +4213,6 @@ function SchemaPanel() {
 							title="Relationship types"
 							entries={relationshipTypes}
 							onEntriesChange={(entries) => changeDraft((currentDraft) => updateSchemaEntries(currentDraft, "relationshipTypes", () => entries))}
-						/>
-					</>
-				)}
-				{activeTab === "suggestions" && (
-					<>
-						<SchemaSuggestionSection
-							approvedKey="nodeTypes"
-							draft={draft}
-							suggestionKey="nodeTypes"
-							title="Suggested node types"
-							onDraftChange={changeDraft}
-						/>
-						<SchemaSuggestionSection
-							approvedKey="relationshipTypes"
-							draft={draft}
-							suggestionKey="relationshipTypes"
-							title="Suggested relationship types"
-							onDraftChange={changeDraft}
 						/>
 					</>
 				)}

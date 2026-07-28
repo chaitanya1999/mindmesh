@@ -77,7 +77,6 @@ export function describeRuntime(config) {
 		ragMemoryMaxMessages: config.rag?.memory?.maxMessages,
 		ragMemoryRewriteQueryEnabled: config.rag?.memory?.rewriteQueryEnabled,
 		schemaPath: config.schema?.path,
-		schemaAutoApplySuggestions: config.schema?.autoApplySuggestions,
 		debugLog: config.logging?.enabled,
 		debugLogDir: config.logging?.directory,
 		debugLogScopes: config.logging?.scopes,

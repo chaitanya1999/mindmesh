@@ -49,7 +49,6 @@ export function loadPrompts(config) {
 			"Write one concise knowledge nugget from the graph neighborhood.",
 		),
 		graphSchema,
-		schemaAutoApplySuggestions: config.schema.autoApplySuggestions,
 	};
 }
 

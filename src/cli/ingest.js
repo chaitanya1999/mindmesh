@@ -56,7 +56,6 @@ async function main() {
 				relationshipTypes: graph.schemaSuggestions?.relationshipTypes?.length ?? 0,
 			},
 			schemaWarnings: graph.schemaWarnings?.length ?? 0,
-			persistedSchemaSuggestions: graph.persistedSchemaSuggestions,
 		}, null, 2));
 
 		console.log("\nExtracted nodes:");

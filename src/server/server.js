@@ -17,11 +17,10 @@ import { loadPrompts } from "../prompts/promptRegistry.js";
 import { HybridRagService } from "../rag/hybridRagService.js";
 import {
 	loadGraphSchema,
-	persistGraphSchemaSuggestions,
-	promoteGraphSchemaSuggestions,
 	readEditableGraphSchema,
 	saveEditableGraphSchema,
-	buildApprovalSchema
+	buildApprovalSchema,
+	mergeSchemaTypes
 } from "../schema/graphSchema.js";
 import { createVectorStore } from "../vector/providerFactory.js";
 
@@ -341,9 +340,6 @@ function schemaViolationError(graphPayload) {
 async function storeManualHitlProposal({ llmResponse, userInput, userName }) {
 	requireHitlNotesSupport();
 	const { graphSchema, graphPayload } = parseHitlResponse(llmResponse);
-	if (hasSchemaViolations(graphPayload)) {
-		graphPayload.persistedSchemaSuggestions = persistGraphSchemaSuggestions(graphSchema, graphPayload.schemaSuggestions);
-	}
 	const reviewSignals = countReviewSignals(graphPayload);
 	const hitlNote = await vectorStore.upsertHitlNote({
 		id: createHitlNoteId(),
@@ -377,7 +373,6 @@ async function storeManualHitlProposal({ llmResponse, userInput, userName }) {
 		schemaSuggestions: graphPayload.schemaSuggestions,
 		schemaViolations: graphPayload.schemaViolations ?? [],
 		schemaWarnings: graphPayload.schemaWarnings,
-		persistedSchemaSuggestions: graphPayload.persistedSchemaSuggestions ?? null,
 		graph: withGraphSchema(graph),
 	};
 }
@@ -495,7 +490,6 @@ function parseHitlResponse(llmResponse) {
 		const extractedGraph = parseGraphExtraction(llmResponse);
 		const graphPayload = normalizeGraphPayload(extractedGraph, {
 			schema: graphSchema,
-			autoApplySuggestions: prompts.schemaAutoApplySuggestions,
 		});
 		
 		return { graphSchema, graphPayload };
@@ -519,9 +513,7 @@ async function pendingProposalForSchemaViolation({ llmResponse, reviewedBy, user
 }
 
 function persistHitlSchemaSuggestions(graphSchema, graphPayload) {
-	graphPayload.persistedSchemaSuggestions = prompts.schemaAutoApplySuggestions
-	? promoteGraphSchemaSuggestions(graphSchema, graphPayload.schemaSuggestions)
-	: persistGraphSchemaSuggestions(graphSchema, graphPayload.schemaSuggestions);
+	return mergeSchemaTypes(graphSchema, graphPayload.schemaSuggestions);
 }
 
 function pendingMarker(note, operation) {
@@ -1106,7 +1098,6 @@ app.post("/api/hitl/notes/:id/approve", asyncRoute(async (req, res) => {
 	// Step 4: Re-normalize against the merged schema
 	const graphPayload = normalizeGraphPayload(extractedGraph, {
 		schema: approvalSchema,
-		autoApplySuggestions: prompts.schemaAutoApplySuggestions,
 	});
 	
 	// Step 5: Validate — should now pass since merged schema includes the new types
@@ -1137,7 +1128,6 @@ app.post("/api/hitl/notes/:id/approve", asyncRoute(async (req, res) => {
 		schemaSuggestions: graphPayload.schemaSuggestions,
 		schemaViolations: graphPayload.schemaViolations ?? [],
 		schemaWarnings: graphPayload.schemaWarnings,
-		persistedSchemaSuggestions: graphPayload.persistedSchemaSuggestions,
 		graph: withGraphSchema(graph),
 	});
 }));
@@ -1179,7 +1169,6 @@ app.post("/api/ingest", upload.fields([
 		schemaSuggestions: storedGraph.schemaSuggestions,
 		schemaViolations: storedGraph.schemaViolations ?? [],
 		schemaWarnings: storedGraph.schemaWarnings,
-		persistedSchemaSuggestions: storedGraph.persistedSchemaSuggestions,
 		graph: withGraphSchema(graph),
 	});
 }));

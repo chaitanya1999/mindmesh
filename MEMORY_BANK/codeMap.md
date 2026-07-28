@@ -90,11 +90,11 @@ schema/graphSchema.json
 
 Important behavior:
 
-- Approved node and relationship types live in top-level schema arrays.
-- Suggested node and relationship types are review candidates only.
-- Unknown types should be preserved for review and must not silently become approved graph terms.
+- Approved node and relationship types live in top-level schema arrays only.
+- There is no `suggestions` section in `graphSchema.json`. Type suggestions from LLM live only in HITL proposal records (ChromaDB).
+- Unknown types cause schema violations → HITL proposal. Approval adds them directly to approved `nodeTypes`/`relationshipTypes` via `mergeSchemaTypes()`.
 - Schema can be edited through `GET /api/schema`, `PUT /api/schema`, and the `/schema` route.
-- Schema suggestions can be persisted as suggestions or promoted when `schema.autoApplySuggestions` is enabled.
+- Schema no longer uses `autoApplySuggestions` — types are never auto-promoted.
 
 ### Property Descriptors (Schema-Driven Field Guidance)
 

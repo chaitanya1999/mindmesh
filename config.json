@@ -1,6 +1,6 @@
 {
 	"llm": {
-		"provider": "custom",
+		"provider": "hub",
 		"gemini": {
 			"apiKey": "",
 			"model": "gemma-4-31b-it"
@@ -87,11 +87,10 @@
 		"contextDepth": 1
 	},
 	"schema": {
-		"path": "./schema/graphSchema.json",
-		"autoApplySuggestions": true
+		"path": "./schema/graphSchema.json"
 	},
 	"logging": {
-		"enabled": false,
+		"enabled": true,
 		"directory": "./logs",
 		"scopes": ["ingest", "ask"]
 	},

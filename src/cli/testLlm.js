@@ -57,7 +57,6 @@ async function main() {
 		});
 		return normalizeGraphPayload(graph, {
 			schema: prompts.graphSchema,
-			autoApplySuggestions: prompts.schemaAutoApplySuggestions,
 		});
 	});
 

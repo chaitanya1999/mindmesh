@@ -78,8 +78,7 @@
 		"contextDepth": 1
 	},
 	"schema": {
-		"path": "./schema/graphSchema.json",
-		"autoApplySuggestions": false
+		"path": "./schema/graphSchema.json"
 	},
 	"logging": {
 		"enabled": false,
