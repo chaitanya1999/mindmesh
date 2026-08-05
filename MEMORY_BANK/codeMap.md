@@ -181,6 +181,36 @@ Typical command:
 npm run kg:web:build
 ```
 
+## MCP Server Flow (Ask & Ingest)
+
+Entrypoint:
+
+- `src/mcp/server.js` (stdio transport, `npm run kg:mcp`)
+
+Main path:
+
+```text
+MCP client (any LLM/coding agent)
+  -> stdio JSON-RPC
+  -> McpServer (src/mcp/server.js)
+  -> tools: ask, ingest-context, apply-ingestion
+  -> resources: mindmesh://schema, mindmesh://graph, mindmesh://hitl/notes,
+     mindmesh://nodes/{nodeId}, mindmesh://relations/{relationId}
+```
+
+Important modules:
+
+- `src/mcp/server.js`: single-file MCP server. Reuses `HybridRagService`, `IngestionService`, graph/vector stores, prompt registry, and schema modules. Never creates an LLM provider.
+- `src/rag/hybridRagService.js::retrieveContext()`: retrieval-only variant of `answer()` that returns context without invoking an LLM. Used by the `ask` tool.
+- `src/mcp/smokeTest.js`: stdio smoke test exercising initialize, tools/list, resources/list, tool calls, and resource reads.
+
+Notes:
+
+- `ask` returns verified graph context + answer system prompt + instructions for the calling agent.
+- `ingest-context` returns retrieval-augmented extraction context + fully rendered extraction prompt + schema catalog + field guidance + instructions.
+- `apply-ingestion` parses/normalizes pipe-delimited graph records and applies them (auto mode, no schema violations) or stores a HITL proposal.
+- No MCP-specific config is required; the server reads the same `config.json`.
+
 ## Smoke Test Commands
 
 ```powershell

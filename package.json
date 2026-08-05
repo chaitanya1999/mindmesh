@@ -16,11 +16,13 @@
 		"kg:test-parser": "node src/cli/testParser.js",
 		"kg:clear-chroma": "node src/cli/clearChroma.js",
 		"kg:reindex-vectors": "node src/cli/reindexVectors.js",
+		"kg:mcp": "node src/mcp/server.js",
 		"chroma:start": "chroma run --path ./chroma_data"
 	},
 	"dependencies": {
 		"@chroma-core/default-embed": "^0.1.9",
 		"@google/genai": "^1.50.1",
+		"@modelcontextprotocol/sdk": "^1.30.0",
 		"@sigma/edge-curve": "^3.1.0",
 		"chromadb": "^3.0.14",
 		"esbuild": "^0.28.0",

@@ -276,6 +276,38 @@ Each ask run writes a timestamped `ask-*.log` file containing:
 - raw LLM answer response
 - exception details when the ask flow fails
 
+## MCP Server (Ask & Ingest)
+
+MindMesh exposes an MCP (Model Context Protocol) server over stdio so that any LLM or coding agent can perform the ask and ingest features without invoking MindMesh's own LLM providers. The calling agent performs all reasoning; the MCP server only retrieves context, formats prompts, and applies/stores graph mutations.
+
+Start the MCP server:
+
+```powershell
+npm run kg:mcp
+```
+
+### Tools
+
+- `ask` — `{ query, includeUnverifiedKnowledge? }`. Returns verified graph context, the answer system prompt, and instructions so the calling agent can answer the user's question. No LLM is invoked.
+- `ingest-context` — `{ text }`. Returns retrieval-augmented extraction context (existing graph + pending HITL), the fully rendered extraction system prompt, schema catalog, field guidance, and instructions so the calling agent can extract graph records.
+- `apply-ingestion` — `{ graphRecords, text, userName?, source? }`. Parses, normalizes, and applies the pipe-delimited graph records an agent extracted. Applies mutations directly when ingestion mode is `auto` and no schema violations exist; otherwise stores a pending HITL proposal.
+
+### Resources
+
+- `mindmesh://schema` — the editable graph schema.
+- `mindmesh://graph` — graph preview.
+- `mindmesh://hitl/notes` — pending HITL proposals.
+- `mindmesh://nodes/{nodeId}` — a single graph node.
+- `mindmesh://relations/{relationId}` — a single graph relation.
+
+### Recommended ingestion flow
+
+1. Call `ingest-context` with the user's text.
+2. Reason over the returned context and extract pipe-delimited graph records following the `extractionSystemPrompt`.
+3. Call `apply-ingestion` with the extracted records.
+
+The MCP server reuses the existing `HybridRagService`, `IngestionService`, graph/vector stores, prompt registry, and schema modules. It never creates an LLM provider. A smoke test is available at `src/mcp/smokeTest.js` (requires Neo4j and ChromaDB running).
+
 ## Commands
 
 Test both databases:
