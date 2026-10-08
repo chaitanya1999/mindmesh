@@ -11,6 +11,7 @@ import {
 	hitlSignalCounts,
 	needsAttention,
 	noteMatchesFilter,
+	noteOperationCounts,
 	parseHitlProposal,
 	pipelineEditorText,
 	sortHitlNotes,
@@ -44,6 +45,49 @@ function writeStoredDensity(value) {
 	}
 }
 
+const OPERATION_CODES = [
+	{ key: "create", code: "C" },
+	{ key: "update", code: "U" },
+	{ key: "delete", code: "D" },
+];
+
+function OperationBreakdown({ code, counts }) {
+	const parts = OPERATION_CODES.filter(({ key }) => counts[key] > 0);
+	return (
+		<span class="count-group">
+			{counts.total}{code}
+			{parts.length > 0 && (
+				<span class="count-ops">
+					{" ("}
+					{parts.map(({ key, code: operationCode }, index) => (
+						<span class={`count-op ${key}`} key={key}>{index > 0 ? " " : ""}{counts[key]}{operationCode}</span>
+					))}
+					{")"}
+				</span>
+			)}
+		</span>
+	);
+}
+
+function SubmissionCounts({ note }) {
+	const counts = useMemo(() => noteOperationCounts(note), [note]);
+	if (!counts) {
+		return <span class="submission-counts">{hitlCountLabel(note)}</span>;
+	}
+
+	return (
+		<span
+			class="submission-counts"
+			title="N nodes, R relations, NT node type suggestions, RT relation type suggestions. C create, U update, D delete."
+		>
+			<OperationBreakdown code="N" counts={counts.nodes} />
+			<OperationBreakdown code="R" counts={counts.relations} />
+			{counts.nodeTypes > 0 && <span class="count-group">{counts.nodeTypes}NT</span>}
+			{counts.relationTypes > 0 && <span class="count-group">{counts.relationTypes}RT</span>}
+		</span>
+	);
+}
+
 function HitlNoteChips({ density, note }) {
 	const signals = hitlSignalCounts(note);
 	const hasSignals = signals.ambiguityCount > 0 || signals.contradictionCount > 0;
@@ -51,7 +95,7 @@ function HitlNoteChips({ density, note }) {
 	if (density === "compact") {
 		return (
 			<>
-				<span class="submission-counts">{hitlCountLabel(note)}</span>
+				<SubmissionCounts note={note} />
 				{hasSignals && (
 					<span class="submission-signals" aria-label="Review signals">
 						{signals.contradictionCount > 0 && (

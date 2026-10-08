@@ -500,6 +500,29 @@ export function hitlCountLabel(note) {
 	return [...nodeParts, ...relationParts].join(" / ");
 }
 
+function operationBreakdown(records, deletes = []) {
+	return {
+		create: records.filter((record) => record.operation === "create").length,
+		update: records.filter((record) => record.operation === "update").length,
+		delete: deletes.length,
+		total: records.length + deletes.length,
+	};
+}
+
+export function proposalOperationCounts(proposal) {
+	return {
+		nodes: operationBreakdown(proposal.nodes, proposal.nodeDeletes),
+		relations: operationBreakdown(proposal.relations, proposal.relationDeletes),
+		nodeTypes: proposal.schemaSuggestions.filter((record) => record.entity === "nodeTypeSuggestion").length,
+		relationTypes: proposal.schemaSuggestions.filter((record) => record.entity === "relationTypeSuggestion").length,
+	};
+}
+
+// Null when the note list came from a server that does not send llmResponse.
+export function noteOperationCounts(note) {
+	return note?.llmResponse ? proposalOperationCounts(parseHitlProposal(note.llmResponse)) : null;
+}
+
 export function strongNoteChips(note) {
 	const signals = hitlSignalCounts(note);
 	return [

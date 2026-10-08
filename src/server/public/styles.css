@@ -1215,9 +1215,29 @@ button:focus-visible {
 
 .submission-counts {
 	grid-column: 1 / -1;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 2px 12px;
 	color: var(--warm);
 	font-size: 0.78rem;
 	font-weight: 700;
+}
+
+.count-ops {
+	color: var(--muted);
+	font-weight: 600;
+}
+
+.count-op.create {
+	color: #86efac;
+}
+
+.count-op.update {
+	color: #fdba74;
+}
+
+.count-op.delete {
+	color: #fda4af;
 }
 
 .submission-row.has-review-signals {
@@ -1371,6 +1391,106 @@ button:focus-visible {
 .proposal-section {
 	display: grid;
 	gap: 8px;
+}
+
+.proposal-group {
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	background: rgba(15, 23, 42, 0.25);
+}
+
+.proposal-group > summary {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 9px 11px;
+	font-size: 0.88rem;
+	font-weight: 800;
+	list-style: none;
+	cursor: pointer;
+}
+
+.proposal-group > summary::-webkit-details-marker {
+	display: none;
+}
+
+.proposal-group > summary::before {
+	content: "\25B8";
+	color: var(--muted);
+	transition: transform 0.15s ease;
+}
+
+.proposal-group[open] > summary::before {
+	transform: rotate(90deg);
+}
+
+.proposal-group-title {
+	flex: 1;
+}
+
+.proposal-group-count {
+	padding: 2px 8px;
+	border: 1px solid var(--line);
+	border-radius: 999px;
+	color: var(--muted);
+	font-size: 0.74rem;
+	font-weight: 700;
+}
+
+.proposal-group-body {
+	display: grid;
+	gap: 8px;
+	padding: 0 10px 10px;
+}
+
+/* Sub-groups are plain headings with a tree guide line, not nested boxes. */
+.proposal-group.level-2 {
+	--tone: var(--muted);
+	border: 0;
+	border-radius: 0;
+	background: transparent;
+}
+
+.proposal-group.level-2.tone-create { --tone: #86efac; }
+.proposal-group.level-2.tone-update { --tone: #fdba74; }
+.proposal-group.level-2.tone-delete { --tone: #fda4af; }
+.proposal-group.level-2.tone-suggest { --tone: #bfdbfe; }
+
+.proposal-group.level-2 > summary {
+	gap: 6px;
+	padding: 4px 2px;
+	color: var(--tone);
+	font-size: 0.72rem;
+	font-weight: 800;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+}
+
+.proposal-group.level-2 > summary::before {
+	color: inherit;
+	opacity: 0.7;
+}
+
+.proposal-group.level-2 .proposal-group-title {
+	flex: 0 1 auto;
+}
+
+.proposal-group.level-2 .proposal-group-count {
+	padding: 0;
+	border: 0;
+	color: var(--muted);
+	font-size: 0.72rem;
+}
+
+.proposal-group.level-2 .proposal-group-body {
+	margin-left: 5px;
+	padding: 2px 0 6px 10px;
+	border-left: 1px solid color-mix(in srgb, var(--tone) 35%, transparent);
+}
+
+.proposal-group.empty > summary {
+	color: var(--muted);
+	opacity: 0.6;
 }
 
 .proposal-section-actions,

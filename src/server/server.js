@@ -525,12 +525,22 @@ function pendingMarker(note, operation) {
 	};
 }
 
+// The approved DB version of a graph item, kept so reviewers can compare it with the pending proposal.
+function approvedSnapshot(existing) {
+	if (!existing) {
+		return undefined;
+	}
+
+	return existing.pendingHitl ? existing.approved : existing;
+}
+
 function mergePendingNode(nodeMap, node, note, operation) {
 	const existing = nodeMap.get(node.id);
 	nodeMap.set(node.id, {
 		...(existing ?? {}),
 		...node,
 		...pendingMarker(note, operation || node.operation),
+		approved: approvedSnapshot(existing),
 	});
 }
 
@@ -540,6 +550,7 @@ function mergePendingRelation(relationMap, relation, note, operation) {
 		...(existing ?? {}),
 		...relation,
 		...pendingMarker(note, operation || relation.operation),
+		approved: approvedSnapshot(existing),
 	});
 }
 
@@ -901,7 +912,8 @@ app.get("/api/hitl/notes", asyncRoute(async (req, res) => {
 	const notes = await vectorStore.listHitlNotes({ status: "pending", limit });
 	
 	res.json({
-		notes: notes.map(hitlNoteSummary),
+		// llmResponse lets the review list show per-operation counts parsed exactly like the detail view.
+		notes: notes.map((note) => ({ ...hitlNoteSummary(note), llmResponse: note.llmResponse })),
 	});
 }));
 
