@@ -24,6 +24,7 @@
 		"@google/genai": "^1.50.1",
 		"@modelcontextprotocol/sdk": "^1.30.0",
 		"@sigma/edge-curve": "^3.1.0",
+		"buffer": "^6.0.3",
 		"chromadb": "^3.0.14",
 		"esbuild": "^0.28.0",
 		"express": "^5.2.1",

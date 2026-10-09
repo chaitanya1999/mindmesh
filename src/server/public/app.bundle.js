@@ -65141,6 +65141,2402 @@ function D2(n2, t3) {
   return "function" == typeof t3 ? t3(n2) : t3;
 }
 
+// src/server/public/lib/hitlProposal.js
+var HITL_CHIP_DENSITY_KEY = "mindmesh.hitlChipDensity";
+var START_MARKERS = /* @__PURE__ */ new Set(["<start#$#$>", "start#$#$"]);
+var END_MARKERS = /* @__PURE__ */ new Set(["</end#$#$>", "<end#$#$>", "end#$#$"]);
+function decodePipelineField(value) {
+  if (value === void 0 || value === null) {
+    return "";
+  }
+  const text = String(value);
+  let decoded = "";
+  for (let index2 = 0; index2 < text.length; index2 += 1) {
+    const char = text[index2];
+    if (char !== "\\" || index2 + 1 >= text.length) {
+      decoded += char;
+      continue;
+    }
+    const escaped = text[index2 + 1];
+    index2 += 1;
+    if (escaped === "n") {
+      decoded += "\n";
+    } else if (escaped === "r") {
+      decoded += "\r";
+    } else if (escaped === "t") {
+      decoded += "	";
+    } else if (escaped === "|") {
+      decoded += "|";
+    } else if (escaped === "\\") {
+      decoded += "\\";
+    } else {
+      decoded += `\\${escaped}`;
+    }
+  }
+  return decoded.trim();
+}
+function displayPipelineText(value) {
+  return decodePipelineField(value);
+}
+function encodePipelineField(value) {
+  if (value === void 0 || value === null) {
+    return "";
+  }
+  return String(value).replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\t/g, "\\t").trim();
+}
+function truncateText(value, length2 = 34) {
+  const text = String(value ?? "");
+  return text.length > length2 ? `${text.slice(0, length2 - 1)}...` : text;
+}
+function toSnakeCase(value) {
+  return String(value ?? "").trim().replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+}
+function relationLabel(relation) {
+  return String(relation ?? "relates_to").replaceAll("_", " ");
+}
+function graphNameFromId(id2) {
+  return String(id2 ?? "").replace(/^node:/i, "");
+}
+function displayNameFromIdentifier(value) {
+  const text = graphNameFromId(value).trim();
+  if (!text) {
+    return "Unknown";
+  }
+  return text.split(/[_\s-]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
+}
+function isPipelineStart(line) {
+  return START_MARKERS.has(String(line ?? "").trim().toLowerCase());
+}
+function isPipelineEnd(line) {
+  return END_MARKERS.has(String(line ?? "").trim().toLowerCase());
+}
+function pipelineLines(text) {
+  const rawLines = String(text ?? "").split(/\r?\n/);
+  const startIndex = rawLines.findIndex(isPipelineStart);
+  const endIndex = rawLines.findIndex((line, index2) => index2 > startIndex && isPipelineEnd(line));
+  const bodyLines = startIndex === -1 ? rawLines : rawLines.slice(startIndex + 1, endIndex === -1 ? void 0 : endIndex);
+  return bodyLines.map((line) => line.trim()).filter(Boolean);
+}
+function pipelineEditorText(text) {
+  return pipelineLines(text).join("\n");
+}
+function pipelineParts(line) {
+  const raw = String(line ?? "");
+  const parts = [];
+  let cur = "";
+  for (let i3 = 0; i3 < raw.length; i3 += 1) {
+    const ch = raw[i3];
+    if (ch === "\\" && i3 + 1 < raw.length) {
+      cur += ch + raw[i3 + 1];
+      i3 += 1;
+      continue;
+    }
+    if (ch === "|") {
+      parts.push(cur.trim());
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  parts.push(cur.trim());
+  return parts.map((p3) => decodePipelineField(p3));
+}
+function safePipelineField(value) {
+  return encodePipelineField(value);
+}
+function pipelineRecordLine(recordType, fields) {
+  return [recordType, ...fields].map(safePipelineField).join("|");
+}
+function withPipelineLines(lines) {
+  return lines.filter(Boolean).join("\n");
+}
+function nodeIdFromName(name) {
+  return `node:${toSnakeCase(graphNameFromId(name))}`;
+}
+function normalizedOperation(recordType) {
+  if (recordType.endsWith("_DELETE")) {
+    return "delete";
+  }
+  if (recordType.endsWith("_UPDATE")) {
+    return "update";
+  }
+  return "create";
+}
+function reviewSignalEntries(record) {
+  const text = [
+    record.metadata,
+    record.description,
+    record.information,
+    record.reason
+  ].filter(Boolean).join("\n");
+  const signals = [];
+  if (/CONTRADICTION\s*:/i.test(text)) {
+    signals.push({ kind: "contradiction", text });
+  }
+  if (/AMBIGUITY\s*:/i.test(text)) {
+    signals.push({ kind: "ambiguity", text });
+  }
+  return signals;
+}
+function parseNodeRecord(parts, line, index2, errors) {
+  const recordType = parts[0].toUpperCase();
+  const name = toSnakeCase(parts[1]);
+  if (!name) {
+    errors.push(`Line ${index2 + 1}: ${recordType} requires a node name.`);
+  }
+  const operation = normalizedOperation(recordType);
+  const record = {
+    key: `${recordType}:${name}:${index2}`,
+    entity: "node",
+    recordType,
+    operation,
+    name,
+    id: nodeIdFromName(name),
+    label: parts[2] || displayNameFromIdentifier(name),
+    type: toSnakeCase(parts[3] || "concept") || "concept",
+    description: parts[4] || "",
+    metadata: parts[5] || "",
+    line,
+    lineNumber: index2 + 1
+  };
+  record.signals = reviewSignalEntries(record);
+  return record;
+}
+function parseNodeDeleteRecord(parts, line, index2, errors) {
+  const recordType = parts[0].toUpperCase();
+  const name = toSnakeCase(parts[1]);
+  if (!name) {
+    errors.push(`Line ${index2 + 1}: NODE_DELETE requires a node name.`);
+  }
+  const record = {
+    key: `${recordType}:${name}:${index2}`,
+    entity: "nodeDelete",
+    recordType,
+    operation: "delete",
+    name,
+    id: nodeIdFromName(name),
+    label: displayNameFromIdentifier(name),
+    metadata: parts[2] || "",
+    line,
+    lineNumber: index2 + 1
+  };
+  record.signals = reviewSignalEntries(record);
+  return record;
+}
+function parseRelationRecord(parts, line, index2, errors) {
+  const recordType = parts[0].toUpperCase();
+  const sourceName = toSnakeCase(parts[1]);
+  const targetName = toSnakeCase(parts[2]);
+  const relation = toSnakeCase(parts[3] || "relates_to") || "relates_to";
+  if (!sourceName || !targetName) {
+    errors.push(`Line ${index2 + 1}: ${recordType} requires source and target node names.`);
+  }
+  const operation = normalizedOperation(recordType);
+  const record = {
+    key: `${recordType}:${sourceName}:${relation}:${targetName}:${index2}`,
+    entity: "relation",
+    recordType,
+    operation,
+    sourceName,
+    targetName,
+    sourceId: nodeIdFromName(sourceName),
+    targetId: nodeIdFromName(targetName),
+    relation,
+    information: parts[4] || "",
+    description: parts[5] || "",
+    metadata: parts[6] || "",
+    line,
+    lineNumber: index2 + 1
+  };
+  record.signals = reviewSignalEntries(record);
+  return record;
+}
+function parseRelationDeleteRecord(parts, line, index2, errors) {
+  const recordType = parts[0].toUpperCase();
+  const sourceName = toSnakeCase(parts[1]);
+  const targetName = toSnakeCase(parts[2]);
+  const relation = toSnakeCase(parts[3] || "relates_to") || "relates_to";
+  if (!sourceName || !targetName) {
+    errors.push(`Line ${index2 + 1}: RELATION_DELETE requires source and target node names.`);
+  }
+  const record = {
+    key: `${recordType}:${sourceName}:${relation}:${targetName}:${index2}`,
+    entity: "relationDelete",
+    recordType,
+    operation: "delete",
+    sourceName,
+    targetName,
+    sourceId: nodeIdFromName(sourceName),
+    targetId: nodeIdFromName(targetName),
+    relation,
+    metadata: parts[4] || "",
+    line,
+    lineNumber: index2 + 1
+  };
+  record.signals = reviewSignalEntries(record);
+  return record;
+}
+function parseSchemaSuggestion(parts, line, index2, errors) {
+  const recordType = parts[0].toUpperCase();
+  const name = toSnakeCase(parts[1]);
+  if (!name) {
+    errors.push(`Line ${index2 + 1}: ${recordType} requires a type name.`);
+  }
+  return {
+    key: `${recordType}:${name}:${index2}`,
+    entity: recordType === "NODE_TYPE_SUGGESTION" ? "nodeTypeSuggestion" : "relationTypeSuggestion",
+    recordType,
+    operation: "suggest",
+    name,
+    description: parts[2] || "",
+    reason: parts[3] || "",
+    line,
+    lineNumber: index2 + 1
+  };
+}
+function schemaSuggestionRecordType(entity) {
+  return entity === "relationTypeSuggestion" ? "RELATION_TYPE_SUGGESTION" : "NODE_TYPE_SUGGESTION";
+}
+function schemaSuggestionLine(entity, suggestion) {
+  return pipelineRecordLine(schemaSuggestionRecordType(entity), [
+    toSnakeCase(suggestion?.name),
+    suggestion?.description ?? "",
+    suggestion?.reason ?? ""
+  ]);
+}
+function nextSchemaSuggestionName(lines, baseName) {
+  const existingNames = new Set(lines.map((line) => toSnakeCase(pipelineParts(line)[1])));
+  let nextName = baseName;
+  let index2 = 2;
+  while (existingNames.has(nextName)) {
+    nextName = `${baseName}_${index2}`;
+    index2 += 1;
+  }
+  return nextName;
+}
+function appendSchemaSuggestion(text, entity) {
+  const lines = pipelineLines(text);
+  const isRelation = entity === "relationTypeSuggestion";
+  const name = nextSchemaSuggestionName(lines, isRelation ? "new_relationship_type" : "new_node_type");
+  const description = isRelation ? "Describe this relationship type." : "Describe this node type.";
+  lines.push(schemaSuggestionLine(entity, { name, description, reason: "Added during HITL review." }));
+  return withPipelineLines(lines);
+}
+function updateSchemaSuggestion(text, record, draft) {
+  const lineIndex = Number(record?.lineNumber ?? 0) - 1;
+  const lines = pipelineLines(text);
+  if (lineIndex < 0 || lineIndex >= lines.length) {
+    return text;
+  }
+  lines[lineIndex] = schemaSuggestionLine(record.entity, {
+    name: draft?.name ?? record.name,
+    description: draft?.description ?? record.description,
+    reason: draft?.reason ?? record.reason
+  });
+  return withPipelineLines(lines);
+}
+function deleteSchemaSuggestion(text, record) {
+  const lineIndex = Number(record?.lineNumber ?? 0) - 1;
+  const lines = pipelineLines(text);
+  if (lineIndex < 0 || lineIndex >= lines.length) {
+    return text;
+  }
+  lines.splice(lineIndex, 1);
+  return withPipelineLines(lines);
+}
+function parseHitlProposal(text) {
+  const errors = [];
+  const records = [];
+  const lines = pipelineLines(text);
+  for (const [index2, line] of lines.entries()) {
+    const parts = pipelineParts(line);
+    const recordType = parts[0]?.toUpperCase();
+    if (["NODE", "NODE_CREATE", "NODE_UPDATE"].includes(recordType)) {
+      records.push(parseNodeRecord(parts, line, index2, errors));
+    } else if (recordType === "NODE_DELETE") {
+      records.push(parseNodeDeleteRecord(parts, line, index2, errors));
+    } else if (["RELATION", "EDGE", "RELATION_CREATE", "RELATION_UPDATE"].includes(recordType)) {
+      records.push(parseRelationRecord(parts, line, index2, errors));
+    } else if (recordType === "RELATION_DELETE") {
+      records.push(parseRelationDeleteRecord(parts, line, index2, errors));
+    } else if (recordType === "NODE_TYPE_SUGGESTION" || recordType === "RELATION_TYPE_SUGGESTION") {
+      records.push(parseSchemaSuggestion(parts, line, index2, errors));
+    } else {
+      errors.push(`Line ${index2 + 1}: unsupported record type "${parts[0] || "empty"}".`);
+    }
+  }
+  const nodes = records.filter((record) => record.entity === "node");
+  const relations = records.filter((record) => record.entity === "relation");
+  const nodeDeletes = records.filter((record) => record.entity === "nodeDelete");
+  const relationDeletes = records.filter((record) => record.entity === "relationDelete");
+  const schemaSuggestions = records.filter((record) => record.entity === "nodeTypeSuggestion" || record.entity === "relationTypeSuggestion");
+  const signals = records.flatMap((record) => record.signals?.map((signal) => ({
+    ...signal,
+    record
+  })) ?? []);
+  return {
+    lines,
+    records,
+    nodes,
+    relations,
+    nodeDeletes,
+    relationDeletes,
+    schemaSuggestions,
+    signals,
+    errors
+  };
+}
+function formatHitlDate(value) {
+  if (!value) {
+    return "Unknown time";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString([], {
+    dateStyle: "medium",
+    timeStyle: "short"
+  });
+}
+function hitlSignalCounts(note) {
+  return {
+    ambiguityCount: Number(note?.ambiguityCount ?? 0),
+    contradictionCount: Number(note?.contradictionCount ?? 0)
+  };
+}
+function deleteCount(note) {
+  return Number(note?.nodeDeleteCount ?? 0) + Number(note?.relationDeleteCount ?? 0);
+}
+function needsAttention(note) {
+  const signals = hitlSignalCounts(note);
+  return signals.ambiguityCount > 0 || signals.contradictionCount > 0 || deleteCount(note) > 0 || Number(note?.schemaSuggestionCount ?? 0) > 0;
+}
+function noteMatchesFilter(note, filter3) {
+  const signals = hitlSignalCounts(note);
+  if (filter3 === "attention") {
+    return needsAttention(note);
+  }
+  if (filter3 === "contradictions") {
+    return signals.contradictionCount > 0;
+  }
+  if (filter3 === "ambiguities") {
+    return signals.ambiguityCount > 0;
+  }
+  if (filter3 === "deletes") {
+    return deleteCount(note) > 0;
+  }
+  if (filter3 === "schema") {
+    return Number(note?.schemaSuggestionCount ?? 0) > 0;
+  }
+  return true;
+}
+function attentionScore(note) {
+  const signals = hitlSignalCounts(note);
+  return signals.contradictionCount * 100 + signals.ambiguityCount * 70 + deleteCount(note) * 35 + Number(note?.schemaSuggestionCount ?? 0) * 20;
+}
+function sortHitlNotes(notes) {
+  return [...notes ?? []].sort((left, right) => {
+    const scoreDelta = attentionScore(right) - attentionScore(left);
+    if (scoreDelta !== 0) {
+      return scoreDelta;
+    }
+    return new Date(right.createdAt ?? 0).getTime() - new Date(left.createdAt ?? 0).getTime();
+  });
+}
+function hitlCountLabel(note) {
+  const nodeParts = [
+    `${note.nodeCount ?? 0}N`,
+    note.nodeDeleteCount ? `${note.nodeDeleteCount}ND` : ""
+  ].filter(Boolean);
+  const relationParts = [
+    `${note.relationCount ?? 0}R`,
+    note.relationDeleteCount ? `${note.relationDeleteCount}RD` : ""
+  ].filter(Boolean);
+  return [...nodeParts, ...relationParts].join(" / ");
+}
+function operationBreakdown(records, deletes = []) {
+  return {
+    create: records.filter((record) => record.operation === "create").length,
+    update: records.filter((record) => record.operation === "update").length,
+    delete: deletes.length,
+    total: records.length + deletes.length
+  };
+}
+function proposalOperationCounts(proposal) {
+  return {
+    nodes: operationBreakdown(proposal.nodes, proposal.nodeDeletes),
+    relations: operationBreakdown(proposal.relations, proposal.relationDeletes),
+    nodeTypes: proposal.schemaSuggestions.filter((record) => record.entity === "nodeTypeSuggestion").length,
+    relationTypes: proposal.schemaSuggestions.filter((record) => record.entity === "relationTypeSuggestion").length
+  };
+}
+function noteOperationCounts(note) {
+  return note?.llmResponse ? proposalOperationCounts(parseHitlProposal(note.llmResponse)) : null;
+}
+function strongNoteChips(note) {
+  const signals = hitlSignalCounts(note);
+  return [
+    { kind: "neutral", label: "Nodes", value: Number(note?.nodeCount ?? 0) },
+    { kind: "neutral", label: "Relations", value: Number(note?.relationCount ?? 0) },
+    { kind: "delete", label: "Delete", value: deleteCount(note) },
+    { kind: "schema", label: "Schema", value: Number(note?.schemaSuggestionCount ?? 0) },
+    { kind: "contradiction", label: "Contradiction", value: signals.contradictionCount },
+    { kind: "ambiguity", label: "Ambiguity", value: signals.ambiguityCount }
+  ].filter((chip) => chip.value > 0);
+}
+
+// node_modules/preact/jsx-runtime/dist/jsxRuntime.module.js
+var f3 = 0;
+function u3(e3, t3, n2, o3, i3, u4) {
+  t3 || (t3 = {});
+  var a3, c4, p3 = t3;
+  if ("ref" in p3) for (c4 in p3 = {}, t3) "ref" == c4 ? a3 = t3[c4] : p3[c4] = t3[c4];
+  var l3 = { type: e3, props: p3, key: n2, ref: a3, __k: null, __: null, __b: 0, __e: null, __c: null, constructor: void 0, __v: --f3, __i: -1, __u: 0, __source: i3, __self: u4 };
+  if ("function" == typeof e3 && (a3 = e3.defaultProps)) for (c4 in a3) void 0 === p3[c4] && (p3[c4] = a3[c4]);
+  return l.vnode && l.vnode(l3), l3;
+}
+
+// src/server/public/components/hitl/HitlProposalSummary.js
+function operationLabel(operation) {
+  if (operation === "delete") {
+    return "Delete";
+  }
+  if (operation === "update") {
+    return "Update";
+  }
+  if (operation === "suggest") {
+    return "Suggest";
+  }
+  return "Create";
+}
+function operationClass(operation) {
+  return `proposal-operation ${operation || "create"}`;
+}
+function nodeLabel(record) {
+  return record.label || displayNameFromIdentifier(record.name || record.id);
+}
+function relationFact(record) {
+  return `${displayNameFromIdentifier(record.sourceName)} ${relationLabel(record.relation)} ${displayNameFromIdentifier(record.targetName)}`;
+}
+function findCurrentNode(graph, record) {
+  return graph?.nodes?.find((node) => node.id === record.id) ?? null;
+}
+function findCurrentRelation(graph, record) {
+  return graph?.relations?.find((relation) => relation.sourceId === record.sourceId && relation.targetId === record.targetId && relation.relation === record.relation) ?? null;
+}
+function ReviewSignals({ signals }) {
+  if (!signals?.length) {
+    return null;
+  }
+  return /* @__PURE__ */ u3("span", { class: "proposal-row-signals", children: signals.map((signal, index2) => /* @__PURE__ */ u3("span", { class: `review-signal-chip ${signal.kind}`, children: signal.kind }, `${signal.kind}-${index2}`)) });
+}
+function CurrentProposed({ current: previewItem, proposed, type }) {
+  if (!previewItem) {
+    return /* @__PURE__ */ u3("div", { class: "proposal-current muted-copy", children: "Current context not loaded." });
+  }
+  const current = previewItem.pendingHitl ? previewItem.approved : previewItem;
+  if (!current) {
+    return /* @__PURE__ */ u3("div", { class: "proposal-current muted-copy", children: "Not in the approved graph yet." });
+  }
+  if (type === "relation") {
+    return /* @__PURE__ */ u3("div", { class: "proposal-current-grid", children: [
+      /* @__PURE__ */ u3("div", { children: [
+        /* @__PURE__ */ u3("span", { children: "Current" }),
+        /* @__PURE__ */ u3("strong", { children: relationLabel(current.relation) }),
+        /* @__PURE__ */ u3("small", { class: "multiline-text", children: displayPipelineText(current.information || current.description) || "No extra detail." })
+      ] }),
+      /* @__PURE__ */ u3("div", { children: [
+        /* @__PURE__ */ u3("span", { children: "Proposed" }),
+        /* @__PURE__ */ u3("strong", { children: relationLabel(proposed.relation) }),
+        /* @__PURE__ */ u3("small", { class: "multiline-text", children: displayPipelineText(proposed.information || proposed.description || proposed.metadata) || "No extra detail." })
+      ] })
+    ] });
+  }
+  return /* @__PURE__ */ u3("div", { class: "proposal-current-grid", children: [
+    /* @__PURE__ */ u3("div", { children: [
+      /* @__PURE__ */ u3("span", { children: "Current" }),
+      /* @__PURE__ */ u3("strong", { children: current.label || displayNameFromIdentifier(current.name || current.id) }),
+      /* @__PURE__ */ u3("small", { class: "multiline-text", children: displayPipelineText(current.description) || "No description." })
+    ] }),
+    /* @__PURE__ */ u3("div", { children: [
+      /* @__PURE__ */ u3("span", { children: "Proposed" }),
+      /* @__PURE__ */ u3("strong", { children: nodeLabel(proposed) }),
+      /* @__PURE__ */ u3("small", { class: "multiline-text", children: displayPipelineText(proposed.description || proposed.metadata) || "No description." })
+    ] })
+  ] });
+}
+function ProposalRow({ activeRowKey, children, current, graphItem, onFocus, record, type }) {
+  const isActive = activeRowKey === record.key;
+  return /* @__PURE__ */ u3(
+    "button",
+    {
+      type: "button",
+      class: `proposal-row${isActive ? " active" : ""}`,
+      onClick: () => onFocus?.(record),
+      children: [
+        /* @__PURE__ */ u3("span", { class: operationClass(record.operation), children: operationLabel(record.operation) }),
+        /* @__PURE__ */ u3("span", { class: "proposal-row-main", children: [
+          children,
+          (record.operation === "update" || record.operation === "delete") && /* @__PURE__ */ u3(CurrentProposed, { current, proposed: record, type })
+        ] }),
+        /* @__PURE__ */ u3(ReviewSignals, { signals: record.signals }),
+        !graphItem && (type === "node" || type === "relation") && /* @__PURE__ */ u3("small", { class: "proposal-row-context", children: "Not in preview" })
+      ]
+    }
+  );
+}
+function ProposalGroup({ actions, children, count, isLeaf = true, level = 1, title, tone = "" }) {
+  return /* @__PURE__ */ u3("details", { class: `proposal-group level-${level}${tone ? ` tone-${tone}` : ""}${count === 0 ? " empty" : ""}`, open: count > 0, children: [
+    /* @__PURE__ */ u3("summary", { children: [
+      /* @__PURE__ */ u3("span", { class: "proposal-group-title", children: title }),
+      /* @__PURE__ */ u3("span", { class: "proposal-group-count", children: count })
+    ] }),
+    /* @__PURE__ */ u3("div", { class: "proposal-group-body", children: [
+      actions && /* @__PURE__ */ u3("div", { class: "schema-suggestion-actions", children: actions }),
+      !isLeaf ? children : count === 0 ? /* @__PURE__ */ u3("p", { class: "muted-copy", children: "None." }) : /* @__PURE__ */ u3("div", { class: "proposal-row-list", children })
+    ] })
+  ] });
+}
+function SchemaSuggestionRow({ activeRowKey, onDelete, onFocus, onUpdate, record }) {
+  function updateField(field, value) {
+    onUpdate?.(record, { ...record, [field]: value });
+  }
+  return /* @__PURE__ */ u3(
+    "div",
+    {
+      class: `proposal-row schema-suggestion${activeRowKey === record.key ? " active" : ""}`,
+      onClick: () => onFocus?.(record),
+      children: [
+        /* @__PURE__ */ u3("span", { class: operationClass("suggest"), children: "Suggest" }),
+        /* @__PURE__ */ u3("span", { class: "proposal-row-main", children: [
+          /* @__PURE__ */ u3("small", { children: record.entity === "nodeTypeSuggestion" ? "Node type" : "Relationship type" }),
+          /* @__PURE__ */ u3("label", { class: "compact-field", children: [
+            /* @__PURE__ */ u3("span", { children: "Name" }),
+            /* @__PURE__ */ u3(
+              "input",
+              {
+                value: record.name,
+                onBlur: (event) => updateField("name", event.currentTarget.value)
+              }
+            )
+          ] }),
+          /* @__PURE__ */ u3("label", { class: "compact-field", children: [
+            /* @__PURE__ */ u3("span", { children: "Description" }),
+            /* @__PURE__ */ u3(
+              "input",
+              {
+                value: record.description,
+                onBlur: (event) => updateField("description", event.currentTarget.value)
+              }
+            )
+          ] }),
+          /* @__PURE__ */ u3("label", { class: "compact-field", children: [
+            /* @__PURE__ */ u3("span", { children: "Reason" }),
+            /* @__PURE__ */ u3(
+              "input",
+              {
+                value: record.reason,
+                onBlur: (event) => updateField("reason", event.currentTarget.value)
+              }
+            )
+          ] }),
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              class: "danger-button compact-button",
+              onClick: (event) => {
+                event.stopPropagation();
+                onDelete?.(record);
+              },
+              children: "Delete suggestion"
+            }
+          )
+        ] })
+      ]
+    }
+  );
+}
+function ReviewSignalSummary({ signals }) {
+  return /* @__PURE__ */ u3(ProposalGroup, { title: "Review signals", count: signals.length, children: signals.map((signal, index2) => /* @__PURE__ */ u3("div", { class: "proposal-signal-row", children: [
+    /* @__PURE__ */ u3("span", { class: `review-signal-chip ${signal.kind}`, children: signal.kind }),
+    /* @__PURE__ */ u3("p", { children: signal.text })
+  ] }, `${signal.kind}-${index2}`)) });
+}
+function HitlProposalSummary({
+  activeRowKey,
+  graph,
+  onCreateSchemaSuggestion,
+  onDeleteSchemaSuggestion,
+  onRowFocus,
+  onUpdateSchemaSuggestion,
+  proposal
+}) {
+  const nodeRows = proposal.nodes ?? [];
+  const relationRows = proposal.relations ?? [];
+  const nodeDeleteRows = proposal.nodeDeletes ?? [];
+  const relationDeleteRows = proposal.relationDeletes ?? [];
+  const schemaRows = proposal.schemaSuggestions ?? [];
+  const nodeTypeRows = schemaRows.filter((record) => record.entity === "nodeTypeSuggestion");
+  const relationTypeRows = schemaRows.filter((record) => record.entity === "relationTypeSuggestion");
+  const nodeGroups = [
+    { title: "Create", tone: "create", rows: nodeRows.filter((record) => record.operation === "create") },
+    { title: "Update", tone: "update", rows: nodeRows.filter((record) => record.operation === "update") },
+    { title: "Delete", tone: "delete", rows: nodeDeleteRows }
+  ];
+  const relationGroups = [
+    { title: "Create", tone: "create", rows: relationRows.filter((record) => record.operation === "create") },
+    { title: "Update", tone: "update", rows: relationRows.filter((record) => record.operation === "update") },
+    { title: "Delete", tone: "delete", rows: relationDeleteRows }
+  ];
+  const relationCurrent = (record) => findCurrentRelation(graph, record);
+  const nodeCurrent = (record) => findCurrentNode(graph, record);
+  function renderNodeRow(record) {
+    const current = nodeCurrent(record);
+    return /* @__PURE__ */ u3(
+      ProposalRow,
+      {
+        activeRowKey,
+        current,
+        graphItem: current,
+        onFocus: onRowFocus,
+        record,
+        type: "node",
+        children: [
+          /* @__PURE__ */ u3("strong", { children: nodeLabel(record) }),
+          record.type && /* @__PURE__ */ u3("small", { children: record.type }),
+          record.description && /* @__PURE__ */ u3("small", { class: "multiline-text", children: displayPipelineText(record.description) }),
+          record.metadata && /* @__PURE__ */ u3("small", { class: "proposal-row-warning multiline-text", children: displayPipelineText(record.metadata) })
+        ]
+      },
+      record.key
+    );
+  }
+  function renderRelationRow(record) {
+    const current = relationCurrent(record);
+    return /* @__PURE__ */ u3(
+      ProposalRow,
+      {
+        activeRowKey,
+        current,
+        graphItem: current,
+        onFocus: onRowFocus,
+        record,
+        type: "relation",
+        children: [
+          /* @__PURE__ */ u3("strong", { children: relationFact(record) }),
+          record.operation !== "delete" && /* @__PURE__ */ u3("small", { class: "multiline-text", children: displayPipelineText(record.information || record.description) || "No extra detail." }),
+          record.metadata && /* @__PURE__ */ u3("small", { class: "proposal-row-warning multiline-text", children: displayPipelineText(record.metadata) })
+        ]
+      },
+      record.key
+    );
+  }
+  function renderSchemaRow(record) {
+    return /* @__PURE__ */ u3(
+      SchemaSuggestionRow,
+      {
+        activeRowKey,
+        onDelete: onDeleteSchemaSuggestion,
+        onFocus: onRowFocus,
+        onUpdate: onUpdateSchemaSuggestion,
+        record
+      },
+      record.key
+    );
+  }
+  return /* @__PURE__ */ u3("div", { class: "proposal-summary", children: [
+    proposal.errors?.length > 0 && /* @__PURE__ */ u3("section", { class: "proposal-parse-errors", children: [
+      /* @__PURE__ */ u3("strong", { children: "Parse issues" }),
+      proposal.errors.map((error, index2) => /* @__PURE__ */ u3("p", { children: error }, `${error}-${index2}`))
+    ] }),
+    /* @__PURE__ */ u3(ProposalGroup, { title: "Nodes", count: nodeRows.length + nodeDeleteRows.length, isLeaf: false, children: nodeGroups.map((group) => /* @__PURE__ */ u3(ProposalGroup, { level: 2, title: group.title, tone: group.tone, count: group.rows.length, children: group.rows.map(renderNodeRow) }, group.title)) }),
+    /* @__PURE__ */ u3(ProposalGroup, { title: "Relations", count: relationRows.length + relationDeleteRows.length, isLeaf: false, children: relationGroups.map((group) => /* @__PURE__ */ u3(ProposalGroup, { level: 2, title: group.title, tone: group.tone, count: group.rows.length, children: group.rows.map(renderRelationRow) }, group.title)) }),
+    /* @__PURE__ */ u3(ProposalGroup, { title: "Schema suggestions", count: schemaRows.length, isLeaf: false, children: [
+      /* @__PURE__ */ u3(
+        ProposalGroup,
+        {
+          level: 2,
+          title: "Node types",
+          tone: "suggest",
+          count: nodeTypeRows.length,
+          actions: /* @__PURE__ */ u3("button", { type: "button", class: "compact-button", onClick: () => onCreateSchemaSuggestion?.("nodeTypeSuggestion"), children: "Add node type" }),
+          children: nodeTypeRows.map(renderSchemaRow)
+        }
+      ),
+      /* @__PURE__ */ u3(
+        ProposalGroup,
+        {
+          level: 2,
+          title: "Relation types",
+          tone: "suggest",
+          count: relationTypeRows.length,
+          actions: /* @__PURE__ */ u3("button", { type: "button", class: "compact-button", onClick: () => onCreateSchemaSuggestion?.("relationTypeSuggestion"), children: "Add relation type" }),
+          children: relationTypeRows.map(renderSchemaRow)
+        }
+      )
+    ] }),
+    /* @__PURE__ */ u3(ReviewSignalSummary, { signals: proposal.signals ?? [] })
+  ] });
+}
+
+// src/server/public/components/hitl/HitlReviewPanel.js
+var FILTERS = [
+  { id: "all", label: "All" },
+  { id: "attention", label: "Needs attention" },
+  { id: "contradictions", label: "Contradictions" },
+  { id: "ambiguities", label: "Ambiguities" },
+  { id: "deletes", label: "Deletes" },
+  { id: "schema", label: "Schema" }
+];
+function readStoredDensity() {
+  try {
+    return window.localStorage.getItem(HITL_CHIP_DENSITY_KEY) === "strong" ? "strong" : "compact";
+  } catch {
+    return "compact";
+  }
+}
+function writeStoredDensity(value) {
+  try {
+    window.localStorage.setItem(HITL_CHIP_DENSITY_KEY, value);
+  } catch {
+  }
+}
+var OPERATION_CODES = [
+  { key: "create", code: "C" },
+  { key: "update", code: "U" },
+  { key: "delete", code: "D" }
+];
+function OperationBreakdown({ code, counts }) {
+  const parts = OPERATION_CODES.filter(({ key }) => counts[key] > 0);
+  return /* @__PURE__ */ u3("span", { class: "count-group", children: [
+    counts.total,
+    code,
+    parts.length > 0 && /* @__PURE__ */ u3("span", { class: "count-ops", children: [
+      " (",
+      parts.map(({ key, code: operationCode }, index2) => /* @__PURE__ */ u3("span", { class: `count-op ${key}`, children: [
+        index2 > 0 ? " " : "",
+        counts[key],
+        operationCode
+      ] }, key)),
+      ")"
+    ] })
+  ] });
+}
+function SubmissionCounts({ note }) {
+  const counts = T2(() => noteOperationCounts(note), [note]);
+  if (!counts) {
+    return /* @__PURE__ */ u3("span", { class: "submission-counts", children: hitlCountLabel(note) });
+  }
+  return /* @__PURE__ */ u3(
+    "span",
+    {
+      class: "submission-counts",
+      title: "N nodes, R relations, NT node type suggestions, RT relation type suggestions. C create, U update, D delete.",
+      children: [
+        /* @__PURE__ */ u3(OperationBreakdown, { code: "N", counts: counts.nodes }),
+        /* @__PURE__ */ u3(OperationBreakdown, { code: "R", counts: counts.relations }),
+        counts.nodeTypes > 0 && /* @__PURE__ */ u3("span", { class: "count-group", children: [
+          counts.nodeTypes,
+          "NT"
+        ] }),
+        counts.relationTypes > 0 && /* @__PURE__ */ u3("span", { class: "count-group", children: [
+          counts.relationTypes,
+          "RT"
+        ] })
+      ]
+    }
+  );
+}
+function HitlNoteChips({ density, note }) {
+  const signals = hitlSignalCounts(note);
+  const hasSignals = signals.ambiguityCount > 0 || signals.contradictionCount > 0;
+  if (density === "compact") {
+    return /* @__PURE__ */ u3(S, { children: [
+      /* @__PURE__ */ u3(SubmissionCounts, { note }),
+      hasSignals && /* @__PURE__ */ u3("span", { class: "submission-signals", "aria-label": "Review signals", children: [
+        signals.contradictionCount > 0 && /* @__PURE__ */ u3("span", { class: "review-signal-chip contradiction", children: [
+          signals.contradictionCount,
+          " contradiction",
+          signals.contradictionCount === 1 ? "" : "s"
+        ] }),
+        signals.ambiguityCount > 0 && /* @__PURE__ */ u3("span", { class: "review-signal-chip ambiguity", children: [
+          signals.ambiguityCount,
+          " ",
+          signals.ambiguityCount === 1 ? "ambiguity" : "ambiguities"
+        ] })
+      ] })
+    ] });
+  }
+  return /* @__PURE__ */ u3("span", { class: "strong-chip-list", "aria-label": "HITL counts", children: strongNoteChips(note).map((chip) => /* @__PURE__ */ u3("span", { class: `strong-chip ${chip.kind}`, children: [
+    chip.label,
+    " ",
+    chip.value
+  ] }, `${chip.kind}-${chip.label}`)) });
+}
+function ProposalStatus({ isValid, proposal }) {
+  if (!proposal.lines.length) {
+    return /* @__PURE__ */ u3("span", { class: "proposal-status warning", children: "Empty proposal" });
+  }
+  if (!isValid) {
+    return /* @__PURE__ */ u3("span", { class: "proposal-status error", children: [
+      proposal.errors.length,
+      " parse issue",
+      proposal.errors.length === 1 ? "" : "s"
+    ] });
+  }
+  if (proposal.signals.length > 0) {
+    return /* @__PURE__ */ u3("span", { class: "proposal-status warning", children: [
+      proposal.signals.length,
+      " review signal",
+      proposal.signals.length === 1 ? "" : "s"
+    ] });
+  }
+  return /* @__PURE__ */ u3("span", { class: "proposal-status valid", children: "Valid proposal" });
+}
+function HitlReviewPanel({
+  editedResponse,
+  graph,
+  isProposalDirty,
+  onEditedResponseChange,
+  onGraphRefresh,
+  onProposalFocus,
+  onChangeReviewerName,
+  onCloseSelectedNote,
+  onSelectNote,
+  onStatus,
+  previewMessage,
+  requestJson: requestJson2,
+  reviewerName,
+  routeSwitcher,
+  selectedNote
+}) {
+  const [activeFilter, setActiveFilter] = d2("all");
+  const [activeProposalRowKey, setActiveProposalRowKey] = d2("");
+  const [chipDensity, setChipDensity] = d2(readStoredDensity);
+  const [isActing, setIsActing] = d2(false);
+  const [isLoading, setIsLoading] = d2(false);
+  const [notes, setNotes] = d2([]);
+  const [panelMessage, setPanelMessage] = d2("");
+  const proposal = T2(() => parseHitlProposal(editedResponse), [editedResponse]);
+  const filteredNotes = T2(() => sortHitlNotes(notes).filter((note) => noteMatchesFilter(note, activeFilter)), [activeFilter, notes]);
+  const pendingNodeCount = notes.reduce((total, note) => total + (note.nodeCount ?? 0) + (note.nodeDeleteCount ?? 0), 0);
+  const pendingRelationCount = notes.reduce((total, note) => total + (note.relationCount ?? 0) + (note.relationDeleteCount ?? 0), 0);
+  const proposalIsValid = proposal.errors.length === 0 && proposal.lines.length > 0;
+  const showPanelMessage = q2((message) => {
+    setPanelMessage(message);
+    onStatus?.(message);
+  }, [onStatus]);
+  const loadNotes = q2(async () => {
+    setIsLoading(true);
+    try {
+      const result = await requestJson2("/api/hitl/notes?limit=100");
+      setNotes(result.notes ?? []);
+      setPanelMessage("");
+    } catch (error) {
+      showPanelMessage(error.message);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [requestJson2, showPanelMessage]);
+  y2(() => {
+    loadNotes();
+  }, [loadNotes]);
+  function changeChipDensity(value) {
+    const nextDensity = value === "strong" ? "strong" : "compact";
+    setChipDensity(nextDensity);
+    writeStoredDensity(nextDensity);
+  }
+  const openNote = q2(async (noteId) => {
+    setIsLoading(true);
+    setActiveProposalRowKey("");
+    try {
+      const result = await requestJson2(`/api/hitl/notes/${encodeURIComponent(noteId)}`);
+      onSelectNote(result.note ?? null);
+      onEditedResponseChange(pipelineEditorText(result.note?.llmResponse ?? ""));
+      setPanelMessage("");
+    } catch (error) {
+      showPanelMessage(error.message);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [onEditedResponseChange, onSelectNote, requestJson2, showPanelMessage]);
+  const refreshReview = q2(async () => {
+    await loadNotes();
+    await onGraphRefresh?.();
+  }, [loadNotes, onGraphRefresh]);
+  const approveSelectedNote = q2(async () => {
+    const activeReviewerName = reviewerName.trim();
+    if (!selectedNote || !activeReviewerName) {
+      return;
+    }
+    setIsActing(true);
+    try {
+      await requestJson2(`/api/hitl/notes/${encodeURIComponent(selectedNote.id)}/approve`, {
+        method: "POST",
+        body: JSON.stringify({
+          llmResponse: editedResponse,
+          reviewedBy: activeReviewerName
+        })
+      });
+      onSelectNote(null);
+      onEditedResponseChange("");
+      setActiveProposalRowKey("");
+      await refreshReview();
+      showPanelMessage("Approved and applied to the graph.");
+    } catch (error) {
+      showPanelMessage(error.message);
+    } finally {
+      setIsActing(false);
+    }
+  }, [editedResponse, onEditedResponseChange, onSelectNote, refreshReview, requestJson2, reviewerName, selectedNote, showPanelMessage]);
+  const rejectSelectedNote = q2(async () => {
+    if (!selectedNote || !window.confirm("Reject and permanently delete this HITL note?")) {
+      return;
+    }
+    setIsActing(true);
+    try {
+      await requestJson2(`/api/hitl/notes/${encodeURIComponent(selectedNote.id)}`, {
+        method: "DELETE"
+      });
+      onSelectNote(null);
+      onEditedResponseChange("");
+      setActiveProposalRowKey("");
+      await refreshReview();
+      showPanelMessage("Rejected and deleted from HITL queue.");
+    } catch (error) {
+      showPanelMessage(error.message);
+    } finally {
+      setIsActing(false);
+    }
+  }, [onEditedResponseChange, onSelectNote, refreshReview, requestJson2, selectedNote, showPanelMessage]);
+  function focusProposalRow(record) {
+    setActiveProposalRowKey(record.key);
+    onProposalFocus?.(record);
+  }
+  function backToList() {
+    if (isProposalDirty && !window.confirm("Discard unsaved edits to this HITL proposal?")) {
+      return;
+    }
+    onCloseSelectedNote?.();
+    setActiveProposalRowKey("");
+  }
+  function createSchemaSuggestion(entity) {
+    onEditedResponseChange(appendSchemaSuggestion(editedResponse, entity));
+    showPanelMessage("Added schema suggestion to this HITL proposal.");
+  }
+  function editSchemaSuggestion(record, draft) {
+    onEditedResponseChange(updateSchemaSuggestion(editedResponse, record, draft));
+  }
+  function removeSchemaSuggestion(record) {
+    if (!window.confirm(`Delete schema suggestion "${record.name}" from this proposal?`)) {
+      return;
+    }
+    onEditedResponseChange(deleteSchemaSuggestion(editedResponse, record));
+    setActiveProposalRowKey("");
+    showPanelMessage("Removed schema suggestion from this HITL proposal.");
+  }
+  return /* @__PURE__ */ u3("aside", { class: "hitl-panel", "aria-label": "Human review workspace", children: [
+    /* @__PURE__ */ u3("header", { class: "hitl-header", children: [
+      /* @__PURE__ */ u3("div", { children: [
+        /* @__PURE__ */ u3("p", { class: "eyebrow", children: "Human review" }),
+        /* @__PURE__ */ u3("h2", { children: "Pending approvals" })
+      ] }),
+      /* @__PURE__ */ u3("div", { class: "hitl-header-actions", children: [
+        /* @__PURE__ */ u3("button", { type: "button", class: "compact-button", onClick: refreshReview, disabled: isLoading || isActing, children: "Refresh" }),
+        routeSwitcher
+      ] })
+    ] }),
+    /* @__PURE__ */ u3("div", { class: "hitl-identity", children: [
+      /* @__PURE__ */ u3("div", { children: [
+        /* @__PURE__ */ u3("span", { children: "Reviewer" }),
+        /* @__PURE__ */ u3("strong", { children: reviewerName || "Name required" })
+      ] }),
+      /* @__PURE__ */ u3("button", { type: "button", class: "identity-change-button", onClick: onChangeReviewerName, children: "Change" })
+    ] }),
+    (panelMessage || previewMessage) && /* @__PURE__ */ u3("div", { class: "status-line", children: panelMessage || previewMessage }),
+    /* @__PURE__ */ u3("div", { class: "hitl-content", children: [
+      /* @__PURE__ */ u3("div", { class: "review-summary-grid", children: [
+        /* @__PURE__ */ u3("div", { children: [
+          pendingNodeCount,
+          " pending nodes"
+        ] }),
+        /* @__PURE__ */ u3("div", { children: [
+          pendingRelationCount,
+          " pending relations"
+        ] })
+      ] }),
+      !selectedNote ? /* @__PURE__ */ u3("section", { class: "hitl-section", children: [
+        /* @__PURE__ */ u3("div", { class: "hitl-toolbar", children: [
+          /* @__PURE__ */ u3("label", { class: "field", children: [
+            /* @__PURE__ */ u3("span", { children: "Filter" }),
+            /* @__PURE__ */ u3("select", { value: activeFilter, onChange: (event) => setActiveFilter(event.currentTarget.value), children: FILTERS.map((filter3) => /* @__PURE__ */ u3("option", { value: filter3.id, children: filter3.label }, filter3.id)) })
+          ] }),
+          /* @__PURE__ */ u3("label", { class: "field", children: [
+            /* @__PURE__ */ u3("span", { children: "Chips" }),
+            /* @__PURE__ */ u3("select", { value: chipDensity, onChange: (event) => changeChipDensity(event.currentTarget.value), children: [
+              /* @__PURE__ */ u3("option", { value: "compact", children: "Compact" }),
+              /* @__PURE__ */ u3("option", { value: "strong", children: "Strong" })
+            ] })
+          ] })
+        ] }),
+        /* @__PURE__ */ u3("div", { class: "hitl-section-header", children: [
+          /* @__PURE__ */ u3("h3", { children: "Pending submissions" }),
+          /* @__PURE__ */ u3("span", { children: isLoading ? "Loading" : filteredNotes.length })
+        ] }),
+        /* @__PURE__ */ u3("div", { class: "submission-list", role: "list", children: [
+          filteredNotes.map((note) => {
+            const hasSignals = needsAttention(note);
+            return /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                class: `submission-row${hasSignals ? " has-review-signals" : ""}`,
+                onClick: () => openNote(note.id),
+                children: [
+                  /* @__PURE__ */ u3("span", { class: "submission-main", children: [
+                    /* @__PURE__ */ u3("strong", { children: note.ingestedBy || note.userName || "Unknown user" }),
+                    /* @__PURE__ */ u3("small", { children: truncateText(note.inputPreview, 72) }),
+                    /* @__PURE__ */ u3("small", { children: formatHitlDate(note.createdAt) })
+                  ] }),
+                  /* @__PURE__ */ u3("span", { class: `status-chip ${note.status}`, children: note.status }),
+                  /* @__PURE__ */ u3(HitlNoteChips, { density: chipDensity, note })
+                ]
+              },
+              note.id
+            );
+          }),
+          !isLoading && filteredNotes.length === 0 && /* @__PURE__ */ u3("div", { class: "empty-review-state", children: "No pending HITL items for this filter." })
+        ] })
+      ] }) : /* @__PURE__ */ u3("section", { class: "hitl-section submission-detail", children: [
+        /* @__PURE__ */ u3("div", { class: `hitl-mode-banner draft${isProposalDirty ? " dirty" : ""}`, children: [
+          /* @__PURE__ */ u3("strong", { children: "Proposal draft mode" }),
+          /* @__PURE__ */ u3("span", { children: "Graph and schema edits update this proposal only. They apply to the DB after approval." })
+        ] }),
+        /* @__PURE__ */ u3("div", { class: "hitl-section-header", children: [
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              class: "compact-button",
+              onClick: backToList,
+              children: "Back"
+            }
+          ),
+          /* @__PURE__ */ u3("div", { class: "hitl-detail-status", children: [
+            isProposalDirty && /* @__PURE__ */ u3("span", { class: "proposal-status warning", children: "Unsaved proposal edits" }),
+            /* @__PURE__ */ u3("span", { class: `status-chip ${selectedNote.status}`, children: selectedNote.status })
+          ] })
+        ] }),
+        /* @__PURE__ */ u3("div", { class: "detail-kv", children: [
+          /* @__PURE__ */ u3("span", { children: "Ingested by" }),
+          /* @__PURE__ */ u3("strong", { children: selectedNote.ingestedBy || selectedNote.userName || "Unknown user" })
+        ] }),
+        /* @__PURE__ */ u3("div", { class: "detail-kv", children: [
+          /* @__PURE__ */ u3("span", { children: "Created" }),
+          /* @__PURE__ */ u3("strong", { children: formatHitlDate(selectedNote.createdAt) })
+        ] }),
+        /* @__PURE__ */ u3("label", { class: "field", children: [
+          /* @__PURE__ */ u3("span", { children: "User input" }),
+          /* @__PURE__ */ u3("textarea", { readOnly: true, rows: "4", value: selectedNote.userInput || selectedNote.prompt || "" })
+        ] }),
+        /* @__PURE__ */ u3(
+          HitlProposalSummary,
+          {
+            activeRowKey: activeProposalRowKey,
+            graph,
+            onCreateSchemaSuggestion: createSchemaSuggestion,
+            onDeleteSchemaSuggestion: removeSchemaSuggestion,
+            onRowFocus: focusProposalRow,
+            onUpdateSchemaSuggestion: editSchemaSuggestion,
+            proposal
+          }
+        ),
+        /* @__PURE__ */ u3("details", { class: "hitl-raw-response", children: [
+          /* @__PURE__ */ u3("summary", { children: "Advanced raw response" }),
+          /* @__PURE__ */ u3("label", { class: "field", children: [
+            /* @__PURE__ */ u3("span", { children: "Editable piped LLM response" }),
+            /* @__PURE__ */ u3(
+              "textarea",
+              {
+                class: "pipeline-preview",
+                rows: "12",
+                value: editedResponse,
+                onInput: (event) => onEditedResponseChange(event.currentTarget.value)
+              }
+            )
+          ] })
+        ] }),
+        /* @__PURE__ */ u3("div", { class: "hitl-decision-footer", children: [
+          /* @__PURE__ */ u3("div", { class: "proposal-footer-status", children: [
+            /* @__PURE__ */ u3(ProposalStatus, { isValid: proposalIsValid, proposal }),
+            isProposalDirty && /* @__PURE__ */ u3("span", { class: "proposal-status warning", children: "Unsaved edits" })
+          ] }),
+          /* @__PURE__ */ u3("div", { class: "hitl-decision-actions", children: [
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                class: "primary compact-button",
+                disabled: isActing || !reviewerName.trim() || !editedResponse.trim(),
+                onClick: approveSelectedNote,
+                children: "Approve"
+              }
+            ),
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                class: "danger-button compact-button",
+                disabled: isActing,
+                onClick: rejectSelectedNote,
+                children: "Reject"
+              }
+            )
+          ] })
+        ] })
+      ] })
+    ] })
+  ] });
+}
+
+// src/server/public/components/common/Icons.js
+function PaperclipIcon() {
+  return /* @__PURE__ */ u3("svg", { "aria-hidden": "true", viewBox: "0 0 24 24", focusable: "false", children: /* @__PURE__ */ u3("path", { d: "m21.4 11.05-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.65 5.65l-8.9 8.9a2.2 2.2 0 0 1-3.1-3.1l8.45-8.45" }) });
+}
+function TrashIcon() {
+  return /* @__PURE__ */ u3("svg", { "aria-hidden": "true", viewBox: "0 0 24 24", focusable: "false", children: [
+    /* @__PURE__ */ u3("path", { d: "M3 6h18" }),
+    /* @__PURE__ */ u3("path", { d: "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" }),
+    /* @__PURE__ */ u3("path", { d: "M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" }),
+    /* @__PURE__ */ u3("path", { d: "M10 11v6" }),
+    /* @__PURE__ */ u3("path", { d: "M14 11v6" })
+  ] });
+}
+
+// src/server/public/components/chat/Composer.js
+function formatFileSize(bytes) {
+  const size = Number(bytes) || 0;
+  if (size < 1024) {
+    return `${size} B`;
+  }
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+function fileKey(file) {
+  return `${file?.name ?? ""}:${file?.size ?? 0}:${file?.lastModified ?? 0}`;
+}
+function Composer({
+  actionLabel,
+  autoGrow = false,
+  className = "",
+  clearAction = null,
+  files = [],
+  fileAccept,
+  inputId,
+  inputRef,
+  disabled = false,
+  isBusy,
+  onFileClear,
+  onFilesSelect,
+  onInput,
+  onSubmit,
+  placeholder,
+  value
+}) {
+  const [isDragActive, setIsDragActive] = d2(false);
+  const dragDepthRef = A2(0);
+  const fileInputRef = A2(null);
+  const textareaRef = A2(null);
+  const canAttachFile = Boolean(onFilesSelect);
+  const hasFiles = files.length > 0;
+  const isDisabled = isBusy || disabled;
+  function resizeTextarea(element = textareaRef.current) {
+    if (!autoGrow || !element) {
+      return;
+    }
+    const maxHeight = 180;
+    const minHeight = 42;
+    element.style.height = "auto";
+    const nextHeight = Math.max(minHeight, Math.min(element.scrollHeight, maxHeight));
+    element.style.height = `${nextHeight}px`;
+    element.style.overflowY = element.scrollHeight > maxHeight ? "auto" : "hidden";
+  }
+  function setTextareaRef(element) {
+    textareaRef.current = element;
+    if (typeof inputRef === "function") {
+      inputRef(element);
+    } else if (inputRef) {
+      inputRef.current = element;
+    }
+    resizeTextarea(element);
+  }
+  y2(() => {
+    resizeTextarea();
+  }, [autoGrow, files.length, value]);
+  function handleSubmit(event) {
+    event.preventDefault();
+    if (isDisabled) {
+      return;
+    }
+    onSubmit();
+  }
+  function handleKeyDown(event) {
+    if (!isDisabled && event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      onSubmit();
+    }
+  }
+  function handleTextareaInput(event) {
+    if (isDisabled) {
+      return;
+    }
+    resizeTextarea(event.currentTarget);
+    onInput(event.currentTarget.value);
+  }
+  function hasDraggedFiles(event) {
+    return Array.from(event.dataTransfer?.types ?? []).includes("Files");
+  }
+  function handleDragEnter(event) {
+    if (!canAttachFile || isDisabled || !hasDraggedFiles(event)) {
+      return;
+    }
+    event.preventDefault();
+    dragDepthRef.current += 1;
+    setIsDragActive(true);
+  }
+  function handleDragOver(event) {
+    if (!canAttachFile || isDisabled || !hasDraggedFiles(event)) {
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setIsDragActive(true);
+  }
+  function handleDragLeave(event) {
+    if (!canAttachFile) {
+      return;
+    }
+    event.preventDefault();
+    dragDepthRef.current = Math.max(dragDepthRef.current - 1, 0);
+    if (dragDepthRef.current === 0) {
+      setIsDragActive(false);
+    }
+  }
+  function handleDrop(event) {
+    if (!canAttachFile || isDisabled) {
+      return;
+    }
+    event.preventDefault();
+    dragDepthRef.current = 0;
+    setIsDragActive(false);
+    const nextFiles = Array.from(event.dataTransfer?.files ?? []);
+    if (nextFiles.length > 0) {
+      onFilesSelect(nextFiles);
+    }
+  }
+  function handleFileInput(event) {
+    const nextFiles = Array.from(event.currentTarget.files ?? []);
+    if (nextFiles.length > 0) {
+      onFilesSelect(nextFiles);
+    }
+    event.currentTarget.value = "";
+  }
+  return /* @__PURE__ */ u3("form", { class: `composer${className ? ` ${className}` : ""}`, onSubmit: handleSubmit, children: [
+    /* @__PURE__ */ u3("label", { class: "sr-only", htmlFor: inputId, children: "Text input" }),
+    /* @__PURE__ */ u3(
+      "div",
+      {
+        class: `composer-input-shell${isDragActive ? " drag-active" : ""}${hasFiles ? " has-file" : ""}`,
+        onDragEnter: handleDragEnter,
+        onDragLeave: handleDragLeave,
+        onDragOver: handleDragOver,
+        onDrop: handleDrop,
+        children: [
+          hasFiles && /* @__PURE__ */ u3("div", { class: "file-list", children: files.map((file) => /* @__PURE__ */ u3("div", { class: "file-pill", children: [
+            /* @__PURE__ */ u3("span", { children: file.name }),
+            /* @__PURE__ */ u3("small", { children: formatFileSize(file.size) }),
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                "aria-label": `Remove ${file.name}`,
+                class: "file-remove",
+                disabled: isDisabled,
+                onClick: () => onFileClear(file),
+                type: "button",
+                children: "x"
+              }
+            )
+          ] }, fileKey(file))) }),
+          /* @__PURE__ */ u3(
+            "textarea",
+            {
+              id: inputId,
+              rows: autoGrow ? "1" : "5",
+              placeholder,
+              disabled: isDisabled,
+              onInput: handleTextareaInput,
+              onKeyDown: handleKeyDown,
+              ref: setTextareaRef,
+              value
+            }
+          ),
+          isDragActive && /* @__PURE__ */ u3("div", { class: "drop-hint", children: "Drop to attach" })
+        ]
+      }
+    ),
+    /* @__PURE__ */ u3("div", { class: `actions${clearAction || canAttachFile ? " with-tools" : ""}`, children: [
+      clearAction && /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          class: "icon-action-button trash-button",
+          "aria-label": clearAction.label,
+          "data-tooltip": clearAction.label,
+          title: clearAction.label,
+          disabled: isDisabled,
+          onClick: clearAction.onClick,
+          children: /* @__PURE__ */ u3(TrashIcon, {})
+        }
+      ),
+      canAttachFile && /* @__PURE__ */ u3(S, { children: [
+        /* @__PURE__ */ u3(
+          "input",
+          {
+            accept: fileAccept,
+            class: "sr-only",
+            disabled: isDisabled,
+            multiple: true,
+            onChange: handleFileInput,
+            ref: fileInputRef,
+            type: "file"
+          }
+        ),
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            "aria-label": "Add PDF, Word Doc",
+            class: "icon-action-button upload-button",
+            "data-tooltip": "Add PDF, Word Doc",
+            disabled: isDisabled,
+            onClick: () => fileInputRef.current?.click(),
+            title: "Add PDF, Word Doc",
+            type: "button",
+            children: /* @__PURE__ */ u3(PaperclipIcon, {})
+          }
+        )
+      ] }),
+      /* @__PURE__ */ u3("button", { type: "submit", class: "primary", disabled: isDisabled, children: actionLabel })
+    ] })
+  ] });
+}
+
+// src/server/public/lib/utils.js
+function truncate(value, length2 = 34) {
+  const text = String(value ?? "");
+  return text.length > length2 ? `${text.slice(0, length2 - 1)}...` : text;
+}
+function toSnakeCase2(value) {
+  return String(value ?? "").trim().replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+}
+function relationLabel2(relation) {
+  return String(relation ?? "relates_to").replaceAll("_", " ");
+}
+function decodePipelineField2(value) {
+  if (value === void 0 || value === null) {
+    return "";
+  }
+  const text = String(value);
+  let decoded = "";
+  for (let index2 = 0; index2 < text.length; index2 += 1) {
+    const char = text[index2];
+    if (char !== "\\" || index2 + 1 >= text.length) {
+      decoded += char;
+      continue;
+    }
+    const escaped = text[index2 + 1];
+    index2 += 1;
+    if (escaped === "n") {
+      decoded += "\n";
+    } else if (escaped === "r") {
+      decoded += "\r";
+    } else if (escaped === "t") {
+      decoded += "	";
+    } else if (escaped === "|") {
+      decoded += "|";
+    } else if (escaped === "\\") {
+      decoded += "\\";
+    } else {
+      decoded += `\\${escaped}`;
+    }
+  }
+  return decoded.trim();
+}
+function displayText(value) {
+  return decodePipelineField2(value);
+}
+function displayNameFromIdentifier2(value) {
+  const text = String(value ?? "").replace(/^node:/i, "").trim();
+  if (!text) {
+    return "Unknown";
+  }
+  return text.split(/[_\s-]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
+}
+function clampNumber(value, min2, max2) {
+  return Math.min(Math.max(value, min2), max2);
+}
+
+// src/server/public/components/chat/MutationContent.js
+function nodeReferenceKey(value) {
+  return String(value ?? "").replace(/^node:/i, "").trim();
+}
+function operationVerb(operation, fallback = "Saved") {
+  const normalized = String(operation ?? "").toLowerCase();
+  if (normalized === "create") {
+    return "Created";
+  }
+  if (normalized === "update") {
+    return "Updated";
+  }
+  if (normalized === "delete") {
+    return "Deleted";
+  }
+  return fallback;
+}
+function MutationContent({ mutation }) {
+  const nodes = mutation?.nodes ?? [];
+  const relations = mutation?.relations ?? [];
+  const nodeDeletes = mutation?.nodeDeletes ?? [];
+  const relationDeletes = mutation?.relationDeletes ?? [];
+  const triplets = mutation?.triplets ?? [];
+  const schemaViolations = mutation?.schemaViolations ?? [];
+  const totalMutations = nodes.length + relations.length + nodeDeletes.length + relationDeletes.length;
+  const isPendingHitl = mutation?.status === "pending_hitl";
+  const summaryParts = [
+    nodes.length > 0 ? `${nodes.length} node upsert${nodes.length === 1 ? "" : "s"}` : "",
+    relations.length > 0 ? `${relations.length} relation upsert${relations.length === 1 ? "" : "s"}` : "",
+    nodeDeletes.length > 0 ? `${nodeDeletes.length} node delete${nodeDeletes.length === 1 ? "" : "s"}` : "",
+    relationDeletes.length > 0 ? `${relationDeletes.length} relation delete${relationDeletes.length === 1 ? "" : "s"}` : ""
+  ].filter(Boolean);
+  const nodeLabels = /* @__PURE__ */ new Map();
+  for (const node of nodes) {
+    const key = nodeReferenceKey(node.name || node.id);
+    if (key) {
+      nodeLabels.set(key, node.label || displayNameFromIdentifier2(key));
+    }
+  }
+  function nodeLabel2(reference) {
+    const key = nodeReferenceKey(reference);
+    return nodeLabels.get(key) ?? displayNameFromIdentifier2(key);
+  }
+  return /* @__PURE__ */ u3("div", { children: [
+    /* @__PURE__ */ u3("div", { children: isPendingHitl ? totalMutations === 0 ? "Ingest produced no graph mutations. The LLM response was saved for HITL review." : "Ingest proposal saved for HITL review. No graph changes were applied." : totalMutations === 0 ? "Ingest complete. No graph mutations were extracted or applied." : `Ingest complete. Applied ${totalMutations} graph mutation${totalMutations === 1 ? "" : "s"}.` }),
+    summaryParts.length > 0 && /* @__PURE__ */ u3("div", { children: [
+      isPendingHitl ? "Proposed: " : "",
+      summaryParts.join(", "),
+      "."
+    ] }),
+    schemaViolations.length > 0 && /* @__PURE__ */ u3("div", { class: "triplet-list", children: schemaViolations.map((violation, index2) => /* @__PURE__ */ u3("div", { class: "triplet", children: [
+      /* @__PURE__ */ u3("strong", { children: "Schema review required" }),
+      /* @__PURE__ */ u3("div", { children: violation.message || String(violation) })
+    ] }, `schema-violation-${index2}`)) }),
+    totalMutations > 0 && /* @__PURE__ */ u3("div", { class: "triplet-list", children: [
+      nodes.map((node, index2) => /* @__PURE__ */ u3("div", { class: "triplet", children: [
+        /* @__PURE__ */ u3("strong", { children: [
+          operationVerb(node.operation),
+          " node"
+        ] }),
+        `: ${node.label || displayNameFromIdentifier2(node.name || node.id)}`,
+        node.description && /* @__PURE__ */ u3("div", { class: "multiline-text", children: displayText(node.description) }),
+        node.metadata && /* @__PURE__ */ u3("div", { class: "multiline-text", children: displayText(node.metadata) })
+      ] }, `node-${node.id ?? node.name}-${index2}`)),
+      nodeDeletes.map((node, index2) => /* @__PURE__ */ u3("div", { class: "triplet", children: [
+        /* @__PURE__ */ u3("strong", { children: "Deleted node" }),
+        `: ${nodeLabel2(node.name || node.id)}`,
+        node.metadata && /* @__PURE__ */ u3("div", { class: "multiline-text", children: displayText(node.metadata) })
+      ] }, `node-delete-${node.id ?? node.name}-${index2}`)),
+      relations.map((relation, index2) => {
+        const triplet = triplets[index2];
+        const sourceLabel = triplet?.sourceLabel ?? nodeLabel2(relation.sourceId);
+        const targetLabel = triplet?.targetLabel ?? nodeLabel2(relation.targetId);
+        return /* @__PURE__ */ u3("div", { class: "triplet", children: [
+          /* @__PURE__ */ u3("strong", { children: [
+            operationVerb(relation.operation),
+            " relation"
+          ] }),
+          /* @__PURE__ */ u3("div", { children: [
+            /* @__PURE__ */ u3("strong", { children: sourceLabel }),
+            ` ${relationLabel2(relation.relation)} `,
+            /* @__PURE__ */ u3("strong", { children: targetLabel })
+          ] }),
+          relation.information && /* @__PURE__ */ u3("div", { class: "multiline-text", children: displayText(relation.information) }),
+          relation.description && /* @__PURE__ */ u3("div", { class: "multiline-text", children: displayText(relation.description) }),
+          relation.metadata && /* @__PURE__ */ u3("div", { class: "multiline-text", children: displayText(relation.metadata) })
+        ] }, `relation-${relation.id ?? index2}`);
+      }),
+      relationDeletes.map((relation, index2) => /* @__PURE__ */ u3("div", { class: "triplet", children: [
+        /* @__PURE__ */ u3("strong", { children: "Deleted relation" }),
+        /* @__PURE__ */ u3("div", { children: [
+          /* @__PURE__ */ u3("strong", { children: nodeLabel2(relation.sourceId || relation.sourceName) }),
+          ` ${relationLabel2(relation.relation)} `,
+          /* @__PURE__ */ u3("strong", { children: nodeLabel2(relation.targetId || relation.targetName) })
+        ] }),
+        relation.metadata && /* @__PURE__ */ u3("div", { children: relation.metadata })
+      ] }, `relation-delete-${relation.id ?? index2}`))
+    ] })
+  ] });
+}
+
+// src/server/public/components/chat/TripletContent.js
+function TripletContent({ triplets }) {
+  const list = triplets ?? [];
+  return /* @__PURE__ */ u3("div", { children: [
+    /* @__PURE__ */ u3("div", { children: list.length === 0 ? "Ingest complete, but no relations were extracted." : `Ingest complete. Extracted ${list.length} triplet${list.length === 1 ? "" : "s"}.` }),
+    list.length > 0 && /* @__PURE__ */ u3("div", { class: "triplet-list", children: list.map((triplet, index2) => /* @__PURE__ */ u3("div", { class: "triplet", children: [
+      /* @__PURE__ */ u3("strong", { children: triplet.sourceLabel }),
+      ` ${relationLabel2(triplet.relation)} `,
+      /* @__PURE__ */ u3("strong", { children: triplet.targetLabel }),
+      triplet.information && /* @__PURE__ */ u3("div", { children: triplet.information })
+    ] }, `${triplet.sourceId}-${triplet.targetId}-${triplet.relation}-${index2}`)) })
+  ] });
+}
+
+// src/server/public/components/common/MarkdownPreview.js
+function markdownBlocks(text) {
+  const lines = String(text ?? "").replace(/\r\n/g, "\n").split("\n");
+  const blocks = [];
+  let paragraph = [];
+  let list = null;
+  function flushParagraph() {
+    if (paragraph.length > 0) {
+      blocks.push({ type: "paragraph", lines: paragraph });
+      paragraph = [];
+    }
+  }
+  function flushList() {
+    if (list) {
+      blocks.push(list);
+      list = null;
+    }
+  }
+  for (let index2 = 0; index2 < lines.length; index2 += 1) {
+    const line = lines[index2];
+    const trimmed = line.trim();
+    if (!trimmed) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+    if (trimmed.startsWith("```")) {
+      flushParagraph();
+      flushList();
+      const codeLines = [];
+      index2 += 1;
+      while (index2 < lines.length && !lines[index2].trim().startsWith("```")) {
+        codeLines.push(lines[index2]);
+        index2 += 1;
+      }
+      blocks.push({ type: "code", text: codeLines.join("\n") });
+      continue;
+    }
+    const heading = /^(#{1,4})\s+(.+)$/.exec(trimmed);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      blocks.push({ type: "heading", level: heading[1].length, text: heading[2] });
+      continue;
+    }
+    const unorderedItem = /^[-*+]\s+(.+)$/.exec(trimmed);
+    const orderedItem = /^\d+[.)]\s+(.+)$/.exec(trimmed);
+    if (unorderedItem || orderedItem) {
+      flushParagraph();
+      const listType = unorderedItem ? "unordered-list" : "ordered-list";
+      if (!list || list.type !== listType) {
+        flushList();
+        list = { type: listType, items: [] };
+      }
+      list.items.push(unorderedItem?.[1] ?? orderedItem[1]);
+      continue;
+    }
+    flushList();
+    paragraph.push(line);
+  }
+  flushParagraph();
+  flushList();
+  return blocks;
+}
+function renderInlineMarkdown(text, keyPrefix) {
+  const value = String(text ?? "");
+  const parts = [];
+  const pattern = /(`[^`\n]+`|\*\*[^*\n]+\*\*)/g;
+  let cursor = 0;
+  let match2 = pattern.exec(value);
+  while (match2) {
+    if (match2.index > cursor) {
+      parts.push(value.slice(cursor, match2.index));
+    }
+    const token2 = match2[0];
+    if (token2.startsWith("`")) {
+      parts.push(/* @__PURE__ */ u3("code", { children: token2.slice(1, -1) }, `${keyPrefix}-code-${match2.index}`));
+    } else {
+      parts.push(/* @__PURE__ */ u3("strong", { children: token2.slice(2, -2) }, `${keyPrefix}-strong-${match2.index}`));
+    }
+    cursor = match2.index + token2.length;
+    match2 = pattern.exec(value);
+  }
+  if (cursor < value.length) {
+    parts.push(value.slice(cursor));
+  }
+  return parts;
+}
+function MarkdownPreview({ className = "", emptyText = "No preview text yet.", text }) {
+  const blocks = markdownBlocks(text);
+  return /* @__PURE__ */ u3("div", { class: `markdown-preview${className ? ` ${className}` : ""}`, children: blocks.length === 0 ? /* @__PURE__ */ u3("p", { class: "muted-copy", children: emptyText }) : blocks.map((block, blockIndex) => {
+    if (block.type === "heading") {
+      const HeadingTag = `h${Math.min(block.level + 2, 6)}`;
+      return /* @__PURE__ */ u3(HeadingTag, { children: renderInlineMarkdown(block.text, `heading-${blockIndex}`) }, `heading-${blockIndex}`);
+    }
+    if (block.type === "code") {
+      return /* @__PURE__ */ u3("pre", { children: /* @__PURE__ */ u3("code", { children: block.text }) }, `code-${blockIndex}`);
+    }
+    if (block.type === "unordered-list" || block.type === "ordered-list") {
+      const ListTag = block.type === "ordered-list" ? "ol" : "ul";
+      return /* @__PURE__ */ u3(ListTag, { children: block.items.map((item, itemIndex) => /* @__PURE__ */ u3("li", { children: renderInlineMarkdown(item, `item-${blockIndex}-${itemIndex}`) }, `item-${blockIndex}-${itemIndex}`)) }, `list-${blockIndex}`);
+    }
+    return /* @__PURE__ */ u3("p", { children: block.lines.map((line, lineIndex) => /* @__PURE__ */ u3("span", { children: [
+      lineIndex > 0 && /* @__PURE__ */ u3("br", {}),
+      renderInlineMarkdown(line, `line-${blockIndex}-${lineIndex}`)
+    ] }, `line-${blockIndex}-${lineIndex}`)) }, `paragraph-${blockIndex}`);
+  }) });
+}
+
+// src/server/public/components/chat/MessageContent.js
+function MessageContent({ message }) {
+  if (message.mutation) {
+    return /* @__PURE__ */ u3(MutationContent, { mutation: message.mutation });
+  }
+  if (message.triplets) {
+    return /* @__PURE__ */ u3(TripletContent, { triplets: message.triplets });
+  }
+  if (message.role === "assistant" && typeof message.text === "string" && !message.error) {
+    return /* @__PURE__ */ u3(MarkdownPreview, { text: message.text });
+  }
+  return message.text;
+}
+
+// src/server/public/components/common/CopyButton.js
+function hasCopyableLlmText(value) {
+  const text = String(value ?? "").trim();
+  return Boolean(text && !["thinking...", "thinking", "loading...", "loading"].includes(text.toLowerCase()));
+}
+async function copyTextToClipboard(value) {
+  const text = String(value ?? "");
+  if (!text.trim()) {
+    return false;
+  }
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return true;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  document.body.removeChild(textarea);
+  return copied;
+}
+function CopyIcon() {
+  return /* @__PURE__ */ u3("svg", { "aria-hidden": "true", viewBox: "0 0 24 24", focusable: "false", children: [
+    /* @__PURE__ */ u3("rect", { x: "9", y: "9", width: "10", height: "10", rx: "2" }),
+    /* @__PURE__ */ u3("path", { d: "M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" })
+  ] });
+}
+function CopyButton({ className = "", label = "Copy to clipboard", onStatus, text }) {
+  const [copied, setCopied] = d2(false);
+  const timeoutRef = A2(null);
+  const hasText = hasCopyableLlmText(text);
+  y2(() => () => {
+    if (timeoutRef.current) {
+      window.clearTimeout(timeoutRef.current);
+    }
+  }, []);
+  const handleCopy = q2(async () => {
+    try {
+      const didCopy = await copyTextToClipboard(text);
+      if (!didCopy) {
+        onStatus?.("Nothing to copy.");
+        return;
+      }
+      setCopied(true);
+      onStatus?.("Copied to clipboard.");
+      if (timeoutRef.current) {
+        window.clearTimeout(timeoutRef.current);
+      }
+      timeoutRef.current = window.setTimeout(() => setCopied(false), 1400);
+    } catch (error) {
+      onStatus?.(error.message || "Copy failed.");
+    }
+  }, [onStatus, text]);
+  if (!hasText) {
+    return null;
+  }
+  return /* @__PURE__ */ u3(
+    "button",
+    {
+      type: "button",
+      class: `copy-button${copied ? " copied" : ""}${className ? ` ${className}` : ""}`,
+      onClick: handleCopy,
+      title: copied ? "Copied" : label,
+      "aria-label": copied ? "Copied" : label,
+      children: [
+        /* @__PURE__ */ u3(CopyIcon, {}),
+        /* @__PURE__ */ u3("span", { class: "sr-only", children: copied ? "Copied" : label })
+      ]
+    }
+  );
+}
+
+// src/server/public/components/chat/MessageList.js
+function MessageList({ className = "", messages }) {
+  const messagesRef = A2(null);
+  const isAskMessages = className.split(/\s+/).includes("ask-messages");
+  y2(() => {
+    const element = messagesRef.current;
+    if (element) {
+      element.scrollTop = element.scrollHeight;
+    }
+  }, [messages]);
+  return /* @__PURE__ */ u3("div", { class: `messages${className ? ` ${className}` : ""}`, ref: messagesRef, "aria-live": "polite", children: messages.map((message) => {
+    const canCopy = isAskMessages && message.role === "assistant" && !message.error && typeof message.text === "string" && message.copyable === true && hasCopyableLlmText(message.text);
+    return /* @__PURE__ */ u3("article", { class: `message ${message.role}${message.error ? " error" : ""}`, children: /* @__PURE__ */ u3("div", { class: "message-stack", children: [
+      /* @__PURE__ */ u3("div", { class: "bubble", children: /* @__PURE__ */ u3(MessageContent, { message }) }),
+      canCopy && /* @__PURE__ */ u3("div", { class: "message-copy-row", children: /* @__PURE__ */ u3(CopyButton, { className: "message-copy-button", text: message.text }) })
+    ] }) }, message.id);
+  }) });
+}
+
+// src/server/public/components/common/RouteSwitcher.js
+var APP_ROUTES = [
+  { href: "/", label: "Ask/Ingest" },
+  { href: "/hitl", label: "HITL" },
+  { href: "/jobs", label: "Jobs" },
+  { href: "/schema", label: "Schema" }
+];
+function normalizedRoutePath(pathname = window.location.pathname) {
+  return pathname.replace(/\/+$/, "") || "/";
+}
+function RouteSwitcher() {
+  const currentPath = normalizedRoutePath();
+  const activeRoute = APP_ROUTES.find((route) => route.href === currentPath) ?? APP_ROUTES[0];
+  const renderRouteLinks = () => APP_ROUTES.map((route) => /* @__PURE__ */ u3(
+    "a",
+    {
+      class: `route-switcher-link${route.href === activeRoute.href ? " active" : ""}`,
+      href: route.href,
+      "aria-current": route.href === activeRoute.href ? "page" : void 0,
+      children: route.label
+    },
+    route.href
+  ));
+  return /* @__PURE__ */ u3("nav", { class: "route-switcher", "aria-label": "Workspace navigation", children: [
+    /* @__PURE__ */ u3("div", { class: "route-switcher-links", children: renderRouteLinks() }),
+    /* @__PURE__ */ u3("details", { class: "route-switcher-menu", children: [
+      /* @__PURE__ */ u3("summary", { children: activeRoute.label }),
+      /* @__PURE__ */ u3("div", { children: renderRouteLinks() })
+    ] })
+  ] });
+}
+
+// src/server/public/components/chat/ChatPanel.js
+var INGEST_FILE_ACCEPT = ".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+function ChatPanel({
+  activeTab,
+  askMessages,
+  askText,
+  includeUnverifiedKnowledge,
+  ingestFiles,
+  ingestMessages,
+  ingestText,
+  inputRef,
+  isBusy,
+  onClearIngest,
+  onIngestFileClear,
+  onIngestFiles,
+  onIngestText,
+  onAsk,
+  onAskText,
+  onIncludeUnverifiedKnowledgeChange,
+  onIngest,
+  onTab,
+  statusMessage,
+  userName,
+  onChangeUserName,
+  workspaceLocked = false
+}) {
+  return /* @__PURE__ */ u3("aside", { class: "chat-panel", "aria-label": "Ask and ingest workspace", children: [
+    /* @__PURE__ */ u3("div", { class: "workspace-identity", children: [
+      /* @__PURE__ */ u3("div", { class: "workspace-identity-main", children: [
+        /* @__PURE__ */ u3("span", { children: "Workspace user" }),
+        /* @__PURE__ */ u3("strong", { children: userName || "Name required" })
+      ] }),
+      /* @__PURE__ */ u3("button", { type: "button", class: "identity-change-button", onClick: onChangeUserName, children: "Change" }),
+      /* @__PURE__ */ u3(RouteSwitcher, {})
+    ] }),
+    /* @__PURE__ */ u3("div", { class: "tabs", role: "tablist", "aria-label": "Workspace views", children: ["ask", "ingest"].map((tab) => /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        class: activeTab === tab ? "active" : "",
+        onClick: () => onTab(tab),
+        children: tab
+      },
+      tab
+    )) }),
+    statusMessage && /* @__PURE__ */ u3("div", { class: "status-line", children: statusMessage }),
+    activeTab === "ask" && /* @__PURE__ */ u3(S, { children: [
+      /* @__PURE__ */ u3(MessageList, { className: "ask-messages", messages: askMessages }),
+      /* @__PURE__ */ u3(
+        Composer,
+        {
+          actionLabel: "Ask",
+          autoGrow: true,
+          className: "ask-composer",
+          disabled: workspaceLocked,
+          inputId: "ask-input",
+          inputRef,
+          isBusy,
+          onInput: onAskText,
+          onSubmit: onAsk,
+          placeholder: "Ask a question about the graph...",
+          value: askText
+        }
+      ),
+      /* @__PURE__ */ u3("label", { class: "ask-unverified-option", children: [
+        /* @__PURE__ */ u3(
+          "input",
+          {
+            type: "checkbox",
+            checked: includeUnverifiedKnowledge,
+            disabled: isBusy || workspaceLocked,
+            onChange: (event) => onIncludeUnverifiedKnowledgeChange(event.currentTarget.checked)
+          }
+        ),
+        /* @__PURE__ */ u3("span", { children: "Include unapproved HITL information?" })
+      ] })
+    ] }),
+    activeTab === "ingest" && /* @__PURE__ */ u3(S, { children: [
+      /* @__PURE__ */ u3(MessageList, { className: "ingest-messages", messages: ingestMessages }),
+      /* @__PURE__ */ u3(
+        Composer,
+        {
+          actionLabel: "Ingest",
+          autoGrow: true,
+          className: "ingest-composer",
+          clearAction: { label: "Clear ingest chat", onClick: onClearIngest },
+          disabled: workspaceLocked,
+          files: ingestFiles,
+          fileAccept: INGEST_FILE_ACCEPT,
+          inputId: "ingest-input",
+          inputRef,
+          isBusy,
+          onFileClear: onIngestFileClear,
+          onFilesSelect: onIngestFiles,
+          onInput: onIngestText,
+          onSubmit: onIngest,
+          placeholder: "Paste source text to extract nodes and relationships...",
+          value: ingestText
+        }
+      )
+    ] })
+  ] });
+}
+
+// src/server/public/components/common/EntityModal.js
+function EntityModal({ children, onClose, title }) {
+  y2(() => {
+    function handleKeyDown(event) {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+  return /* @__PURE__ */ u3("div", { class: "modal-backdrop", role: "presentation", onMouseDown: onClose, children: /* @__PURE__ */ u3(
+    "section",
+    {
+      class: "modal-panel",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-labelledby": "modal-title",
+      onMouseDown: (event) => event.stopPropagation(),
+      children: [
+        /* @__PURE__ */ u3("header", { class: "modal-header", children: [
+          /* @__PURE__ */ u3("h3", { id: "modal-title", children: title }),
+          /* @__PURE__ */ u3("button", { type: "button", class: "icon-button", "aria-label": "Close modal", onClick: onClose, children: "x" })
+        ] }),
+        children
+      ]
+    }
+  ) });
+}
+
+// src/server/public/components/common/RequiredNameModal.js
+function RequiredNameModal({
+  eyebrow = "Workspace access",
+  fieldLabel = "Name",
+  helperText = "Ask and Ingest unlock after this step. The name is kept only for this page session.",
+  initialName = "",
+  onSubmit,
+  placeholder = "Enter your name to continue",
+  title = "Enter your name"
+}) {
+  const [draftName, setDraftName] = d2(initialName);
+  const cleanName = draftName.trim();
+  function handleSubmit(event) {
+    event.preventDefault();
+    if (cleanName) {
+      onSubmit(cleanName);
+    }
+  }
+  return /* @__PURE__ */ u3("div", { class: "modal-backdrop locked-modal-backdrop", role: "presentation", children: /* @__PURE__ */ u3(
+    "section",
+    {
+      class: "modal-panel name-modal",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-labelledby": "name-modal-title",
+      children: [
+        /* @__PURE__ */ u3("header", { class: "modal-header", children: /* @__PURE__ */ u3("div", { children: [
+          /* @__PURE__ */ u3("p", { class: "eyebrow", children: eyebrow }),
+          /* @__PURE__ */ u3("h3", { id: "name-modal-title", children: title })
+        ] }) }),
+        /* @__PURE__ */ u3("form", { class: "edit-form", onSubmit: handleSubmit, children: [
+          /* @__PURE__ */ u3("label", { class: "field", children: [
+            /* @__PURE__ */ u3("span", { children: fieldLabel }),
+            /* @__PURE__ */ u3(
+              "input",
+              {
+                autoFocus: true,
+                type: "text",
+                placeholder,
+                value: draftName,
+                onInput: (event) => setDraftName(event.currentTarget.value)
+              }
+            )
+          ] }),
+          /* @__PURE__ */ u3("p", { class: "muted-copy", children: helperText }),
+          /* @__PURE__ */ u3("button", { type: "submit", class: "primary", disabled: !cleanName, children: "Continue" })
+        ] })
+      ]
+    }
+  ) });
+}
+
+// src/server/public/components/common/WorkspaceDivider.js
+function WorkspaceDivider({
+  handleClick,
+  maxWidth,
+  minWidth,
+  onCloseGraph,
+  onCloseWorkspace,
+  onDoubleClick,
+  onKeyDown,
+  onPointerDown,
+  workspaceLabel = "Ask/Ingest",
+  workspaceWidth
+}) {
+  return /* @__PURE__ */ u3(
+    "div",
+    {
+      "aria-label": `Resize ${workspaceLabel} panel`,
+      "aria-orientation": "vertical",
+      "aria-valuemax": maxWidth,
+      "aria-valuemin": minWidth,
+      "aria-valuenow": Math.round(workspaceWidth),
+      class: "workspace-resize-handle",
+      onClick: handleClick,
+      onDblClick: onDoubleClick,
+      onKeyDown,
+      onPointerDown,
+      role: "separator",
+      tabIndex: 0,
+      children: /* @__PURE__ */ u3("div", { class: "workspace-resize-actions", children: [
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            class: "workspace-resize-action",
+            "aria-label": "Close graph panel",
+            title: "Close graph panel",
+            onClick: (event) => {
+              event.stopPropagation();
+              onCloseGraph();
+            },
+            onDblClick: onDoubleClick,
+            onPointerDown: (event) => event.stopPropagation(),
+            children: "\u25C0"
+          }
+        ),
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            class: "workspace-resize-action",
+            "aria-label": `Close ${workspaceLabel} panel`,
+            title: `Close ${workspaceLabel} panel`,
+            onClick: (event) => {
+              event.stopPropagation();
+              onCloseWorkspace();
+            },
+            onDblClick: onDoubleClick,
+            onPointerDown: (event) => event.stopPropagation(),
+            children: "\u25B6"
+          }
+        )
+      ] })
+    }
+  );
+}
+
+// src/server/public/components/common/Field.js
+function Field({ label, children }) {
+  return /* @__PURE__ */ u3("label", { class: "field", children: [
+    /* @__PURE__ */ u3("span", { children: label }),
+    children
+  ] });
+}
+
+// src/server/public/components/entity/NodeForm.js
+function createNodeDraft(node) {
+  return {
+    label: node?.label ?? "",
+    name: node?.name ?? "",
+    type: node?.type ?? "concept",
+    description: displayText(node?.description)
+  };
+}
+function NodeForm({
+  deleteLabel = "Delete",
+  draft: controlledDraft,
+  node,
+  nodeTypes = [],
+  onCancel,
+  onDelete,
+  onDraftChange,
+  onSave,
+  saveLabel = "Save node"
+}) {
+  const isControlled = Boolean(controlledDraft && onDraftChange);
+  const [localDraft, setLocalDraft] = d2(() => createNodeDraft(node));
+  const draft = isControlled ? controlledDraft : localDraft;
+  const setDraft = isControlled ? onDraftChange : setLocalDraft;
+  y2(() => {
+    if (!isControlled) {
+      setLocalDraft(createNodeDraft(node));
+    }
+  }, [isControlled, node]);
+  function updateField(field, value) {
+    setDraft((current) => ({ ...current, [field]: value }));
+  }
+  function handleSubmit(event) {
+    event.preventDefault();
+    onSave({ ...draft, name: draft.name || toSnakeCase2(draft.label) });
+  }
+  return /* @__PURE__ */ u3("form", { class: "edit-form", onSubmit: handleSubmit, children: [
+    /* @__PURE__ */ u3(Field, { label: "Label", children: /* @__PURE__ */ u3("input", { value: draft.label, onInput: (event) => updateField("label", event.currentTarget.value), required: true }) }),
+    /* @__PURE__ */ u3(Field, { label: "Name", children: /* @__PURE__ */ u3("input", { value: draft.name, onInput: (event) => updateField("name", event.currentTarget.value), placeholder: "auto_from_label" }) }),
+    /* @__PURE__ */ u3(Field, { label: "Type", children: [
+      /* @__PURE__ */ u3("datalist", { id: "node-type-options", children: nodeTypes.map((type) => /* @__PURE__ */ u3("option", { value: type, children: type }, type)) }),
+      /* @__PURE__ */ u3("input", { list: "node-type-options", value: draft.type, onInput: (event) => updateField("type", event.currentTarget.value), required: true })
+    ] }),
+    /* @__PURE__ */ u3(Field, { label: "Description", children: /* @__PURE__ */ u3("textarea", { rows: "4", value: draft.description, onInput: (event) => updateField("description", event.currentTarget.value) }) }),
+    /* @__PURE__ */ u3("div", { class: "form-actions", children: [
+      /* @__PURE__ */ u3("button", { type: "submit", class: "primary", children: saveLabel }),
+      onCancel && /* @__PURE__ */ u3("button", { type: "button", onClick: onCancel, children: "Cancel" }),
+      onDelete && /* @__PURE__ */ u3("button", { type: "button", class: "danger-button", onClick: onDelete, children: deleteLabel })
+    ] })
+  ] });
+}
+
+// src/server/public/components/entity/NodeRelationshipList.js
+function nodeLabelById(graph, nodeId) {
+  return graph.nodes.find((node) => node.id === nodeId)?.label ?? nodeId;
+}
+function NodeRelationshipList({ graph, nodeId, onSelectItem }) {
+  const relationships = graph.relations.filter((relation) => relation.sourceId === nodeId || relation.targetId === nodeId);
+  return /* @__PURE__ */ u3("section", { class: "relationship-section", children: [
+    /* @__PURE__ */ u3("div", { class: "section-heading", children: [
+      /* @__PURE__ */ u3("h3", { children: "Relationships" }),
+      /* @__PURE__ */ u3("span", { children: relationships.length })
+    ] }),
+    relationships.length === 0 ? /* @__PURE__ */ u3("p", { class: "muted-copy", children: "No loaded relationships for this node." }) : /* @__PURE__ */ u3("div", { class: "relationship-list", children: relationships.map((relation) => {
+      const isOutgoing = relation.sourceId === nodeId;
+      const sourceLabel = nodeLabelById(graph, relation.sourceId);
+      const targetLabel = nodeLabelById(graph, relation.targetId);
+      return /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          class: "relationship-row",
+          onClick: () => onSelectItem({ type: "relation", id: relation.id, returnToNodeId: nodeId }),
+          children: [
+            /* @__PURE__ */ u3("span", { class: "direction-badge", children: isOutgoing ? "out" : "in" }),
+            /* @__PURE__ */ u3("span", { children: [
+              /* @__PURE__ */ u3("strong", { children: sourceLabel }),
+              /* @__PURE__ */ u3("small", { children: relationLabel2(relation.relation) }),
+              /* @__PURE__ */ u3("strong", { children: targetLabel })
+            ] })
+          ]
+        },
+        relation.id
+      );
+    }) })
+  ] });
+}
+
+// src/server/public/components/entity/RelationForm.js
+function createRelationDraft(relation) {
+  return {
+    sourceId: relation?.sourceId ?? "",
+    targetId: relation?.targetId ?? "",
+    relation: relation?.relation ?? "relates_to",
+    information: displayText(relation?.information),
+    description: displayText(relation?.description)
+  };
+}
+function RelationForm({
+  deleteLabel = "Delete",
+  draft: controlledDraft,
+  graph,
+  relationshipTypes = [],
+  onCancel,
+  onDelete,
+  onDraftChange,
+  onSave,
+  relation,
+  saveLabel = "Save relation"
+}) {
+  const isControlled = Boolean(controlledDraft && onDraftChange);
+  const [localDraft, setLocalDraft] = d2(() => createRelationDraft(relation));
+  const draft = isControlled ? controlledDraft : localDraft;
+  const setDraft = isControlled ? onDraftChange : setLocalDraft;
+  y2(() => {
+    if (!isControlled) {
+      setLocalDraft(createRelationDraft(relation));
+    }
+  }, [isControlled, relation]);
+  function updateField(field, value) {
+    setDraft((current) => ({ ...current, [field]: value }));
+  }
+  function handleSubmit(event) {
+    event.preventDefault();
+    onSave({ ...draft, relation: toSnakeCase2(draft.relation) || "relates_to" });
+  }
+  return /* @__PURE__ */ u3("form", { class: "edit-form", onSubmit: handleSubmit, children: [
+    /* @__PURE__ */ u3("datalist", { id: "node-id-options", children: graph.nodes.map((node) => /* @__PURE__ */ u3("option", { value: node.id, children: node.label }, node.id)) }),
+    /* @__PURE__ */ u3(Field, { label: "Source node", children: /* @__PURE__ */ u3("input", { list: "node-id-options", value: draft.sourceId, onInput: (event) => updateField("sourceId", event.currentTarget.value), required: true }) }),
+    /* @__PURE__ */ u3(Field, { label: "Target node", children: /* @__PURE__ */ u3("input", { list: "node-id-options", value: draft.targetId, onInput: (event) => updateField("targetId", event.currentTarget.value), required: true }) }),
+    /* @__PURE__ */ u3(Field, { label: "Relation", children: [
+      /* @__PURE__ */ u3("datalist", { id: "relation-type-options", children: relationshipTypes.map((type) => /* @__PURE__ */ u3("option", { value: type, children: type }, type)) }),
+      /* @__PURE__ */ u3("input", { list: "relation-type-options", value: draft.relation, onInput: (event) => updateField("relation", event.currentTarget.value), required: true })
+    ] }),
+    /* @__PURE__ */ u3(Field, { label: "Information", children: /* @__PURE__ */ u3("textarea", { rows: "3", value: draft.information, onInput: (event) => updateField("information", event.currentTarget.value) }) }),
+    /* @__PURE__ */ u3(Field, { label: "Description", children: /* @__PURE__ */ u3("textarea", { rows: "4", value: draft.description, onInput: (event) => updateField("description", event.currentTarget.value) }) }),
+    /* @__PURE__ */ u3("div", { class: "form-actions", children: [
+      /* @__PURE__ */ u3("button", { type: "submit", class: "primary", children: saveLabel }),
+      onCancel && /* @__PURE__ */ u3("button", { type: "button", onClick: onCancel, children: "Cancel" }),
+      onDelete && /* @__PURE__ */ u3("button", { type: "button", class: "danger-button", onClick: onDelete, children: deleteLabel })
+    ] })
+  ] });
+}
+
+// src/server/public/components/entity/DetailPanel.js
+function DetailPanel({
+  graph,
+  nodeTypes = [],
+  nodeDeleteLabel = "Delete",
+  nodeSaveLabel = "Save node",
+  onDeleteNode,
+  onDeleteRelation,
+  onSaveNode,
+  onSaveRelation,
+  onSelectItem,
+  relationshipTypes = [],
+  relationDeleteLabel = "Delete",
+  relationSaveLabel = "Save relation",
+  selectedItem
+}) {
+  const selectedNode = selectedItem?.type === "node" ? graph.nodes.find((node) => node.id === selectedItem.id) : null;
+  const selectedRelation = selectedItem?.type === "relation" ? graph.relations.find((relation) => relation.id === selectedItem.id) : null;
+  const returnNode = selectedItem?.returnToNodeId ? graph.nodes.find((node) => node.id === selectedItem.returnToNodeId) : null;
+  if (!selectedItem) {
+    return /* @__PURE__ */ u3("div", { class: "placeholder-panel", children: /* @__PURE__ */ u3("p", { children: "Select a node or relation in the graph to inspect and edit it." }) });
+  }
+  if (selectedNode) {
+    return /* @__PURE__ */ u3("div", { class: "detail-panel", children: [
+      /* @__PURE__ */ u3("div", { class: "detail-heading", children: [
+        /* @__PURE__ */ u3("p", { class: "eyebrow", children: "Node" }),
+        /* @__PURE__ */ u3("h3", { children: selectedNode.label }),
+        /* @__PURE__ */ u3("code", { children: selectedNode.id })
+      ] }),
+      selectedNode.metadata && /* @__PURE__ */ u3("div", { class: "detail-kv", children: [
+        /* @__PURE__ */ u3("span", { children: "Metadata" }),
+        /* @__PURE__ */ u3("strong", { class: "multiline-text", children: displayText(selectedNode.metadata) })
+      ] }),
+      /* @__PURE__ */ u3(
+        NodeForm,
+        {
+          deleteLabel: nodeDeleteLabel,
+          node: selectedNode,
+          nodeTypes,
+          onDelete: () => onDeleteNode(selectedNode),
+          onSave: (draft) => onSaveNode(selectedNode.id, draft),
+          saveLabel: nodeSaveLabel
+        }
+      ),
+      /* @__PURE__ */ u3(
+        NodeRelationshipList,
+        {
+          graph,
+          nodeId: selectedNode.id,
+          onSelectItem
+        }
+      )
+    ] });
+  }
+  if (selectedRelation) {
+    return /* @__PURE__ */ u3("div", { class: "detail-panel", children: [
+      /* @__PURE__ */ u3("div", { class: "detail-heading", children: /* @__PURE__ */ u3("div", { class: "detail-title-row", children: [
+        /* @__PURE__ */ u3("div", { children: [
+          /* @__PURE__ */ u3("p", { class: "eyebrow", children: "Relation" }),
+          /* @__PURE__ */ u3("h3", { children: relationLabel2(selectedRelation.relation) }),
+          /* @__PURE__ */ u3("code", { children: selectedRelation.id })
+        ] }),
+        returnNode && /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            class: "compact-button",
+            onClick: () => onSelectItem({ type: "node", id: returnNode.id }),
+            children: "Back to node"
+          }
+        )
+      ] }) }),
+      selectedRelation.metadata && /* @__PURE__ */ u3("div", { class: "detail-kv", children: [
+        /* @__PURE__ */ u3("span", { children: "Metadata" }),
+        /* @__PURE__ */ u3("strong", { class: "multiline-text", children: displayText(selectedRelation.metadata) })
+      ] }),
+      /* @__PURE__ */ u3(
+        RelationForm,
+        {
+          deleteLabel: relationDeleteLabel,
+          graph,
+          relation: selectedRelation,
+          relationshipTypes,
+          onCancel: returnNode ? () => onSelectItem({ type: "node", id: returnNode.id }) : void 0,
+          onDelete: () => onDeleteRelation(selectedRelation),
+          onSave: (draft) => onSaveRelation(selectedRelation.id, draft),
+          saveLabel: relationSaveLabel
+        }
+      )
+    ] });
+  }
+  return /* @__PURE__ */ u3("div", { class: "placeholder-panel", children: /* @__PURE__ */ u3("p", { children: "The selected item is not in the current graph view." }) });
+}
+
+// src/server/public/components/entity/SearchPanel.js
+function SearchPanel({ clientResults, isSearching, onFocusNode, onQuery, onSearch, query, searchMessage, serverResults }) {
+  const panelRef = A2(null);
+  const [isOpen, setIsOpen] = d2(false);
+  const shownResults = serverResults.length > 0 ? serverResults : clientResults;
+  const hasQuery = Boolean(query.trim());
+  const hasResults = shownResults.length > 0;
+  y2(() => {
+    if (!hasQuery) {
+      setIsOpen(false);
+      return void 0;
+    }
+    function handlePointerDown(event) {
+      if (!panelRef.current?.contains(event.target)) {
+        setIsOpen(false);
+      }
+    }
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    return () => document.removeEventListener("pointerdown", handlePointerDown, true);
+  }, [hasQuery]);
+  function handleSubmit(event) {
+    event.preventDefault();
+    setIsOpen(true);
+    onSearch();
+  }
+  return /* @__PURE__ */ u3("form", { class: "search-panel", onSubmit: handleSubmit, ref: panelRef, children: [
+    /* @__PURE__ */ u3("label", { class: "sr-only", htmlFor: "node-search", children: "Search nodes" }),
+    /* @__PURE__ */ u3(
+      "input",
+      {
+        id: "node-search",
+        type: "search",
+        placeholder: "Search loaded nodes, or press Enter for full search...",
+        value: query,
+        onFocus: () => {
+          if (hasQuery) {
+            setIsOpen(true);
+          }
+        },
+        onInput: (event) => {
+          onQuery(event.currentTarget.value);
+          setIsOpen(Boolean(event.currentTarget.value.trim()));
+        },
+        onKeyDown: (event) => {
+          if (event.key === "Escape") {
+            setIsOpen(false);
+          }
+        }
+      }
+    ),
+    /* @__PURE__ */ u3("button", { type: "submit", class: "compact-button", disabled: isSearching, children: isSearching ? "Searching" : "Search" }),
+    searchMessage && /* @__PURE__ */ u3("div", { class: "search-status", role: "status", children: searchMessage }),
+    isOpen && hasQuery && hasResults && /* @__PURE__ */ u3("div", { class: "search-results", children: shownResults.map((node) => /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        class: "search-result",
+        onClick: () => {
+          setIsOpen(false);
+          onFocusNode(node);
+        },
+        children: [
+          /* @__PURE__ */ u3("span", { children: node.label }),
+          /* @__PURE__ */ u3("small", { children: node.type })
+        ]
+      },
+      node.id
+    )) })
+  ] });
+}
+
+// src/server/public/components/graph/GraphActionButtons.js
+function GraphActionButtons({ onCreateNode, onCreateRelation }) {
+  return /* @__PURE__ */ u3("div", { class: "graph-action-bar", "aria-label": "Create graph items", children: [
+    /* @__PURE__ */ u3("button", { type: "button", class: "primary", onClick: onCreateNode, children: [
+      "\u2295",
+      " Node"
+    ] }),
+    /* @__PURE__ */ u3("button", { type: "button", onClick: onCreateRelation, children: [
+      "\u2194",
+      " Relation"
+    ] })
+  ] });
+}
+
 // node_modules/graphology/dist/graphology.mjs
 var import_events = __toESM(require_events(), 1);
 function assignPolyfill() {
@@ -69379,7 +71775,7 @@ Graph.InvalidArgumentsGraphError = InvalidArgumentsGraphError;
 Graph.NotFoundGraphError = NotFoundGraphError;
 Graph.UsageGraphError = UsageGraphError;
 
-// src/server/public/app.js
+// src/server/public/components/graph/GraphPreview.js
 var import_graphology_layout_force = __toESM(require_graphology_layout_force(), 1);
 
 // node_modules/sigma/dist/inherits-d1a1e29b.esm.js
@@ -74620,1137 +77016,50 @@ var EdgeCurvedDoubleArrowProgram = createEdgeCurveProgram({
   })
 });
 
-// src/server/public/app.js
-var import_neovis = __toESM(require_neovis_without_dependencies(), 1);
-
-// src/server/public/lib/hitlProposal.js
-var HITL_CHIP_DENSITY_KEY = "mindmesh.hitlChipDensity";
-var START_MARKERS = /* @__PURE__ */ new Set(["<start#$#$>", "start#$#$"]);
-var END_MARKERS = /* @__PURE__ */ new Set(["</end#$#$>", "<end#$#$>", "end#$#$"]);
-function decodePipelineField(value) {
-  if (value === void 0 || value === null) {
-    return "";
-  }
-  const text = String(value);
-  let decoded = "";
-  for (let index2 = 0; index2 < text.length; index2 += 1) {
-    const char = text[index2];
-    if (char !== "\\" || index2 + 1 >= text.length) {
-      decoded += char;
-      continue;
-    }
-    const escaped = text[index2 + 1];
-    index2 += 1;
-    if (escaped === "n") {
-      decoded += "\n";
-    } else if (escaped === "r") {
-      decoded += "\r";
-    } else if (escaped === "t") {
-      decoded += "	";
-    } else if (escaped === "|") {
-      decoded += "|";
-    } else if (escaped === "\\") {
-      decoded += "\\";
-    } else {
-      decoded += `\\${escaped}`;
-    }
-  }
-  return decoded.trim();
-}
-function displayPipelineText(value) {
-  return decodePipelineField(value);
-}
-function encodePipelineField(value) {
-  if (value === void 0 || value === null) {
-    return "";
-  }
-  return String(value).replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\t/g, "\\t").trim();
-}
-function truncateText(value, length2 = 34) {
-  const text = String(value ?? "");
-  return text.length > length2 ? `${text.slice(0, length2 - 1)}...` : text;
-}
-function toSnakeCase(value) {
-  return String(value ?? "").trim().replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
-}
-function relationLabel(relation) {
-  return String(relation ?? "relates_to").replaceAll("_", " ");
-}
-function graphNameFromId(id2) {
-  return String(id2 ?? "").replace(/^node:/i, "");
-}
-function displayNameFromIdentifier(value) {
-  const text = graphNameFromId(value).trim();
-  if (!text) {
-    return "Unknown";
-  }
-  return text.split(/[_\s-]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
-}
-function isPipelineStart(line) {
-  return START_MARKERS.has(String(line ?? "").trim().toLowerCase());
-}
-function isPipelineEnd(line) {
-  return END_MARKERS.has(String(line ?? "").trim().toLowerCase());
-}
-function pipelineLines(text) {
-  const rawLines = String(text ?? "").split(/\r?\n/);
-  const startIndex = rawLines.findIndex(isPipelineStart);
-  const endIndex = rawLines.findIndex((line, index2) => index2 > startIndex && isPipelineEnd(line));
-  const bodyLines = startIndex === -1 ? rawLines : rawLines.slice(startIndex + 1, endIndex === -1 ? void 0 : endIndex);
-  return bodyLines.map((line) => line.trim()).filter(Boolean);
-}
-function pipelineEditorText(text) {
-  return pipelineLines(text).join("\n");
-}
-function pipelineParts(line) {
-  const raw = String(line ?? "");
-  const parts = [];
-  let cur = "";
-  for (let i3 = 0; i3 < raw.length; i3 += 1) {
-    const ch = raw[i3];
-    if (ch === "\\" && i3 + 1 < raw.length) {
-      cur += ch + raw[i3 + 1];
-      i3 += 1;
-      continue;
-    }
-    if (ch === "|") {
-      parts.push(cur.trim());
-      cur = "";
-      continue;
-    }
-    cur += ch;
-  }
-  parts.push(cur.trim());
-  return parts.map((p3) => decodePipelineField(p3));
-}
-function safePipelineField(value) {
-  return encodePipelineField(value);
-}
-function pipelineRecordLine(recordType, fields) {
-  return [recordType, ...fields].map(safePipelineField).join("|");
-}
-function withPipelineLines(lines) {
-  return lines.filter(Boolean).join("\n");
-}
-function nodeIdFromName(name) {
-  return `node:${toSnakeCase(graphNameFromId(name))}`;
-}
-function normalizedOperation(recordType) {
-  if (recordType.endsWith("_DELETE")) {
-    return "delete";
-  }
-  if (recordType.endsWith("_UPDATE")) {
-    return "update";
-  }
-  return "create";
-}
-function reviewSignalEntries(record) {
-  const text = [
-    record.metadata,
-    record.description,
-    record.information,
-    record.reason
-  ].filter(Boolean).join("\n");
-  const signals = [];
-  if (/CONTRADICTION\s*:/i.test(text)) {
-    signals.push({ kind: "contradiction", text });
-  }
-  if (/AMBIGUITY\s*:/i.test(text)) {
-    signals.push({ kind: "ambiguity", text });
-  }
-  return signals;
-}
-function parseNodeRecord(parts, line, index2, errors) {
-  const recordType = parts[0].toUpperCase();
-  const name = toSnakeCase(parts[1]);
-  if (!name) {
-    errors.push(`Line ${index2 + 1}: ${recordType} requires a node name.`);
-  }
-  const operation = normalizedOperation(recordType);
-  const record = {
-    key: `${recordType}:${name}:${index2}`,
-    entity: "node",
-    recordType,
-    operation,
-    name,
-    id: nodeIdFromName(name),
-    label: parts[2] || displayNameFromIdentifier(name),
-    type: toSnakeCase(parts[3] || "concept") || "concept",
-    description: parts[4] || "",
-    metadata: parts[5] || "",
-    line,
-    lineNumber: index2 + 1
-  };
-  record.signals = reviewSignalEntries(record);
-  return record;
-}
-function parseNodeDeleteRecord(parts, line, index2, errors) {
-  const recordType = parts[0].toUpperCase();
-  const name = toSnakeCase(parts[1]);
-  if (!name) {
-    errors.push(`Line ${index2 + 1}: NODE_DELETE requires a node name.`);
-  }
-  const record = {
-    key: `${recordType}:${name}:${index2}`,
-    entity: "nodeDelete",
-    recordType,
-    operation: "delete",
-    name,
-    id: nodeIdFromName(name),
-    label: displayNameFromIdentifier(name),
-    metadata: parts[2] || "",
-    line,
-    lineNumber: index2 + 1
-  };
-  record.signals = reviewSignalEntries(record);
-  return record;
-}
-function parseRelationRecord(parts, line, index2, errors) {
-  const recordType = parts[0].toUpperCase();
-  const sourceName = toSnakeCase(parts[1]);
-  const targetName = toSnakeCase(parts[2]);
-  const relation = toSnakeCase(parts[3] || "relates_to") || "relates_to";
-  if (!sourceName || !targetName) {
-    errors.push(`Line ${index2 + 1}: ${recordType} requires source and target node names.`);
-  }
-  const operation = normalizedOperation(recordType);
-  const record = {
-    key: `${recordType}:${sourceName}:${relation}:${targetName}:${index2}`,
-    entity: "relation",
-    recordType,
-    operation,
-    sourceName,
-    targetName,
-    sourceId: nodeIdFromName(sourceName),
-    targetId: nodeIdFromName(targetName),
-    relation,
-    information: parts[4] || "",
-    description: parts[5] || "",
-    metadata: parts[6] || "",
-    line,
-    lineNumber: index2 + 1
-  };
-  record.signals = reviewSignalEntries(record);
-  return record;
-}
-function parseRelationDeleteRecord(parts, line, index2, errors) {
-  const recordType = parts[0].toUpperCase();
-  const sourceName = toSnakeCase(parts[1]);
-  const targetName = toSnakeCase(parts[2]);
-  const relation = toSnakeCase(parts[3] || "relates_to") || "relates_to";
-  if (!sourceName || !targetName) {
-    errors.push(`Line ${index2 + 1}: RELATION_DELETE requires source and target node names.`);
-  }
-  const record = {
-    key: `${recordType}:${sourceName}:${relation}:${targetName}:${index2}`,
-    entity: "relationDelete",
-    recordType,
-    operation: "delete",
-    sourceName,
-    targetName,
-    sourceId: nodeIdFromName(sourceName),
-    targetId: nodeIdFromName(targetName),
-    relation,
-    metadata: parts[4] || "",
-    line,
-    lineNumber: index2 + 1
-  };
-  record.signals = reviewSignalEntries(record);
-  return record;
-}
-function parseSchemaSuggestion(parts, line, index2, errors) {
-  const recordType = parts[0].toUpperCase();
-  const name = toSnakeCase(parts[1]);
-  if (!name) {
-    errors.push(`Line ${index2 + 1}: ${recordType} requires a type name.`);
-  }
-  return {
-    key: `${recordType}:${name}:${index2}`,
-    entity: recordType === "NODE_TYPE_SUGGESTION" ? "nodeTypeSuggestion" : "relationTypeSuggestion",
-    recordType,
-    operation: "suggest",
-    name,
-    description: parts[2] || "",
-    reason: parts[3] || "",
-    line,
-    lineNumber: index2 + 1
-  };
-}
-function schemaSuggestionRecordType(entity) {
-  return entity === "relationTypeSuggestion" ? "RELATION_TYPE_SUGGESTION" : "NODE_TYPE_SUGGESTION";
-}
-function schemaSuggestionLine(entity, suggestion) {
-  return pipelineRecordLine(schemaSuggestionRecordType(entity), [
-    toSnakeCase(suggestion?.name),
-    suggestion?.description ?? "",
-    suggestion?.reason ?? ""
-  ]);
-}
-function nextSchemaSuggestionName(lines, baseName) {
-  const existingNames = new Set(lines.map((line) => toSnakeCase(pipelineParts(line)[1])));
-  let nextName = baseName;
-  let index2 = 2;
-  while (existingNames.has(nextName)) {
-    nextName = `${baseName}_${index2}`;
-    index2 += 1;
-  }
-  return nextName;
-}
-function appendSchemaSuggestion(text, entity) {
-  const lines = pipelineLines(text);
-  const isRelation = entity === "relationTypeSuggestion";
-  const name = nextSchemaSuggestionName(lines, isRelation ? "new_relationship_type" : "new_node_type");
-  const description = isRelation ? "Describe this relationship type." : "Describe this node type.";
-  lines.push(schemaSuggestionLine(entity, { name, description, reason: "Added during HITL review." }));
-  return withPipelineLines(lines);
-}
-function updateSchemaSuggestion(text, record, draft) {
-  const lineIndex = Number(record?.lineNumber ?? 0) - 1;
-  const lines = pipelineLines(text);
-  if (lineIndex < 0 || lineIndex >= lines.length) {
-    return text;
-  }
-  lines[lineIndex] = schemaSuggestionLine(record.entity, {
-    name: draft?.name ?? record.name,
-    description: draft?.description ?? record.description,
-    reason: draft?.reason ?? record.reason
-  });
-  return withPipelineLines(lines);
-}
-function deleteSchemaSuggestion(text, record) {
-  const lineIndex = Number(record?.lineNumber ?? 0) - 1;
-  const lines = pipelineLines(text);
-  if (lineIndex < 0 || lineIndex >= lines.length) {
-    return text;
-  }
-  lines.splice(lineIndex, 1);
-  return withPipelineLines(lines);
-}
-function parseHitlProposal(text) {
-  const errors = [];
-  const records = [];
-  const lines = pipelineLines(text);
-  for (const [index2, line] of lines.entries()) {
-    const parts = pipelineParts(line);
-    const recordType = parts[0]?.toUpperCase();
-    if (["NODE", "NODE_CREATE", "NODE_UPDATE"].includes(recordType)) {
-      records.push(parseNodeRecord(parts, line, index2, errors));
-    } else if (recordType === "NODE_DELETE") {
-      records.push(parseNodeDeleteRecord(parts, line, index2, errors));
-    } else if (["RELATION", "EDGE", "RELATION_CREATE", "RELATION_UPDATE"].includes(recordType)) {
-      records.push(parseRelationRecord(parts, line, index2, errors));
-    } else if (recordType === "RELATION_DELETE") {
-      records.push(parseRelationDeleteRecord(parts, line, index2, errors));
-    } else if (recordType === "NODE_TYPE_SUGGESTION" || recordType === "RELATION_TYPE_SUGGESTION") {
-      records.push(parseSchemaSuggestion(parts, line, index2, errors));
-    } else {
-      errors.push(`Line ${index2 + 1}: unsupported record type "${parts[0] || "empty"}".`);
-    }
-  }
-  const nodes = records.filter((record) => record.entity === "node");
-  const relations = records.filter((record) => record.entity === "relation");
-  const nodeDeletes = records.filter((record) => record.entity === "nodeDelete");
-  const relationDeletes = records.filter((record) => record.entity === "relationDelete");
-  const schemaSuggestions = records.filter((record) => record.entity === "nodeTypeSuggestion" || record.entity === "relationTypeSuggestion");
-  const signals = records.flatMap((record) => record.signals?.map((signal) => ({
-    ...signal,
-    record
-  })) ?? []);
-  return {
-    lines,
-    records,
-    nodes,
-    relations,
-    nodeDeletes,
-    relationDeletes,
-    schemaSuggestions,
-    signals,
-    errors
-  };
-}
-function formatHitlDate(value) {
-  if (!value) {
-    return "Unknown time";
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-  return date.toLocaleString([], {
-    dateStyle: "medium",
-    timeStyle: "short"
-  });
-}
-function hitlSignalCounts(note) {
-  return {
-    ambiguityCount: Number(note?.ambiguityCount ?? 0),
-    contradictionCount: Number(note?.contradictionCount ?? 0)
-  };
-}
-function deleteCount(note) {
-  return Number(note?.nodeDeleteCount ?? 0) + Number(note?.relationDeleteCount ?? 0);
-}
-function needsAttention(note) {
-  const signals = hitlSignalCounts(note);
-  return signals.ambiguityCount > 0 || signals.contradictionCount > 0 || deleteCount(note) > 0 || Number(note?.schemaSuggestionCount ?? 0) > 0;
-}
-function noteMatchesFilter(note, filter3) {
-  const signals = hitlSignalCounts(note);
-  if (filter3 === "attention") {
-    return needsAttention(note);
-  }
-  if (filter3 === "contradictions") {
-    return signals.contradictionCount > 0;
-  }
-  if (filter3 === "ambiguities") {
-    return signals.ambiguityCount > 0;
-  }
-  if (filter3 === "deletes") {
-    return deleteCount(note) > 0;
-  }
-  if (filter3 === "schema") {
-    return Number(note?.schemaSuggestionCount ?? 0) > 0;
-  }
-  return true;
-}
-function attentionScore(note) {
-  const signals = hitlSignalCounts(note);
-  return signals.contradictionCount * 100 + signals.ambiguityCount * 70 + deleteCount(note) * 35 + Number(note?.schemaSuggestionCount ?? 0) * 20;
-}
-function sortHitlNotes(notes) {
-  return [...notes ?? []].sort((left, right) => {
-    const scoreDelta = attentionScore(right) - attentionScore(left);
-    if (scoreDelta !== 0) {
-      return scoreDelta;
-    }
-    return new Date(right.createdAt ?? 0).getTime() - new Date(left.createdAt ?? 0).getTime();
-  });
-}
-function hitlCountLabel(note) {
-  const nodeParts = [
-    `${note.nodeCount ?? 0}N`,
-    note.nodeDeleteCount ? `${note.nodeDeleteCount}ND` : ""
-  ].filter(Boolean);
-  const relationParts = [
-    `${note.relationCount ?? 0}R`,
-    note.relationDeleteCount ? `${note.relationDeleteCount}RD` : ""
-  ].filter(Boolean);
-  return [...nodeParts, ...relationParts].join(" / ");
-}
-function strongNoteChips(note) {
-  const signals = hitlSignalCounts(note);
-  return [
-    { kind: "neutral", label: "Nodes", value: Number(note?.nodeCount ?? 0) },
-    { kind: "neutral", label: "Relations", value: Number(note?.relationCount ?? 0) },
-    { kind: "delete", label: "Delete", value: deleteCount(note) },
-    { kind: "schema", label: "Schema", value: Number(note?.schemaSuggestionCount ?? 0) },
-    { kind: "contradiction", label: "Contradiction", value: signals.contradictionCount },
-    { kind: "ambiguity", label: "Ambiguity", value: signals.ambiguityCount }
-  ].filter((chip) => chip.value > 0);
-}
-
-// node_modules/preact/jsx-runtime/dist/jsxRuntime.module.js
-var f3 = 0;
-function u3(e3, t3, n2, o3, i3, u4) {
-  t3 || (t3 = {});
-  var a3, c4, p3 = t3;
-  if ("ref" in p3) for (c4 in p3 = {}, t3) "ref" == c4 ? a3 = t3[c4] : p3[c4] = t3[c4];
-  var l3 = { type: e3, props: p3, key: n2, ref: a3, __k: null, __: null, __b: 0, __e: null, __c: null, constructor: void 0, __v: --f3, __i: -1, __u: 0, __source: i3, __self: u4 };
-  if ("function" == typeof e3 && (a3 = e3.defaultProps)) for (c4 in a3) void 0 === p3[c4] && (p3[c4] = a3[c4]);
-  return l.vnode && l.vnode(l3), l3;
-}
-
-// src/server/public/components/hitl/HitlProposalSummary.js
-function operationLabel(operation) {
-  if (operation === "delete") {
-    return "Delete";
-  }
-  if (operation === "update") {
-    return "Update";
-  }
-  if (operation === "suggest") {
-    return "Suggest";
-  }
-  return "Create";
-}
-function operationClass(operation) {
-  return `proposal-operation ${operation || "create"}`;
-}
-function nodeLabel(record) {
-  return record.label || displayNameFromIdentifier(record.name || record.id);
-}
-function relationFact(record) {
-  return `${displayNameFromIdentifier(record.sourceName)} ${relationLabel(record.relation)} ${displayNameFromIdentifier(record.targetName)}`;
-}
-function findCurrentNode(graph, record) {
-  return graph?.nodes?.find((node) => node.id === record.id) ?? null;
-}
-function findCurrentRelation(graph, record) {
-  return graph?.relations?.find((relation) => relation.sourceId === record.sourceId && relation.targetId === record.targetId && relation.relation === record.relation) ?? null;
-}
-function ReviewSignals({ signals }) {
-  if (!signals?.length) {
-    return null;
-  }
-  return /* @__PURE__ */ u3("span", { class: "proposal-row-signals", children: signals.map((signal, index2) => /* @__PURE__ */ u3("span", { class: `review-signal-chip ${signal.kind}`, children: signal.kind }, `${signal.kind}-${index2}`)) });
-}
-function CurrentProposed({ current, proposed, type }) {
-  if (!current) {
-    return /* @__PURE__ */ u3("div", { class: "proposal-current muted-copy", children: "Current context not loaded." });
-  }
-  if (type === "relation") {
-    return /* @__PURE__ */ u3("div", { class: "proposal-current-grid", children: [
-      /* @__PURE__ */ u3("div", { children: [
-        /* @__PURE__ */ u3("span", { children: "Current" }),
-        /* @__PURE__ */ u3("strong", { children: relationLabel(current.relation) }),
-        /* @__PURE__ */ u3("small", { class: "multiline-text", children: displayPipelineText(current.information || current.description) || "No extra detail." })
-      ] }),
-      /* @__PURE__ */ u3("div", { children: [
-        /* @__PURE__ */ u3("span", { children: "Proposed" }),
-        /* @__PURE__ */ u3("strong", { children: relationLabel(proposed.relation) }),
-        /* @__PURE__ */ u3("small", { class: "multiline-text", children: displayPipelineText(proposed.information || proposed.description || proposed.metadata) || "No extra detail." })
-      ] })
-    ] });
-  }
-  return /* @__PURE__ */ u3("div", { class: "proposal-current-grid", children: [
-    /* @__PURE__ */ u3("div", { children: [
-      /* @__PURE__ */ u3("span", { children: "Current" }),
-      /* @__PURE__ */ u3("strong", { children: current.label || displayNameFromIdentifier(current.name || current.id) }),
-      /* @__PURE__ */ u3("small", { class: "multiline-text", children: displayPipelineText(current.description) || "No description." })
-    ] }),
-    /* @__PURE__ */ u3("div", { children: [
-      /* @__PURE__ */ u3("span", { children: "Proposed" }),
-      /* @__PURE__ */ u3("strong", { children: nodeLabel(proposed) }),
-      /* @__PURE__ */ u3("small", { class: "multiline-text", children: displayPipelineText(proposed.description || proposed.metadata) || "No description." })
-    ] })
-  ] });
-}
-function ProposalRow({ activeRowKey, children, current, graphItem, onFocus, record, type }) {
-  const isActive = activeRowKey === record.key;
-  return /* @__PURE__ */ u3(
-    "button",
-    {
-      type: "button",
-      class: `proposal-row${isActive ? " active" : ""}`,
-      onClick: () => onFocus?.(record),
-      children: [
-        /* @__PURE__ */ u3("span", { class: operationClass(record.operation), children: operationLabel(record.operation) }),
-        /* @__PURE__ */ u3("span", { class: "proposal-row-main", children: [
-          children,
-          (record.operation === "update" || record.operation === "delete") && /* @__PURE__ */ u3(CurrentProposed, { current, proposed: record, type })
-        ] }),
-        /* @__PURE__ */ u3(ReviewSignals, { signals: record.signals }),
-        !graphItem && (type === "node" || type === "relation") && /* @__PURE__ */ u3("small", { class: "proposal-row-context", children: "Not in preview" })
-      ]
-    }
-  );
-}
-function ProposalSection({ actions, children, count, title }) {
-  return /* @__PURE__ */ u3("section", { class: "proposal-section", children: [
-    /* @__PURE__ */ u3("div", { class: "hitl-section-header", children: [
-      /* @__PURE__ */ u3("h3", { children: title }),
-      /* @__PURE__ */ u3("div", { class: "proposal-section-actions", children: [
-        actions,
-        /* @__PURE__ */ u3("span", { children: count })
-      ] })
-    ] }),
-    count === 0 ? /* @__PURE__ */ u3("p", { class: "muted-copy", children: "None." }) : /* @__PURE__ */ u3("div", { class: "proposal-row-list", children })
-  ] });
-}
-function SchemaSuggestionRow({ activeRowKey, onDelete, onFocus, onUpdate, record }) {
-  function updateField(field, value) {
-    onUpdate?.(record, { ...record, [field]: value });
-  }
-  return /* @__PURE__ */ u3(
-    "div",
-    {
-      class: `proposal-row schema-suggestion${activeRowKey === record.key ? " active" : ""}`,
-      onClick: () => onFocus?.(record),
-      children: [
-        /* @__PURE__ */ u3("span", { class: operationClass("suggest"), children: "Suggest" }),
-        /* @__PURE__ */ u3("span", { class: "proposal-row-main", children: [
-          /* @__PURE__ */ u3("small", { children: record.entity === "nodeTypeSuggestion" ? "Node type" : "Relationship type" }),
-          /* @__PURE__ */ u3("label", { class: "compact-field", children: [
-            /* @__PURE__ */ u3("span", { children: "Name" }),
-            /* @__PURE__ */ u3(
-              "input",
-              {
-                value: record.name,
-                onBlur: (event) => updateField("name", event.currentTarget.value)
-              }
-            )
-          ] }),
-          /* @__PURE__ */ u3("label", { class: "compact-field", children: [
-            /* @__PURE__ */ u3("span", { children: "Description" }),
-            /* @__PURE__ */ u3(
-              "input",
-              {
-                value: record.description,
-                onBlur: (event) => updateField("description", event.currentTarget.value)
-              }
-            )
-          ] }),
-          /* @__PURE__ */ u3("label", { class: "compact-field", children: [
-            /* @__PURE__ */ u3("span", { children: "Reason" }),
-            /* @__PURE__ */ u3(
-              "input",
-              {
-                value: record.reason,
-                onBlur: (event) => updateField("reason", event.currentTarget.value)
-              }
-            )
-          ] }),
-          /* @__PURE__ */ u3(
-            "button",
-            {
-              type: "button",
-              class: "danger-button compact-button",
-              onClick: (event) => {
-                event.stopPropagation();
-                onDelete?.(record);
-              },
-              children: "Delete suggestion"
-            }
-          )
-        ] })
-      ]
-    }
-  );
-}
-function ReviewSignalSummary({ signals }) {
-  if (!signals.length) {
-    return /* @__PURE__ */ u3("section", { class: "proposal-section", children: [
-      /* @__PURE__ */ u3("div", { class: "hitl-section-header", children: [
-        /* @__PURE__ */ u3("h3", { children: "Review signals" }),
-        /* @__PURE__ */ u3("span", { children: "0" })
-      ] }),
-      /* @__PURE__ */ u3("p", { class: "muted-copy", children: "No ambiguity or contradiction metadata found." })
-    ] });
-  }
-  return /* @__PURE__ */ u3("section", { class: "proposal-section", children: [
-    /* @__PURE__ */ u3("div", { class: "hitl-section-header", children: [
-      /* @__PURE__ */ u3("h3", { children: "Review signals" }),
-      /* @__PURE__ */ u3("span", { children: signals.length })
-    ] }),
-    /* @__PURE__ */ u3("div", { class: "proposal-row-list", children: signals.map((signal, index2) => /* @__PURE__ */ u3("div", { class: "proposal-signal-row", children: [
-      /* @__PURE__ */ u3("span", { class: `review-signal-chip ${signal.kind}`, children: signal.kind }),
-      /* @__PURE__ */ u3("p", { children: signal.text })
-    ] }, `${signal.kind}-${index2}`)) })
-  ] });
-}
-function HitlProposalSummary({
-  activeRowKey,
-  graph,
-  onCreateSchemaSuggestion,
-  onDeleteSchemaSuggestion,
-  onRowFocus,
-  onUpdateSchemaSuggestion,
-  proposal
-}) {
-  const nodeRows = proposal.nodes ?? [];
-  const relationRows = proposal.relations ?? [];
-  const deleteRows = [...proposal.nodeDeletes ?? [], ...proposal.relationDeletes ?? []];
-  const schemaRows = proposal.schemaSuggestions ?? [];
-  const relationCurrent = (record) => findCurrentRelation(graph, record);
-  const nodeCurrent = (record) => findCurrentNode(graph, record);
-  return /* @__PURE__ */ u3("div", { class: "proposal-summary", children: [
-    proposal.errors?.length > 0 && /* @__PURE__ */ u3("section", { class: "proposal-parse-errors", children: [
-      /* @__PURE__ */ u3("strong", { children: "Parse issues" }),
-      proposal.errors.map((error, index2) => /* @__PURE__ */ u3("p", { children: error }, `${error}-${index2}`))
-    ] }),
-    /* @__PURE__ */ u3(ProposalSection, { title: "Nodes", count: nodeRows.length, children: nodeRows.map((record) => {
-      const current = nodeCurrent(record);
-      return /* @__PURE__ */ u3(
-        ProposalRow,
-        {
-          activeRowKey,
-          current,
-          graphItem: current,
-          onFocus: onRowFocus,
-          record,
-          type: "node",
-          children: [
-            /* @__PURE__ */ u3("strong", { children: nodeLabel(record) }),
-            /* @__PURE__ */ u3("small", { children: record.type }),
-            record.description && /* @__PURE__ */ u3("small", { class: "multiline-text", children: displayPipelineText(record.description) }),
-            record.metadata && /* @__PURE__ */ u3("small", { class: "proposal-row-warning multiline-text", children: displayPipelineText(record.metadata) })
-          ]
-        },
-        record.key
-      );
-    }) }),
-    /* @__PURE__ */ u3(ProposalSection, { title: "Relations", count: relationRows.length, children: relationRows.map((record) => {
-      const current = relationCurrent(record);
-      return /* @__PURE__ */ u3(
-        ProposalRow,
-        {
-          activeRowKey,
-          current,
-          graphItem: current,
-          onFocus: onRowFocus,
-          record,
-          type: "relation",
-          children: [
-            /* @__PURE__ */ u3("strong", { children: relationFact(record) }),
-            /* @__PURE__ */ u3("small", { class: "multiline-text", children: displayPipelineText(record.information || record.description) || "No extra detail." }),
-            record.metadata && /* @__PURE__ */ u3("small", { class: "proposal-row-warning multiline-text", children: displayPipelineText(record.metadata) })
-          ]
-        },
-        record.key
-      );
-    }) }),
-    /* @__PURE__ */ u3(ProposalSection, { title: "Deletes", count: deleteRows.length, children: deleteRows.map((record) => {
-      const isRelation = record.entity === "relationDelete";
-      const current = isRelation ? relationCurrent(record) : nodeCurrent(record);
-      return /* @__PURE__ */ u3(
-        ProposalRow,
-        {
-          activeRowKey,
-          current,
-          graphItem: current,
-          onFocus: onRowFocus,
-          record,
-          type: isRelation ? "relation" : "node",
-          children: [
-            /* @__PURE__ */ u3("strong", { children: isRelation ? relationFact(record) : nodeLabel(record) }),
-            record.metadata && /* @__PURE__ */ u3("small", { class: "proposal-row-warning multiline-text", children: displayPipelineText(record.metadata) })
-          ]
-        },
-        record.key
-      );
-    }) }),
+// src/server/public/components/graph/GraphRendererToggle.js
+var GRAPH_RENDERERS = {
+  sigma: "sigma",
+  neovis: "neovis"
+};
+function GraphRendererToggle({ onRendererMode, rendererMode }) {
+  return /* @__PURE__ */ u3("div", { class: "renderer-toggle", "aria-label": "Graph renderer", role: "group", children: [
     /* @__PURE__ */ u3(
-      ProposalSection,
+      "button",
       {
-        title: "Schema suggestions",
-        count: schemaRows.length,
-        actions: /* @__PURE__ */ u3("div", { class: "schema-suggestion-actions", children: [
-          /* @__PURE__ */ u3(
-            "button",
-            {
-              type: "button",
-              class: "compact-button",
-              onClick: () => onCreateSchemaSuggestion?.("nodeTypeSuggestion"),
-              children: "Add node type"
-            }
-          ),
-          /* @__PURE__ */ u3(
-            "button",
-            {
-              type: "button",
-              class: "compact-button",
-              onClick: () => onCreateSchemaSuggestion?.("relationTypeSuggestion"),
-              children: "Add relation type"
-            }
-          )
-        ] }),
-        children: schemaRows.map((record) => /* @__PURE__ */ u3(
-          SchemaSuggestionRow,
-          {
-            activeRowKey,
-            onDelete: onDeleteSchemaSuggestion,
-            onFocus: onRowFocus,
-            onUpdate: onUpdateSchemaSuggestion,
-            record
-          },
-          record.key
-        ))
+        type: "button",
+        class: rendererMode === GRAPH_RENDERERS.sigma ? "active" : "",
+        onClick: () => onRendererMode(GRAPH_RENDERERS.sigma),
+        children: "Sigma"
       }
     ),
-    /* @__PURE__ */ u3(ReviewSignalSummary, { signals: proposal.signals ?? [] })
+    /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        class: rendererMode === GRAPH_RENDERERS.neovis ? "active" : "",
+        onClick: () => onRendererMode(GRAPH_RENDERERS.neovis),
+        children: "NeoVis"
+      }
+    )
   ] });
 }
 
-// src/server/public/components/hitl/HitlReviewPanel.js
-var FILTERS = [
-  { id: "all", label: "All" },
-  { id: "attention", label: "Needs attention" },
-  { id: "contradictions", label: "Contradictions" },
-  { id: "ambiguities", label: "Ambiguities" },
-  { id: "deletes", label: "Deletes" },
-  { id: "schema", label: "Schema" }
-];
-function readStoredDensity() {
-  try {
-    return window.localStorage.getItem(HITL_CHIP_DENSITY_KEY) === "strong" ? "strong" : "compact";
-  } catch {
-    return "compact";
-  }
-}
-function writeStoredDensity(value) {
-  try {
-    window.localStorage.setItem(HITL_CHIP_DENSITY_KEY, value);
-  } catch {
-  }
-}
-function HitlNoteChips({ density, note }) {
-  const signals = hitlSignalCounts(note);
-  const hasSignals = signals.ambiguityCount > 0 || signals.contradictionCount > 0;
-  if (density === "compact") {
-    return /* @__PURE__ */ u3(S, { children: [
-      /* @__PURE__ */ u3("span", { class: "submission-counts", children: hitlCountLabel(note) }),
-      hasSignals && /* @__PURE__ */ u3("span", { class: "submission-signals", "aria-label": "Review signals", children: [
-        signals.contradictionCount > 0 && /* @__PURE__ */ u3("span", { class: "review-signal-chip contradiction", children: [
-          signals.contradictionCount,
-          " contradiction",
-          signals.contradictionCount === 1 ? "" : "s"
-        ] }),
-        signals.ambiguityCount > 0 && /* @__PURE__ */ u3("span", { class: "review-signal-chip ambiguity", children: [
-          signals.ambiguityCount,
-          " ",
-          signals.ambiguityCount === 1 ? "ambiguity" : "ambiguities"
-        ] })
-      ] })
-    ] });
-  }
-  return /* @__PURE__ */ u3("span", { class: "strong-chip-list", "aria-label": "HITL counts", children: strongNoteChips(note).map((chip) => /* @__PURE__ */ u3("span", { class: `strong-chip ${chip.kind}`, children: [
-    chip.label,
-    " ",
-    chip.value
-  ] }, `${chip.kind}-${chip.label}`)) });
-}
-function ProposalStatus({ isValid, proposal }) {
-  if (!proposal.lines.length) {
-    return /* @__PURE__ */ u3("span", { class: "proposal-status warning", children: "Empty proposal" });
-  }
-  if (!isValid) {
-    return /* @__PURE__ */ u3("span", { class: "proposal-status error", children: [
-      proposal.errors.length,
-      " parse issue",
-      proposal.errors.length === 1 ? "" : "s"
-    ] });
-  }
-  if (proposal.signals.length > 0) {
-    return /* @__PURE__ */ u3("span", { class: "proposal-status warning", children: [
-      proposal.signals.length,
-      " review signal",
-      proposal.signals.length === 1 ? "" : "s"
-    ] });
-  }
-  return /* @__PURE__ */ u3("span", { class: "proposal-status valid", children: "Valid proposal" });
-}
-function HitlReviewPanel({
-  editedResponse,
-  graph,
-  isProposalDirty,
-  onEditedResponseChange,
-  onGraphRefresh,
-  onProposalFocus,
-  onChangeReviewerName,
-  onCloseSelectedNote,
-  onSelectNote,
-  onStatus,
-  previewMessage,
-  requestJson: requestJson2,
-  reviewerName,
-  routeSwitcher,
-  selectedNote
-}) {
-  const [activeFilter, setActiveFilter] = d2("all");
-  const [activeProposalRowKey, setActiveProposalRowKey] = d2("");
-  const [chipDensity, setChipDensity] = d2(readStoredDensity);
-  const [isActing, setIsActing] = d2(false);
-  const [isLoading, setIsLoading] = d2(false);
-  const [notes, setNotes] = d2([]);
-  const [panelMessage, setPanelMessage] = d2("");
-  const proposal = T2(() => parseHitlProposal(editedResponse), [editedResponse]);
-  const filteredNotes = T2(() => sortHitlNotes(notes).filter((note) => noteMatchesFilter(note, activeFilter)), [activeFilter, notes]);
-  const pendingNodeCount = notes.reduce((total, note) => total + (note.nodeCount ?? 0) + (note.nodeDeleteCount ?? 0), 0);
-  const pendingRelationCount = notes.reduce((total, note) => total + (note.relationCount ?? 0) + (note.relationDeleteCount ?? 0), 0);
-  const proposalIsValid = proposal.errors.length === 0 && proposal.lines.length > 0;
-  const showPanelMessage = q2((message) => {
-    setPanelMessage(message);
-    onStatus?.(message);
-  }, [onStatus]);
-  const loadNotes = q2(async () => {
-    setIsLoading(true);
-    try {
-      const result = await requestJson2("/api/hitl/notes?limit=100");
-      setNotes(result.notes ?? []);
-      setPanelMessage("");
-    } catch (error) {
-      showPanelMessage(error.message);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [requestJson2, showPanelMessage]);
-  y2(() => {
-    loadNotes();
-  }, [loadNotes]);
-  function changeChipDensity(value) {
-    const nextDensity = value === "strong" ? "strong" : "compact";
-    setChipDensity(nextDensity);
-    writeStoredDensity(nextDensity);
-  }
-  const openNote = q2(async (noteId) => {
-    setIsLoading(true);
-    setActiveProposalRowKey("");
-    try {
-      const result = await requestJson2(`/api/hitl/notes/${encodeURIComponent(noteId)}`);
-      onSelectNote(result.note ?? null);
-      onEditedResponseChange(pipelineEditorText(result.note?.llmResponse ?? ""));
-      setPanelMessage("");
-    } catch (error) {
-      showPanelMessage(error.message);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [onEditedResponseChange, onSelectNote, requestJson2, showPanelMessage]);
-  const refreshReview = q2(async () => {
-    await loadNotes();
-    await onGraphRefresh?.();
-  }, [loadNotes, onGraphRefresh]);
-  const approveSelectedNote = q2(async () => {
-    const activeReviewerName = reviewerName.trim();
-    if (!selectedNote || !activeReviewerName) {
-      return;
-    }
-    setIsActing(true);
-    try {
-      await requestJson2(`/api/hitl/notes/${encodeURIComponent(selectedNote.id)}/approve`, {
-        method: "POST",
-        body: JSON.stringify({
-          llmResponse: editedResponse,
-          reviewedBy: activeReviewerName
-        })
-      });
-      onSelectNote(null);
-      onEditedResponseChange("");
-      setActiveProposalRowKey("");
-      await refreshReview();
-      showPanelMessage("Approved and applied to the graph.");
-    } catch (error) {
-      showPanelMessage(error.message);
-    } finally {
-      setIsActing(false);
-    }
-  }, [editedResponse, onEditedResponseChange, onSelectNote, refreshReview, requestJson2, reviewerName, selectedNote, showPanelMessage]);
-  const rejectSelectedNote = q2(async () => {
-    if (!selectedNote || !window.confirm("Reject and permanently delete this HITL note?")) {
-      return;
-    }
-    setIsActing(true);
-    try {
-      await requestJson2(`/api/hitl/notes/${encodeURIComponent(selectedNote.id)}`, {
-        method: "DELETE"
-      });
-      onSelectNote(null);
-      onEditedResponseChange("");
-      setActiveProposalRowKey("");
-      await refreshReview();
-      showPanelMessage("Rejected and deleted from HITL queue.");
-    } catch (error) {
-      showPanelMessage(error.message);
-    } finally {
-      setIsActing(false);
-    }
-  }, [onEditedResponseChange, onSelectNote, refreshReview, requestJson2, selectedNote, showPanelMessage]);
-  function focusProposalRow(record) {
-    setActiveProposalRowKey(record.key);
-    onProposalFocus?.(record);
-  }
-  function backToList() {
-    if (isProposalDirty && !window.confirm("Discard unsaved edits to this HITL proposal?")) {
-      return;
-    }
-    onCloseSelectedNote?.();
-    setActiveProposalRowKey("");
-  }
-  function createSchemaSuggestion(entity) {
-    onEditedResponseChange(appendSchemaSuggestion(editedResponse, entity));
-    showPanelMessage("Added schema suggestion to this HITL proposal.");
-  }
-  function editSchemaSuggestion(record, draft) {
-    onEditedResponseChange(updateSchemaSuggestion(editedResponse, record, draft));
-  }
-  function removeSchemaSuggestion(record) {
-    if (!window.confirm(`Delete schema suggestion "${record.name}" from this proposal?`)) {
-      return;
-    }
-    onEditedResponseChange(deleteSchemaSuggestion(editedResponse, record));
-    setActiveProposalRowKey("");
-    showPanelMessage("Removed schema suggestion from this HITL proposal.");
-  }
-  return /* @__PURE__ */ u3("aside", { class: "hitl-panel", "aria-label": "Human review workspace", children: [
-    /* @__PURE__ */ u3("header", { class: "hitl-header", children: [
-      /* @__PURE__ */ u3("div", { children: [
-        /* @__PURE__ */ u3("p", { class: "eyebrow", children: "Human review" }),
-        /* @__PURE__ */ u3("h2", { children: "Pending approvals" })
-      ] }),
-      /* @__PURE__ */ u3("div", { class: "hitl-header-actions", children: [
-        /* @__PURE__ */ u3("button", { type: "button", class: "compact-button", onClick: refreshReview, disabled: isLoading || isActing, children: "Refresh" }),
-        routeSwitcher
-      ] })
+// src/server/public/components/graph/GraphPanelHeader.js
+function GraphPanelHeader({ onReload, onRendererMode, rendererMode, statsText }) {
+  return /* @__PURE__ */ u3("header", { class: "panel-header graph-header", children: [
+    /* @__PURE__ */ u3("div", { children: [
+      /* @__PURE__ */ u3("p", { class: "eyebrow", children: "Knowledge Graph" }),
+      /* @__PURE__ */ u3("h1", { id: "graph-title", children: "Graph preview" })
     ] }),
-    /* @__PURE__ */ u3("div", { class: "hitl-identity", children: [
-      /* @__PURE__ */ u3("div", { children: [
-        /* @__PURE__ */ u3("span", { children: "Reviewer" }),
-        /* @__PURE__ */ u3("strong", { children: reviewerName || "Name required" })
-      ] }),
-      /* @__PURE__ */ u3("button", { type: "button", class: "identity-change-button", onClick: onChangeReviewerName, children: "Change" })
-    ] }),
-    (panelMessage || previewMessage) && /* @__PURE__ */ u3("div", { class: "status-line", children: panelMessage || previewMessage }),
-    /* @__PURE__ */ u3("div", { class: "hitl-content", children: [
-      /* @__PURE__ */ u3("div", { class: "review-summary-grid", children: [
-        /* @__PURE__ */ u3("div", { children: [
-          pendingNodeCount,
-          " pending nodes"
-        ] }),
-        /* @__PURE__ */ u3("div", { children: [
-          pendingRelationCount,
-          " pending relations"
-        ] })
-      ] }),
-      !selectedNote ? /* @__PURE__ */ u3("section", { class: "hitl-section", children: [
-        /* @__PURE__ */ u3("div", { class: "hitl-toolbar", children: [
-          /* @__PURE__ */ u3("label", { class: "field", children: [
-            /* @__PURE__ */ u3("span", { children: "Filter" }),
-            /* @__PURE__ */ u3("select", { value: activeFilter, onChange: (event) => setActiveFilter(event.currentTarget.value), children: FILTERS.map((filter3) => /* @__PURE__ */ u3("option", { value: filter3.id, children: filter3.label }, filter3.id)) })
-          ] }),
-          /* @__PURE__ */ u3("label", { class: "field", children: [
-            /* @__PURE__ */ u3("span", { children: "Chips" }),
-            /* @__PURE__ */ u3("select", { value: chipDensity, onChange: (event) => changeChipDensity(event.currentTarget.value), children: [
-              /* @__PURE__ */ u3("option", { value: "compact", children: "Compact" }),
-              /* @__PURE__ */ u3("option", { value: "strong", children: "Strong" })
-            ] })
-          ] })
-        ] }),
-        /* @__PURE__ */ u3("div", { class: "hitl-section-header", children: [
-          /* @__PURE__ */ u3("h3", { children: "Pending submissions" }),
-          /* @__PURE__ */ u3("span", { children: isLoading ? "Loading" : filteredNotes.length })
-        ] }),
-        /* @__PURE__ */ u3("div", { class: "submission-list", role: "list", children: [
-          filteredNotes.map((note) => {
-            const hasSignals = needsAttention(note);
-            return /* @__PURE__ */ u3(
-              "button",
-              {
-                type: "button",
-                class: `submission-row${hasSignals ? " has-review-signals" : ""}`,
-                onClick: () => openNote(note.id),
-                children: [
-                  /* @__PURE__ */ u3("span", { class: "submission-main", children: [
-                    /* @__PURE__ */ u3("strong", { children: note.ingestedBy || note.userName || "Unknown user" }),
-                    /* @__PURE__ */ u3("small", { children: truncateText(note.inputPreview, 72) }),
-                    /* @__PURE__ */ u3("small", { children: formatHitlDate(note.createdAt) })
-                  ] }),
-                  /* @__PURE__ */ u3("span", { class: `status-chip ${note.status}`, children: note.status }),
-                  /* @__PURE__ */ u3(HitlNoteChips, { density: chipDensity, note })
-                ]
-              },
-              note.id
-            );
-          }),
-          !isLoading && filteredNotes.length === 0 && /* @__PURE__ */ u3("div", { class: "empty-review-state", children: "No pending HITL items for this filter." })
-        ] })
-      ] }) : /* @__PURE__ */ u3("section", { class: "hitl-section submission-detail", children: [
-        /* @__PURE__ */ u3("div", { class: `hitl-mode-banner draft${isProposalDirty ? " dirty" : ""}`, children: [
-          /* @__PURE__ */ u3("strong", { children: "Proposal draft mode" }),
-          /* @__PURE__ */ u3("span", { children: "Graph and schema edits update this proposal only. They apply to the DB after approval." })
-        ] }),
-        /* @__PURE__ */ u3("div", { class: "hitl-section-header", children: [
-          /* @__PURE__ */ u3(
-            "button",
-            {
-              type: "button",
-              class: "compact-button",
-              onClick: backToList,
-              children: "Back"
-            }
-          ),
-          /* @__PURE__ */ u3("div", { class: "hitl-detail-status", children: [
-            isProposalDirty && /* @__PURE__ */ u3("span", { class: "proposal-status warning", children: "Unsaved proposal edits" }),
-            /* @__PURE__ */ u3("span", { class: `status-chip ${selectedNote.status}`, children: selectedNote.status })
-          ] })
-        ] }),
-        /* @__PURE__ */ u3("div", { class: "detail-kv", children: [
-          /* @__PURE__ */ u3("span", { children: "Ingested by" }),
-          /* @__PURE__ */ u3("strong", { children: selectedNote.ingestedBy || selectedNote.userName || "Unknown user" })
-        ] }),
-        /* @__PURE__ */ u3("div", { class: "detail-kv", children: [
-          /* @__PURE__ */ u3("span", { children: "Created" }),
-          /* @__PURE__ */ u3("strong", { children: formatHitlDate(selectedNote.createdAt) })
-        ] }),
-        /* @__PURE__ */ u3("label", { class: "field", children: [
-          /* @__PURE__ */ u3("span", { children: "User input" }),
-          /* @__PURE__ */ u3("textarea", { readOnly: true, rows: "4", value: selectedNote.userInput || selectedNote.prompt || "" })
-        ] }),
-        /* @__PURE__ */ u3(
-          HitlProposalSummary,
-          {
-            activeRowKey: activeProposalRowKey,
-            graph,
-            onCreateSchemaSuggestion: createSchemaSuggestion,
-            onDeleteSchemaSuggestion: removeSchemaSuggestion,
-            onRowFocus: focusProposalRow,
-            onUpdateSchemaSuggestion: editSchemaSuggestion,
-            proposal
-          }
-        ),
-        /* @__PURE__ */ u3("details", { class: "hitl-raw-response", children: [
-          /* @__PURE__ */ u3("summary", { children: "Advanced raw response" }),
-          /* @__PURE__ */ u3("label", { class: "field", children: [
-            /* @__PURE__ */ u3("span", { children: "Editable piped LLM response" }),
-            /* @__PURE__ */ u3(
-              "textarea",
-              {
-                class: "pipeline-preview",
-                rows: "12",
-                value: editedResponse,
-                onInput: (event) => onEditedResponseChange(event.currentTarget.value)
-              }
-            )
-          ] })
-        ] }),
-        /* @__PURE__ */ u3("div", { class: "hitl-decision-footer", children: [
-          /* @__PURE__ */ u3("div", { class: "proposal-footer-status", children: [
-            /* @__PURE__ */ u3(ProposalStatus, { isValid: proposalIsValid, proposal }),
-            isProposalDirty && /* @__PURE__ */ u3("span", { class: "proposal-status warning", children: "Unsaved edits" })
-          ] }),
-          /* @__PURE__ */ u3("div", { class: "hitl-decision-actions", children: [
-            /* @__PURE__ */ u3(
-              "button",
-              {
-                type: "button",
-                class: "primary compact-button",
-                disabled: isActing || !reviewerName.trim() || !editedResponse.trim(),
-                onClick: approveSelectedNote,
-                children: "Approve"
-              }
-            ),
-            /* @__PURE__ */ u3(
-              "button",
-              {
-                type: "button",
-                class: "danger-button compact-button",
-                disabled: isActing,
-                onClick: rejectSelectedNote,
-                children: "Reject"
-              }
-            )
-          ] })
-        ] })
-      ] })
+    /* @__PURE__ */ u3("div", { class: "header-actions", children: [
+      /* @__PURE__ */ u3(GraphRendererToggle, { onRendererMode, rendererMode }),
+      /* @__PURE__ */ u3("button", { type: "button", class: "compact-button", onClick: onReload, children: "Reload" }),
+      /* @__PURE__ */ u3("div", { class: "graph-stats", children: statsText })
     ] })
   ] });
 }
 
-// src/server/public/app.js
-var GRAPH_LIMIT = 150;
-var EMPTY_GRAPH = { nodes: [], relations: [] };
-var ASK_WELCOME_MESSAGE = "Ask a question using the current graph context.";
-var ASK_MEMORY_STORAGE_KEY = "mindmesh.askMemory";
-var ASK_SESSION_STORAGE_KEY = "mindmesh.askSessionId";
-var WORKSPACE_USER_STORAGE_KEY = "mindmesh.workspaceUserName";
-var HITL_REVIEWER_STORAGE_KEY = "mindmesh.hitlReviewerName";
-var DEFAULT_JOB_DEPTH = 2;
-var INGEST_WELCOME_MESSAGE = "Paste source text to extract nodes and relationships.";
-var INGEST_FILE_ACCEPT = ".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-var MAX_INGEST_FILES = 10;
-var MAX_INGEST_FILE_SIZE_BYTES = 25 * 1024 * 1024;
-var ASK_MEMORY_MAX_MESSAGES = 10;
-var ASK_MEMORY_MAX_MESSAGE_CHARS = 2e3;
-var SUPPORTED_INGEST_FILE_EXTENSIONS = /* @__PURE__ */ new Set(["pdf", "docx", "doc"]);
+// src/server/public/components/graph/graphStyle.js
 var DEFAULT_NODE_COLOR = "#94a3b8";
 var HITL_CONTEXT_NODE_COLOR = "#94a3b8";
 var HITL_CONTEXT_EDGE_COLOR = "#64748b";
@@ -75786,228 +77095,8 @@ var NODE_TYPE_PALETTE = [
 var DEFAULT_NODE_SIZE = 3.2;
 var NODE_LINK_SIZE_STEP = 2.6;
 var NODE_LINK_SIZE_MAX_BONUS = 14.4;
-var NODE_FOCUS_SIZE_DELTA = 3.2;
-var SIGMA_DIMMED_NODE_MIN_SIZE = DEFAULT_NODE_SIZE * 0.72;
-var SIGMA_EDGE_SIZE = 1.4;
-var SIGMA_DIMMED_EDGE_SIZE = 0.6;
-var SIGMA_ARROW_HEAD_SCALE = 2;
 var NEOVIS_EDGE_SIZE = 1.4;
 var HITL_PENDING_EDGE_WIDTH = NEOVIS_EDGE_SIZE * 1.7;
-var NEOVIS_ARROW_SCALE_FACTOR = 0.6;
-var NEOVIS_NODE_FOCUS_SCALE = 1.55;
-var DEFAULT_WORKSPACE_WIDTH = 25;
-var DEFAULT_TOOL_WORKSPACE_WIDTH = 40;
-var MIN_WORKSPACE_WIDTH = 0;
-var MAX_WORKSPACE_WIDTH = 100;
-var PANEL_SNAP_THRESHOLD = 10;
-var GRAPH_RENDERERS = {
-  sigma: "sigma",
-  neovis: "neovis"
-};
-var APP_ROUTES = [
-  { href: "/", label: "Ask/Ingest" },
-  { href: "/hitl", label: "HITL" },
-  { href: "/jobs", label: "Jobs" },
-  { href: "/schema", label: "Schema" }
-];
-var NeoVis = import_neovis.default.NeoVis ?? import_neovis.default.default?.NeoVis ?? import_neovis.default.default ?? import_neovis.default;
-var LARGE_ARROW_HEAD_OPTIONS = {
-  ...DEFAULT_EDGE_ARROW_HEAD_PROGRAM_OPTIONS,
-  lengthToThicknessRatio: DEFAULT_EDGE_ARROW_HEAD_PROGRAM_OPTIONS.lengthToThicknessRatio * SIGMA_ARROW_HEAD_SCALE,
-  widenessToThicknessRatio: DEFAULT_EDGE_ARROW_HEAD_PROGRAM_OPTIONS.widenessToThicknessRatio * SIGMA_ARROW_HEAD_SCALE
-};
-var LargeArrowProgram = createEdgeArrowProgram(LARGE_ARROW_HEAD_OPTIONS);
-var LargeCurvedArrowProgram = createEdgeCurveProgram({
-  arrowHead: LARGE_ARROW_HEAD_OPTIONS
-});
-function truncate(value, length2 = 34) {
-  const text = String(value ?? "");
-  return text.length > length2 ? `${text.slice(0, length2 - 1)}...` : text;
-}
-function hasCopyableLlmText(value) {
-  const text = String(value ?? "").trim();
-  return Boolean(text && !["thinking...", "thinking", "loading...", "loading"].includes(text.toLowerCase()));
-}
-function markdownBlocks(text) {
-  const lines = String(text ?? "").replace(/\r\n/g, "\n").split("\n");
-  const blocks = [];
-  let paragraph = [];
-  let list = null;
-  function flushParagraph() {
-    if (paragraph.length > 0) {
-      blocks.push({ type: "paragraph", lines: paragraph });
-      paragraph = [];
-    }
-  }
-  function flushList() {
-    if (list) {
-      blocks.push(list);
-      list = null;
-    }
-  }
-  for (let index2 = 0; index2 < lines.length; index2 += 1) {
-    const line = lines[index2];
-    const trimmed = line.trim();
-    if (!trimmed) {
-      flushParagraph();
-      flushList();
-      continue;
-    }
-    if (trimmed.startsWith("```")) {
-      flushParagraph();
-      flushList();
-      const codeLines = [];
-      index2 += 1;
-      while (index2 < lines.length && !lines[index2].trim().startsWith("```")) {
-        codeLines.push(lines[index2]);
-        index2 += 1;
-      }
-      blocks.push({ type: "code", text: codeLines.join("\n") });
-      continue;
-    }
-    const heading = /^(#{1,4})\s+(.+)$/.exec(trimmed);
-    if (heading) {
-      flushParagraph();
-      flushList();
-      blocks.push({ type: "heading", level: heading[1].length, text: heading[2] });
-      continue;
-    }
-    const unorderedItem = /^[-*+]\s+(.+)$/.exec(trimmed);
-    const orderedItem = /^\d+[.)]\s+(.+)$/.exec(trimmed);
-    if (unorderedItem || orderedItem) {
-      flushParagraph();
-      const listType = unorderedItem ? "unordered-list" : "ordered-list";
-      if (!list || list.type !== listType) {
-        flushList();
-        list = { type: listType, items: [] };
-      }
-      list.items.push(unorderedItem?.[1] ?? orderedItem[1]);
-      continue;
-    }
-    flushList();
-    paragraph.push(line);
-  }
-  flushParagraph();
-  flushList();
-  return blocks;
-}
-function renderInlineMarkdown(text, keyPrefix) {
-  const value = String(text ?? "");
-  const parts = [];
-  const pattern = /(`[^`\n]+`|\*\*[^*\n]+\*\*)/g;
-  let cursor = 0;
-  let match2 = pattern.exec(value);
-  while (match2) {
-    if (match2.index > cursor) {
-      parts.push(value.slice(cursor, match2.index));
-    }
-    const token2 = match2[0];
-    if (token2.startsWith("`")) {
-      parts.push(/* @__PURE__ */ u3("code", { children: token2.slice(1, -1) }, `${keyPrefix}-code-${match2.index}`));
-    } else {
-      parts.push(/* @__PURE__ */ u3("strong", { children: token2.slice(2, -2) }, `${keyPrefix}-strong-${match2.index}`));
-    }
-    cursor = match2.index + token2.length;
-    match2 = pattern.exec(value);
-  }
-  if (cursor < value.length) {
-    parts.push(value.slice(cursor));
-  }
-  return parts;
-}
-function MarkdownPreview({ className = "", emptyText = "No preview text yet.", text }) {
-  const blocks = markdownBlocks(text);
-  return /* @__PURE__ */ u3("div", { class: `markdown-preview${className ? ` ${className}` : ""}`, children: blocks.length === 0 ? /* @__PURE__ */ u3("p", { class: "muted-copy", children: emptyText }) : blocks.map((block, blockIndex) => {
-    if (block.type === "heading") {
-      const HeadingTag = `h${Math.min(block.level + 2, 6)}`;
-      return /* @__PURE__ */ u3(HeadingTag, { children: renderInlineMarkdown(block.text, `heading-${blockIndex}`) }, `heading-${blockIndex}`);
-    }
-    if (block.type === "code") {
-      return /* @__PURE__ */ u3("pre", { children: /* @__PURE__ */ u3("code", { children: block.text }) }, `code-${blockIndex}`);
-    }
-    if (block.type === "unordered-list" || block.type === "ordered-list") {
-      const ListTag = block.type === "ordered-list" ? "ol" : "ul";
-      return /* @__PURE__ */ u3(ListTag, { children: block.items.map((item, itemIndex) => /* @__PURE__ */ u3("li", { children: renderInlineMarkdown(item, `item-${blockIndex}-${itemIndex}`) }, `item-${blockIndex}-${itemIndex}`)) }, `list-${blockIndex}`);
-    }
-    return /* @__PURE__ */ u3("p", { children: block.lines.map((line, lineIndex) => /* @__PURE__ */ u3("span", { children: [
-      lineIndex > 0 && /* @__PURE__ */ u3("br", {}),
-      renderInlineMarkdown(line, `line-${blockIndex}-${lineIndex}`)
-    ] }, `line-${blockIndex}-${lineIndex}`)) }, `paragraph-${blockIndex}`);
-  }) });
-}
-async function copyTextToClipboard(value) {
-  const text = String(value ?? "");
-  if (!text.trim()) {
-    return false;
-  }
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return true;
-  }
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.setAttribute("readonly", "");
-  textarea.style.position = "fixed";
-  textarea.style.left = "-9999px";
-  document.body.appendChild(textarea);
-  textarea.select();
-  const copied = document.execCommand("copy");
-  document.body.removeChild(textarea);
-  return copied;
-}
-function CopyIcon() {
-  return /* @__PURE__ */ u3("svg", { "aria-hidden": "true", viewBox: "0 0 24 24", focusable: "false", children: [
-    /* @__PURE__ */ u3("rect", { x: "9", y: "9", width: "10", height: "10", rx: "2" }),
-    /* @__PURE__ */ u3("path", { d: "M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" })
-  ] });
-}
-function CopyButton({ className = "", label = "Copy to clipboard", onStatus, text }) {
-  const [copied, setCopied] = d2(false);
-  const timeoutRef = A2(null);
-  const hasText = hasCopyableLlmText(text);
-  y2(() => () => {
-    if (timeoutRef.current) {
-      window.clearTimeout(timeoutRef.current);
-    }
-  }, []);
-  const handleCopy = q2(async () => {
-    try {
-      const didCopy = await copyTextToClipboard(text);
-      if (!didCopy) {
-        onStatus?.("Nothing to copy.");
-        return;
-      }
-      setCopied(true);
-      onStatus?.("Copied to clipboard.");
-      if (timeoutRef.current) {
-        window.clearTimeout(timeoutRef.current);
-      }
-      timeoutRef.current = window.setTimeout(() => setCopied(false), 1400);
-    } catch (error) {
-      onStatus?.(error.message || "Copy failed.");
-    }
-  }, [onStatus, text]);
-  if (!hasText) {
-    return null;
-  }
-  return /* @__PURE__ */ u3(
-    "button",
-    {
-      type: "button",
-      class: `copy-button${copied ? " copied" : ""}${className ? ` ${className}` : ""}`,
-      onClick: handleCopy,
-      title: copied ? "Copied" : label,
-      "aria-label": copied ? "Copied" : label,
-      children: [
-        /* @__PURE__ */ u3(CopyIcon, {}),
-        /* @__PURE__ */ u3("span", { class: "sr-only", children: copied ? "Copied" : label })
-      ]
-    }
-  );
-}
-function toSnakeCase2(value) {
-  return String(value ?? "").trim().replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
-}
 function stableStringHash(value) {
   let hash = 0;
   for (let index2 = 0; index2 < value.length; index2 += 1) {
@@ -76125,25 +77214,6 @@ function selectedEdgeColor(baseColor) {
     hover: GRAPH_SELECTION_COLOR
   };
 }
-function HitlOperationLegend() {
-  const entries2 = [
-    { color: HITL_OPERATION_COLORS.create, label: "Create" },
-    { color: HITL_OPERATION_COLORS.update, label: "Update" },
-    { color: HITL_OPERATION_COLORS.delete, label: "Delete" },
-    { color: HITL_CONTEXT_NODE_COLOR, label: "Context" }
-  ];
-  return /* @__PURE__ */ u3("div", { class: "hitl-operation-legend", "aria-label": "HITL graph colors", children: /* @__PURE__ */ u3("div", { children: entries2.map((entry) => /* @__PURE__ */ u3("span", { class: "hitl-operation-item", children: [
-    /* @__PURE__ */ u3(
-      "span",
-      {
-        class: "hitl-operation-swatch",
-        title: `${entry.label} color`,
-        style: { "--operation-color": entry.color }
-      }
-    ),
-    entry.label
-  ] }, entry.label)) }) });
-}
 function hitlOperationEdgeStyle(relation, hasPendingHitl = false) {
   if (!relation.pendingHitl) {
     return {
@@ -76183,355 +77253,6 @@ function hitlNodeColor(node, fillColor, hasPendingHitl = false) {
     }
   };
 }
-function relationLabel2(relation) {
-  return String(relation ?? "relates_to").replaceAll("_", " ");
-}
-function graphNameFromId2(id2) {
-  return String(id2 ?? "").replace(/^node:/i, "");
-}
-function encodePipelineField2(value) {
-  if (value === void 0 || value === null) {
-    return "";
-  }
-  return String(value).replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\t/g, "\\t").trim();
-}
-function decodePipelineField2(value) {
-  if (value === void 0 || value === null) {
-    return "";
-  }
-  const text = String(value);
-  let decoded = "";
-  for (let index2 = 0; index2 < text.length; index2 += 1) {
-    const char = text[index2];
-    if (char !== "\\" || index2 + 1 >= text.length) {
-      decoded += char;
-      continue;
-    }
-    const escaped = text[index2 + 1];
-    index2 += 1;
-    if (escaped === "n") {
-      decoded += "\n";
-    } else if (escaped === "r") {
-      decoded += "\r";
-    } else if (escaped === "t") {
-      decoded += "	";
-    } else if (escaped === "|") {
-      decoded += "|";
-    } else if (escaped === "\\") {
-      decoded += "\\";
-    } else {
-      decoded += `\\${escaped}`;
-    }
-  }
-  return decoded.trim();
-}
-function displayText(value) {
-  return decodePipelineField2(value);
-}
-function safePipelineField2(value) {
-  return encodePipelineField2(value);
-}
-function pipelineRecordLine2(recordType, fields) {
-  return [recordType, ...fields].map(safePipelineField2).join("|");
-}
-function pipelineNodeLine(recordType, node) {
-  const name = toSnakeCase2(node.name || node.label || graphNameFromId2(node.id));
-  return pipelineRecordLine2(recordType, [
-    name,
-    node.label || displayNameFromIdentifier2(name),
-    node.type || "concept",
-    node.description || "",
-    node.metadata || ""
-  ]);
-}
-function pipelineNodeDeleteLine(node) {
-  return pipelineRecordLine2("NODE_DELETE", [
-    graphNameFromId2(node.name || node.id),
-    node.metadata || ""
-  ]);
-}
-function pipelineRelationLine(recordType, relation) {
-  return pipelineRecordLine2(recordType, [
-    graphNameFromId2(relation.sourceId),
-    graphNameFromId2(relation.targetId),
-    relation.relation || "relates_to",
-    relation.information || "",
-    relation.description || "",
-    relation.metadata || ""
-  ]);
-}
-function pipelineRelationDeleteLine(relation) {
-  return pipelineRecordLine2("RELATION_DELETE", [
-    graphNameFromId2(relation.sourceId),
-    graphNameFromId2(relation.targetId),
-    relation.relation || "relates_to",
-    relation.metadata || ""
-  ]);
-}
-function isPipelineStart2(line) {
-  return ["<start#$#$>", "start#$#$"].includes(String(line ?? "").trim().toLowerCase());
-}
-function isPipelineEnd2(line) {
-  return ["</end#$#$>", "<end#$#$>", "end#$#$"].includes(String(line ?? "").trim().toLowerCase());
-}
-function pipelineLines2(text) {
-  const rawLines = String(text ?? "").split(/\r?\n/);
-  const startIndex = rawLines.findIndex(isPipelineStart2);
-  const endIndex = rawLines.findIndex((line, index2) => index2 > startIndex && isPipelineEnd2(line));
-  const bodyLines = startIndex === -1 ? rawLines : rawLines.slice(startIndex + 1, endIndex === -1 ? void 0 : endIndex);
-  return bodyLines.map((line) => line.trim()).filter(Boolean);
-}
-function pipelineEditorText2(text) {
-  return pipelineLines2(text).join("\n");
-}
-function withPipelineMarkers(lines) {
-  return lines.filter(Boolean).join("\n");
-}
-function pipelineParts2(line) {
-  const raw = String(line ?? "");
-  const parts = [];
-  let current = "";
-  for (let index2 = 0; index2 < raw.length; index2 += 1) {
-    const char = raw[index2];
-    if (char === "\\" && index2 + 1 < raw.length) {
-      current += char + raw[index2 + 1];
-      index2 += 1;
-      continue;
-    }
-    if (char === "|") {
-      parts.push(current.trim());
-      current = "";
-      continue;
-    }
-    current += char;
-  }
-  parts.push(current.trim());
-  return parts.map(decodePipelineField2);
-}
-function isNodeRecord(parts) {
-  return ["NODE", "NODE_CREATE", "NODE_UPDATE"].includes(parts[0]?.toUpperCase());
-}
-function isNodeDeleteRecord(parts) {
-  return parts[0]?.toUpperCase() === "NODE_DELETE";
-}
-function isNodeMutationRecord(parts) {
-  return isNodeRecord(parts) || isNodeDeleteRecord(parts);
-}
-function isRelationRecord(parts) {
-  return ["RELATION", "EDGE", "RELATION_CREATE", "RELATION_UPDATE"].includes(parts[0]?.toUpperCase());
-}
-function isRelationMutationRecord(parts) {
-  return isRelationRecord(parts) || parts[0]?.toUpperCase() === "RELATION_DELETE";
-}
-function normalizedPipelineName(value) {
-  return toSnakeCase2(graphNameFromId2(value));
-}
-function updatePipelineNode(text, node, draft) {
-  const oldName = normalizedPipelineName(node.name || node.id);
-  const newNode = {
-    ...node,
-    ...draft,
-    name: toSnakeCase2(draft.name || draft.label || node.name || graphNameFromId2(node.id))
-  };
-  const lines = pipelineLines2(text);
-  let found = false;
-  const nextLines = lines.map((line) => {
-    const parts = pipelineParts2(line);
-    const recordType = parts[0]?.toUpperCase();
-    if (!isNodeMutationRecord(parts) || normalizedPipelineName(parts[1]) !== oldName) {
-      if (isRelationMutationRecord(parts)) {
-        const sourceName = normalizedPipelineName(parts[1]);
-        const targetName = normalizedPipelineName(parts[2]);
-        if (sourceName === oldName || targetName === oldName) {
-          const nextParts = [...parts];
-          if (sourceName === oldName) {
-            nextParts[1] = newNode.name;
-          }
-          if (targetName === oldName) {
-            nextParts[2] = newNode.name;
-          }
-          return nextParts.map(safePipelineField2).join("|");
-        }
-      }
-      return line;
-    }
-    found = true;
-    if (recordType === "NODE_DELETE") {
-      return pipelineNodeDeleteLine(newNode);
-    }
-    return pipelineNodeLine(recordType === "NODE" ? "NODE_UPDATE" : recordType, newNode);
-  });
-  if (!found) {
-    nextLines.push(pipelineNodeLine("NODE_UPDATE", newNode));
-  }
-  return withPipelineMarkers(nextLines);
-}
-function removePipelineNode(text, node) {
-  const nodeName = normalizedPipelineName(node.name || node.id);
-  const nextLines = pipelineLines2(text).filter((line) => {
-    const parts = pipelineParts2(line);
-    if (isNodeMutationRecord(parts)) {
-      return normalizedPipelineName(parts[1]) !== nodeName;
-    }
-    if (isRelationMutationRecord(parts)) {
-      return normalizedPipelineName(parts[1]) !== nodeName && normalizedPipelineName(parts[2]) !== nodeName;
-    }
-    return true;
-  });
-  return withPipelineMarkers(nextLines);
-}
-function appendPipelineLine(text, nextLine) {
-  const lines = pipelineLines2(text);
-  if (!lines.some((line) => line === nextLine)) {
-    lines.push(nextLine);
-  }
-  return withPipelineMarkers(lines);
-}
-function deletePipelineNode(text, node, { removeOnly = false } = {}) {
-  const cleanedText = removePipelineNode(text, node);
-  return removeOnly ? cleanedText : appendPipelineLine(cleanedText, pipelineNodeDeleteLine(node));
-}
-function relationMatchesPipeline(parts, relation) {
-  return normalizedPipelineName(parts[1]) === normalizedPipelineName(relation.sourceId) && normalizedPipelineName(parts[2]) === normalizedPipelineName(relation.targetId) && toSnakeCase2(parts[3]) === toSnakeCase2(relation.relation);
-}
-function updatePipelineRelation(text, relation, draft) {
-  const nextRelation = {
-    ...relation,
-    ...draft,
-    relation: toSnakeCase2(draft.relation) || "relates_to"
-  };
-  const lines = pipelineLines2(text);
-  let found = false;
-  const nextLines = lines.map((line) => {
-    const parts = pipelineParts2(line);
-    const recordType = parts[0]?.toUpperCase();
-    if (!isRelationMutationRecord(parts) || !relationMatchesPipeline(parts, relation)) {
-      return line;
-    }
-    found = true;
-    if (recordType === "RELATION_DELETE") {
-      return pipelineRelationDeleteLine(nextRelation);
-    }
-    return pipelineRelationLine(recordType === "RELATION" || recordType === "EDGE" ? "RELATION_UPDATE" : recordType, nextRelation);
-  });
-  if (!found) {
-    nextLines.push(pipelineRelationLine("RELATION_UPDATE", nextRelation));
-  }
-  return withPipelineMarkers(nextLines);
-}
-function removePipelineRelation(text, relation) {
-  const nextLines = pipelineLines2(text).filter((line) => {
-    const parts = pipelineParts2(line);
-    return !isRelationMutationRecord(parts) || !relationMatchesPipeline(parts, relation);
-  });
-  return withPipelineMarkers(nextLines);
-}
-function deletePipelineRelation(text, relation, { removeOnly = false } = {}) {
-  const cleanedText = removePipelineRelation(text, relation);
-  return removeOnly ? cleanedText : appendPipelineLine(cleanedText, pipelineRelationDeleteLine(relation));
-}
-function createPipelineNode(text, node) {
-  return appendPipelineLine(text, pipelineNodeLine("NODE_CREATE", node));
-}
-function createPipelineRelation(text, relation) {
-  return appendPipelineLine(text, pipelineRelationLine("RELATION_CREATE", relation));
-}
-function displayNameFromIdentifier2(value) {
-  const text = String(value ?? "").replace(/^node:/i, "").trim();
-  if (!text) {
-    return "Unknown";
-  }
-  return text.split(/[_\s-]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
-}
-function nodeReferenceKey(value) {
-  return String(value ?? "").replace(/^node:/i, "").trim();
-}
-function operationVerb(operation, fallback = "Saved") {
-  const normalized = String(operation ?? "").toLowerCase();
-  if (normalized === "create") {
-    return "Created";
-  }
-  if (normalized === "update") {
-    return "Updated";
-  }
-  if (normalized === "delete") {
-    return "Deleted";
-  }
-  return fallback;
-}
-function formatFileSize(bytes) {
-  const size = Number(bytes) || 0;
-  if (size < 1024) {
-    return `${size} B`;
-  }
-  if (size < 1024 * 1024) {
-    return `${(size / 1024).toFixed(1)} KB`;
-  }
-  return `${(size / 1024 / 1024).toFixed(1)} MB`;
-}
-function fileExtension(file) {
-  return String(file?.name ?? "").split(".").pop()?.toLowerCase() ?? "";
-}
-function fileKey(file) {
-  return `${file?.name ?? ""}:${file?.size ?? 0}:${file?.lastModified ?? 0}`;
-}
-function isSupportedIngestFile(file) {
-  return SUPPORTED_INGEST_FILE_EXTENSIONS.has(fileExtension(file));
-}
-function normalizedSearchText(value) {
-  return String(value ?? "").trim().toLowerCase();
-}
-function nodeSearchValues(node) {
-  return [node?.label, node?.name, node?.id, node?.type, node?.description].map((value) => normalizedSearchText(value)).filter(Boolean);
-}
-function findBestLoadedSearchResult(results, query) {
-  const normalizedQuery = normalizedSearchText(query);
-  if (!normalizedQuery || results.length === 0) {
-    return null;
-  }
-  return results.find((node) => nodeSearchValues(node).some((value) => value === normalizedQuery)) ?? (results.length === 1 ? results[0] : null);
-}
-function clampNumber(value, min2, max2) {
-  return Math.min(Math.max(value, min2), max2);
-}
-function snapWorkspaceWidth(value) {
-  const boundedValue = clampNumber(value, MIN_WORKSPACE_WIDTH, MAX_WORKSPACE_WIDTH);
-  if (boundedValue <= PANEL_SNAP_THRESHOLD) {
-    return MIN_WORKSPACE_WIDTH;
-  }
-  if (boundedValue >= MAX_WORKSPACE_WIDTH - PANEL_SNAP_THRESHOLD) {
-    return MAX_WORKSPACE_WIDTH;
-  }
-  return boundedValue;
-}
-function normalizeGraph(graph) {
-  return {
-    nodes: graph?.nodes ?? [],
-    relations: graph?.relations ?? [],
-    schema: graph?.schema ?? null
-  };
-}
-function graphStatsLabel(graph) {
-  const normalized = normalizeGraph(graph);
-  return `${normalized.nodes.length} nodes / ${normalized.relations.length} relations`;
-}
-function mergeGraph(currentGraph, nextGraph) {
-  const current = normalizeGraph(currentGraph);
-  const next3 = normalizeGraph(nextGraph);
-  const nodeMap = new Map(current.nodes.map((node) => [node.id, node]));
-  const relationMap = new Map(current.relations.map((relation) => [relation.id, relation]));
-  for (const node of next3.nodes) {
-    nodeMap.set(node.id, node);
-  }
-  for (const relation of next3.relations) {
-    relationMap.set(relation.id, relation);
-  }
-  return {
-    nodes: [...nodeMap.values()],
-    relations: [...relationMap.values()],
-    schema: next3.schema ?? current.schema ?? null
-  };
-}
 function createLinkCountByNodeId(nodes, relations) {
   const nodeIds = new Set((nodes ?? []).map((node) => node.id));
   const linkCountByNodeId = new Map((nodes ?? []).map((node) => [node.id, 0]));
@@ -76553,40 +77274,31 @@ function nodeSizeForLinkCount(linkCount, scale2 = 1) {
   const linkBonus = Math.min(Math.sqrt(count) * NODE_LINK_SIZE_STEP, NODE_LINK_SIZE_MAX_BONUS);
   return (DEFAULT_NODE_SIZE + linkBonus) * scale2;
 }
-function replaceNode(graph, node) {
-  const current = normalizeGraph(graph);
-  const exists = current.nodes.some((entry) => entry.id === node.id);
+
+// src/server/public/lib/graphData.js
+function normalizeGraph(graph) {
   return {
-    nodes: exists ? current.nodes.map((entry) => entry.id === node.id ? node : entry) : [node, ...current.nodes],
-    relations: current.relations,
-    schema: current.schema ?? null
+    nodes: graph?.nodes ?? [],
+    relations: graph?.relations ?? [],
+    schema: graph?.schema ?? null
   };
 }
-function replaceRelation(graph, relation) {
-  const current = normalizeGraph(graph);
-  const exists = current.relations.some((entry) => entry.id === relation.id);
-  return {
-    nodes: current.nodes,
-    relations: exists ? current.relations.map((entry) => entry.id === relation.id ? relation : entry) : [relation, ...current.relations],
-    schema: current.schema ?? null
-  };
-}
-function removeNodeFromGraph(graph, nodeId) {
-  const current = normalizeGraph(graph);
-  return {
-    nodes: current.nodes.filter((node) => node.id !== nodeId),
-    relations: current.relations.filter((relation) => relation.sourceId !== nodeId && relation.targetId !== nodeId),
-    schema: current.schema ?? null
-  };
-}
-function removeRelationFromGraph(graph, relationId) {
-  const current = normalizeGraph(graph);
-  return {
-    nodes: current.nodes,
-    relations: current.relations.filter((relation) => relation.id !== relationId),
-    schema: current.schema ?? null
-  };
-}
+
+// src/server/public/components/graph/GraphPreview.js
+var NODE_FOCUS_SIZE_DELTA = 3.2;
+var SIGMA_DIMMED_NODE_MIN_SIZE = DEFAULT_NODE_SIZE * 0.72;
+var SIGMA_EDGE_SIZE = 1.4;
+var SIGMA_DIMMED_EDGE_SIZE = 0.6;
+var SIGMA_ARROW_HEAD_SCALE = 2;
+var LARGE_ARROW_HEAD_OPTIONS = {
+  ...DEFAULT_EDGE_ARROW_HEAD_PROGRAM_OPTIONS,
+  lengthToThicknessRatio: DEFAULT_EDGE_ARROW_HEAD_PROGRAM_OPTIONS.lengthToThicknessRatio * SIGMA_ARROW_HEAD_SCALE,
+  widenessToThicknessRatio: DEFAULT_EDGE_ARROW_HEAD_PROGRAM_OPTIONS.widenessToThicknessRatio * SIGMA_ARROW_HEAD_SCALE
+};
+var LargeArrowProgram = createEdgeArrowProgram(LARGE_ARROW_HEAD_OPTIONS);
+var LargeCurvedArrowProgram = createEdgeCurveProgram({
+  arrowHead: LARGE_ARROW_HEAD_OPTIONS
+});
 function getGraphSize(container) {
   const rect = container.getBoundingClientRect();
   return {
@@ -76720,142 +77432,463 @@ function drawDarkNodeHover(context, data2, settings) {
     context.fillText(label, data2.x + data2.size + 9, data2.y + size / 3);
   }
 }
-async function requestJson(url, options2 = {}) {
-  const isFormData = options2.body instanceof FormData;
-  const headers = {
-    ...isFormData ? {} : { "content-type": "application/json" },
-    ...options2.headers ?? {}
-  };
-  const response = await fetch(url, {
-    ...options2,
-    headers
-  });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(body.error || `Request failed with status ${response.status}.`);
-    error.status = response.status;
-    error.url = url;
-    throw error;
-  }
-  return body;
-}
-function hitlDirectSaveErrorMessage(error) {
-  if (error?.status === 404 && error?.message === "Not found.") {
-    return "Direct HITL save API is not loaded yet. Restart the web server and try again.";
-  }
-  return error.message;
-}
-function isPageRefreshNavigation() {
-  try {
-    const [navigationEntry] = window.performance?.getEntriesByType?.("navigation") ?? [];
-    if (navigationEntry?.type) {
-      return navigationEntry.type === "reload";
-    }
-    return window.performance?.navigation?.type === 1;
-  } catch {
-    return false;
-  }
-}
-function clearAskSessionStorage() {
-  try {
-    const keysToRemove = [];
-    for (let index2 = 0; index2 < window.sessionStorage.length; index2 += 1) {
-      const key = window.sessionStorage.key(index2);
-      if (key === ASK_SESSION_STORAGE_KEY || key?.startsWith(`${ASK_MEMORY_STORAGE_KEY}:`)) {
-        keysToRemove.push(key);
-      }
-    }
-    keysToRemove.forEach((key) => window.sessionStorage.removeItem(key));
-  } catch {
-  }
-}
-function clearAskSessionStorageOnPageRefresh() {
-  if (isPageRefreshNavigation()) {
-    clearAskSessionStorage();
-  }
-}
-function createAskSessionId() {
-  if (window.crypto?.randomUUID) {
-    return window.crypto.randomUUID();
-  }
-  return `ask-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-}
-function getAskSessionId() {
-  try {
-    const currentSessionId = window.sessionStorage.getItem(ASK_SESSION_STORAGE_KEY);
-    if (currentSessionId) {
-      return currentSessionId;
-    }
-    const nextSessionId = createAskSessionId();
-    window.sessionStorage.setItem(ASK_SESSION_STORAGE_KEY, nextSessionId);
-    return nextSessionId;
-  } catch {
-    return createAskSessionId();
-  }
-}
-function readSessionValue(key) {
-  try {
-    return window.sessionStorage?.getItem(key) ?? "";
-  } catch {
-    return "";
-  }
-}
-function writeSessionValue(key, value) {
-  const text = String(value ?? "").trim();
-  try {
-    if (text) {
-      window.sessionStorage?.setItem(key, text);
-    } else {
-      window.sessionStorage?.removeItem(key);
-    }
-  } catch {
-  }
-}
-function askMemoryStorageKey(sessionId) {
-  return `${ASK_MEMORY_STORAGE_KEY}:${sessionId}`;
-}
-function normalizeAskMemoryMessage(message) {
-  const content = String(message?.content ?? message?.text ?? "").replace(/\s+/g, " ").trim();
-  if (!content) {
+function findNodeNearViewportPoint({ graphologyGraph, point, renderer }) {
+  if (!renderer || !graphologyGraph || !Number.isFinite(point?.x) || !Number.isFinite(point?.y)) {
     return null;
   }
-  return {
-    role: message?.role === "assistant" ? "assistant" : "user",
-    content: content.length > ASK_MEMORY_MAX_MESSAGE_CHARS ? `${content.slice(0, ASK_MEMORY_MAX_MESSAGE_CHARS - 3)}...` : content
-  };
-}
-function normalizeAskMemoryMessages(messages) {
-  if (!Array.isArray(messages)) {
-    return [];
+  const displayedLabels = renderer.getNodeDisplayedLabels?.() ?? /* @__PURE__ */ new Set();
+  const labelsCanvas = renderer.getCanvases?.().labels;
+  const labelsContext = labelsCanvas?.getContext?.("2d");
+  const settings = renderer.getSettings?.() ?? {};
+  const labelSize = settings.labelSize ?? 12;
+  const labelWeight = settings.labelWeight ?? "normal";
+  const labelFont = settings.labelFont ?? "Arial";
+  if (labelsContext) {
+    labelsContext.font = `${labelWeight} ${labelSize}px ${labelFont}`;
   }
-  return messages.map(normalizeAskMemoryMessage).filter(Boolean).slice(-ASK_MEMORY_MAX_MESSAGES);
+  let bestNodeId = null;
+  let bestDistance = Infinity;
+  graphologyGraph.forEachNode((nodeId, attributes) => {
+    if (!Number.isFinite(attributes?.x) || !Number.isFinite(attributes?.y)) {
+      return;
+    }
+    const displayData = renderer.getNodeDisplayData(nodeId) ?? attributes;
+    if (displayData.hidden) {
+      return;
+    }
+    const viewportPosition = renderer.graphToViewport({ x: attributes.x, y: attributes.y });
+    const nodeSize = renderer.scaleSize?.(displayData.size ?? attributes.size ?? 8) ?? (displayData.size ?? attributes.size ?? 8);
+    const nodeDistance = Math.hypot(point.x - viewportPosition.x, point.y - viewportPosition.y);
+    if (nodeDistance <= Math.max(nodeSize + 10, 18) && nodeDistance < bestDistance) {
+      bestNodeId = nodeId;
+      bestDistance = nodeDistance;
+    }
+    const label = displayData.label ?? attributes.label;
+    if (!label || !displayedLabels.has(nodeId) && !displayData.highlighted) {
+      return;
+    }
+    const labelText = String(label);
+    const labelWidth = labelsContext?.measureText(labelText).width ?? labelText.length * labelSize * 0.58;
+    const labelLeft = viewportPosition.x + nodeSize + 3;
+    const labelRight = labelLeft + labelWidth + 16;
+    const labelTop = viewportPosition.y - labelSize - 3;
+    const labelBottom = viewportPosition.y + labelSize + 3;
+    const insideLabel = point.x >= labelLeft && point.x <= labelRight && point.y >= labelTop && point.y <= labelBottom;
+    if (insideLabel && nodeDistance < bestDistance) {
+      bestNodeId = nodeId;
+      bestDistance = nodeDistance;
+    }
+  });
+  return bestNodeId;
 }
-function readAskMemory(sessionId) {
-  try {
-    const rawMemory = window.sessionStorage.getItem(askMemoryStorageKey(sessionId));
-    return normalizeAskMemoryMessages(JSON.parse(rawMemory || "[]"));
-  } catch {
-    return [];
+function bindInteractionHandlers({
+  centerCameraOnNode,
+  draggedNodeRef,
+  graphologyGraphRef,
+  hoveredNodeIdRef,
+  onFocus,
+  onOpenItem,
+  pinnedNodeIdRef,
+  renderer,
+  syncHighlightSettings
+}) {
+  renderer.on("enterNode", (event) => {
+    hoveredNodeIdRef.current = event.node;
+    syncHighlightSettings();
+  });
+  renderer.on("leaveNode", () => {
+    hoveredNodeIdRef.current = null;
+    syncHighlightSettings();
+  });
+  let pendingNodeSelection = null;
+  const selectionDelay = renderer.getSetting("doubleClickTimeout") ?? 300;
+  function clearPendingNodeSelection() {
+    if (pendingNodeSelection) {
+      window.clearTimeout(pendingNodeSelection);
+      pendingNodeSelection = null;
+    }
   }
-}
-function writeAskMemory(sessionId, messages) {
-  try {
-    window.sessionStorage.setItem(
-      askMemoryStorageKey(sessionId),
-      JSON.stringify(normalizeAskMemoryMessages(messages))
-    );
-  } catch {
+  function focusNode(nodeId) {
+    pinnedNodeIdRef.current = nodeId;
+    onFocus({ type: "node", id: nodeId });
+    syncHighlightSettings();
   }
+  function selectNode(nodeId) {
+    focusNode(nodeId);
+    window.requestAnimationFrame(() => centerCameraOnNode(nodeId));
+  }
+  function scheduleNodeSelection(nodeId) {
+    clearPendingNodeSelection();
+    pendingNodeSelection = window.setTimeout(() => {
+      pendingNodeSelection = null;
+      selectNode(nodeId);
+    }, selectionDelay);
+  }
+  renderer.on("clickNode", (event) => {
+    event.preventSigmaDefault();
+    scheduleNodeSelection(event.node);
+  });
+  renderer.on("clickEdge", (event) => {
+    clearPendingNodeSelection();
+    pinnedNodeIdRef.current = null;
+    event.preventSigmaDefault();
+    onFocus({ type: "relation", id: event.edge });
+    syncHighlightSettings();
+  });
+  renderer.on("doubleClickNode", (event) => {
+    clearPendingNodeSelection();
+    event.preventSigmaDefault();
+    pinnedNodeIdRef.current = event.node;
+    onOpenItem({ type: "node", id: event.node, skipCamera: true });
+    syncHighlightSettings();
+  });
+  renderer.on("doubleClickEdge", (event) => {
+    clearPendingNodeSelection();
+    pinnedNodeIdRef.current = null;
+    event.preventSigmaDefault();
+    onFocus({ type: "relation", id: event.edge });
+    onOpenItem({ type: "relation", id: event.edge });
+    syncHighlightSettings();
+  });
+  renderer.on("clickStage", (event) => {
+    const graphologyGraph = graphologyGraphRef.current;
+    const nodeId = findNodeNearViewportPoint({
+      graphologyGraph,
+      point: event.event,
+      renderer
+    });
+    if (nodeId) {
+      event.preventSigmaDefault();
+      scheduleNodeSelection(nodeId);
+      return;
+    }
+    clearPendingNodeSelection();
+    pinnedNodeIdRef.current = null;
+    onFocus(null);
+    syncHighlightSettings();
+  });
+  renderer.on("doubleClickStage", (event) => {
+    const graphologyGraph = graphologyGraphRef.current;
+    const nodeId = findNodeNearViewportPoint({
+      graphologyGraph,
+      point: event.event,
+      renderer
+    });
+    if (!nodeId) {
+      return;
+    }
+    clearPendingNodeSelection();
+    event.preventSigmaDefault();
+    pinnedNodeIdRef.current = nodeId;
+    onOpenItem({ type: "node", id: nodeId, skipCamera: true });
+    syncHighlightSettings();
+  });
+  renderer.on("downNode", (event) => {
+    draggedNodeRef.current = event.node;
+    event.preventSigmaDefault();
+    renderer.setSetting("enableCameraPanning", false);
+  });
+  renderer.getMouseCaptor().on("mousemovebody", (event) => {
+    const draggedNode = draggedNodeRef.current;
+    const graphologyGraph = graphologyGraphRef.current;
+    if (!draggedNode || !graphologyGraph) {
+      return;
+    }
+    const position = renderer.viewportToGraph({ x: event.x, y: event.y });
+    graphologyGraph.mergeNodeAttributes(draggedNode, position);
+    renderer.refresh({ partialGraph: { nodes: [draggedNode] }, skipIndexation: true });
+  });
+  renderer.getMouseCaptor().on("mouseup", () => {
+    if (!draggedNodeRef.current) {
+      return;
+    }
+    draggedNodeRef.current = null;
+    renderer.setSetting("enableCameraPanning", true);
+    const graphologyGraph = graphologyGraphRef.current;
+    if (graphologyGraph && graphologyGraph.order > 0) {
+      import_graphology_layout_force.default.assign(graphologyGraph, {
+        maxIterations: 80,
+        settings: {
+          attraction: 8e-4,
+          repulsion: 0.18,
+          gravity: 0.04,
+          inertia: 0.6,
+          maxMove: 12
+        }
+      });
+    }
+    renderer.refresh();
+  });
+  return clearPendingNodeSelection;
 }
-function appendAskMemoryTurn(sessionId, { user, assistant }) {
-  const messages = readAskMemory(sessionId);
-  writeAskMemory(sessionId, [
-    ...messages,
-    { role: "user", content: user },
-    { role: "assistant", content: assistant }
-  ]);
+function GraphPreview({
+  actionPanel,
+  focusedItem,
+  graph,
+  highlightNodeIds,
+  highlightRelationIds,
+  onFocus,
+  onOpenItem,
+  onReload,
+  onRendererMode,
+  rendererMode,
+  searchPanel,
+  statsText
+}) {
+  const containerRef = A2(null);
+  const draggedNodeRef = A2(null);
+  const edgeEndpointByIdRef = A2(/* @__PURE__ */ new Map());
+  const graphologyGraphRef = A2(new Graph({ multi: true, type: "directed" }));
+  const hoveredNodeIdRef = A2(null);
+  const pinnedNodeIdRef = A2(null);
+  const rendererRef = A2(null);
+  const resultNodeIdsRef = A2(/* @__PURE__ */ new Set());
+  const resultRelationIdsRef = A2(/* @__PURE__ */ new Set());
+  const focusedItemRef = A2(null);
+  const normalizedGraph = T2(() => normalizeGraph(graph), [graph]);
+  const centerCameraOnNode = q2((nodeId) => {
+    const renderer = rendererRef.current;
+    const graphologyGraph = graphologyGraphRef.current;
+    if (!renderer || !graphologyGraph?.hasNode(nodeId)) {
+      return false;
+    }
+    renderer.resize();
+    renderer.refresh();
+    const camera = renderer.getCamera();
+    const cameraState = camera.getState();
+    const nodeAttributes = graphologyGraph.getNodeAttributes(nodeId);
+    if (!Number.isFinite(nodeAttributes?.x) || !Number.isFinite(nodeAttributes?.y)) {
+      return false;
+    }
+    const nodeViewportPosition = renderer.graphToViewport({
+      x: nodeAttributes.x,
+      y: nodeAttributes.y
+    });
+    const framedNodePosition = renderer.viewportToFramedGraph(nodeViewportPosition);
+    const targetRatio = camera.getBoundedRatio(Math.min(cameraState.ratio, 0.45));
+    camera.animate({
+      x: framedNodePosition.x,
+      y: framedNodePosition.y,
+      ratio: targetRatio,
+      angle: cameraState.angle
+    }, { duration: 420 });
+    return true;
+  }, []);
+  const syncHighlightSettings = q2(() => {
+    const renderer = rendererRef.current;
+    const graphologyGraph = graphologyGraphRef.current;
+    if (!renderer || !graphologyGraph) {
+      return;
+    }
+    const focused = focusedItemRef.current;
+    const activeNodeId = pinnedNodeIdRef.current || hoveredNodeIdRef.current || (focused?.type === "node" ? focused.id : null);
+    const focusNodeIds = new Set(resultNodeIdsRef.current);
+    const focusRelationIds = new Set(resultRelationIdsRef.current);
+    if (focused?.type === "relation") {
+      focusRelationIds.add(focused.id);
+      const endpoints = edgeEndpointByIdRef.current.get(focused.id);
+      if (endpoints) {
+        focusNodeIds.add(endpoints.sourceId);
+        focusNodeIds.add(endpoints.targetId);
+      }
+    }
+    if (activeNodeId && graphologyGraph.hasNode(activeNodeId)) {
+      focusNodeIds.add(activeNodeId);
+      for (const neighbor of graphologyGraph.neighbors(activeNodeId)) {
+        focusNodeIds.add(neighbor);
+      }
+    }
+    const hasFocus = focusNodeIds.size > 0 || focusRelationIds.size > 0;
+    renderer.setSetting("nodeReducer", (node, data2) => {
+      const isFocused = focusNodeIds.has(node);
+      const baseColor = data2.baseColor || data2.color || DEFAULT_NODE_COLOR;
+      if (!hasFocus) {
+        return data2;
+      }
+      return {
+        ...data2,
+        color: isFocused ? data2.pendingHitl ? baseColor : GRAPH_SELECTION_COLOR : data2.pendingHitl ? baseColor : GRAPH_SELECTION_DIM_NODE_COLOR,
+        size: isFocused ? (data2.size ?? DEFAULT_NODE_SIZE) + NODE_FOCUS_SIZE_DELTA : Math.max((data2.size ?? DEFAULT_NODE_SIZE) - NODE_FOCUS_SIZE_DELTA, SIGMA_DIMMED_NODE_MIN_SIZE),
+        highlighted: isFocused,
+        label: isFocused ? data2.label : ""
+      };
+    });
+    renderer.setSetting("edgeReducer", (edge, data2) => {
+      const endpoints = edgeEndpointByIdRef.current.get(edge);
+      const touchesActiveNode = Boolean(activeNodeId && endpoints && (endpoints.sourceId === activeNodeId || endpoints.targetId === activeNodeId));
+      const isFocused = focusRelationIds.has(edge) || touchesActiveNode;
+      const baseColor = data2.baseColor || data2.color || "#65758a";
+      if (!hasFocus) {
+        return data2;
+      }
+      return {
+        ...data2,
+        color: isFocused ? data2.pendingHitl ? baseColor : GRAPH_SELECTION_COLOR : data2.pendingHitl ? baseColor : GRAPH_SELECTION_DIM_EDGE_COLOR,
+        size: isFocused ? (data2.size ?? SIGMA_EDGE_SIZE) + 1.8 : SIGMA_DIMMED_EDGE_SIZE,
+        labelColor: isFocused ? GRAPH_SELECTION_COLOR : data2.labelColor,
+        label: isFocused ? data2.label : ""
+      };
+    });
+    renderer.refresh();
+  }, []);
+  y2(() => {
+    resultNodeIdsRef.current = new Set(highlightNodeIds);
+    resultRelationIdsRef.current = new Set(highlightRelationIds);
+    syncHighlightSettings();
+  }, [highlightNodeIds, highlightRelationIds, syncHighlightSettings]);
+  y2(() => {
+    focusedItemRef.current = focusedItem;
+    pinnedNodeIdRef.current = focusedItem?.type === "node" ? focusedItem.id : null;
+    if (focusedItem?.type === "node" && !focusedItem.skipCamera) {
+      window.requestAnimationFrame(() => centerCameraOnNode(focusedItem.id));
+    }
+    syncHighlightSettings();
+  }, [centerCameraOnNode, focusedItem, syncHighlightSettings]);
+  y2(() => {
+    const container = containerRef.current;
+    if (!container) {
+      return void 0;
+    }
+    draggedNodeRef.current = null;
+    hoveredNodeIdRef.current = null;
+    if (rendererRef.current) {
+      rendererRef.current.kill();
+      rendererRef.current = null;
+    }
+    container.replaceChildren();
+    graphologyGraphRef.current = new Graph({ multi: true, type: "directed" });
+    edgeEndpointByIdRef.current = /* @__PURE__ */ new Map();
+    if (normalizedGraph.nodes.length === 0) {
+      return void 0;
+    }
+    const { graphologyGraph, edgeEndpointById } = createGraphologyGraph(normalizedGraph, container);
+    graphologyGraphRef.current = graphologyGraph;
+    edgeEndpointByIdRef.current = edgeEndpointById;
+    const renderer = new Sigma(graphologyGraph, container, {
+      allowInvalidContainer: true,
+      autoCenter: true,
+      autoRescale: true,
+      doubleClickZoomingRatio: 1,
+      defaultEdgeColor: "#65758a",
+      defaultEdgeType: "arrow",
+      defaultNodeColor: DEFAULT_NODE_COLOR,
+      defaultDrawNodeHover: drawDarkNodeHover,
+      enableEdgeEvents: true,
+      labelColor: { color: "#edf2f7" },
+      labelDensity: 0.12,
+      labelRenderedSizeThreshold: 3,
+      labelSize: 12,
+      renderEdgeLabels: true,
+      edgeLabelColor: { attribute: "labelColor", color: "#f6ad55" },
+      edgeLabelSize: 14,
+      edgeProgramClasses: {
+        arrow: LargeArrowProgram,
+        curved: LargeCurvedArrowProgram
+      },
+      hideEdgesOnMove: false,
+      hideLabelsOnMove: false
+    });
+    rendererRef.current = renderer;
+    const clearInteractionState = bindInteractionHandlers({
+      centerCameraOnNode,
+      draggedNodeRef,
+      graphologyGraphRef,
+      hoveredNodeIdRef,
+      onFocus,
+      onOpenItem,
+      pinnedNodeIdRef,
+      renderer,
+      syncHighlightSettings
+    });
+    syncHighlightSettings();
+    if (focusedItemRef.current?.type === "node" && !focusedItemRef.current.skipCamera) {
+      window.requestAnimationFrame(() => centerCameraOnNode(focusedItemRef.current.id));
+    }
+    return () => {
+      clearInteractionState();
+      if (rendererRef.current === renderer) {
+        rendererRef.current = null;
+      }
+      renderer.kill();
+    };
+  }, [centerCameraOnNode, normalizedGraph, onFocus, onOpenItem, syncHighlightSettings]);
+  y2(() => {
+    function handleResize() {
+      const renderer = rendererRef.current;
+      if (renderer) {
+        renderer.resize();
+        renderer.refresh();
+      }
+    }
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+  return /* @__PURE__ */ u3("section", { class: "graph-panel", "aria-labelledby": "graph-title", children: [
+    /* @__PURE__ */ u3(
+      GraphPanelHeader,
+      {
+        onReload,
+        onRendererMode,
+        rendererMode,
+        statsText
+      }
+    ),
+    searchPanel,
+    /* @__PURE__ */ u3("div", { class: "graph-stage", children: [
+      /* @__PURE__ */ u3("div", { id: "graph-container", ref: containerRef, role: "img", "aria-label": "Knowledge graph preview" }),
+      /* @__PURE__ */ u3("div", { class: "empty-state", hidden: normalizedGraph.nodes.length > 0, children: [
+        /* @__PURE__ */ u3("h2", { children: "No graph data yet" }),
+        /* @__PURE__ */ u3("p", { children: "Ingest text from the chat panel to populate the preview." })
+      ] }),
+      actionPanel
+    ] })
+  ] });
 }
-clearAskSessionStorageOnPageRefresh();
+
+// src/server/public/components/graph/HitlOperationLegend.js
+function HitlOperationLegend() {
+  const entries2 = [
+    { color: HITL_OPERATION_COLORS.create, label: "Create" },
+    { color: HITL_OPERATION_COLORS.update, label: "Update" },
+    { color: HITL_OPERATION_COLORS.delete, label: "Delete" },
+    { color: HITL_CONTEXT_NODE_COLOR, label: "Context" }
+  ];
+  return /* @__PURE__ */ u3("div", { class: "hitl-operation-legend", "aria-label": "HITL graph colors", children: /* @__PURE__ */ u3("div", { children: entries2.map((entry) => /* @__PURE__ */ u3("span", { class: "hitl-operation-item", children: [
+    /* @__PURE__ */ u3(
+      "span",
+      {
+        class: "hitl-operation-swatch",
+        title: `${entry.label} color`,
+        style: { "--operation-color": entry.color }
+      }
+    ),
+    entry.label
+  ] }, entry.label)) }) });
+}
+
+// src/server/public/components/graph/HitlGraphActionPanel.js
+function HitlGraphActionPanel({ isDraftMode, isDirty, onCreateNode, onCreateRelation }) {
+  return /* @__PURE__ */ u3("div", { class: "hitl-graph-action-panel", children: [
+    /* @__PURE__ */ u3("div", { class: `hitl-mode-banner ${isDraftMode ? "draft" : "direct"}${isDirty ? " dirty" : ""}`, children: [
+      /* @__PURE__ */ u3("strong", { children: isDraftMode ? "Proposal draft mode" : "Direct graph edit mode" }),
+      /* @__PURE__ */ u3("span", { children: isDraftMode ? "Graph edits update the open HITL proposal only." : "Approved graph edits apply directly to the DB." })
+    ] }),
+    /* @__PURE__ */ u3(
+      GraphActionButtons,
+      {
+        onCreateNode,
+        onCreateRelation
+      }
+    ),
+    /* @__PURE__ */ u3(HitlOperationLegend, {})
+  ] });
+}
+
+// src/server/public/components/graph/NeoVisGraphPreview.js
+var import_neovis = __toESM(require_neovis_without_dependencies(), 1);
+var NEOVIS_ARROW_SCALE_FACTOR = 0.6;
+var NEOVIS_NODE_FOCUS_SCALE = 1.55;
+var NeoVis = import_neovis.default.NeoVis ?? import_neovis.default.default?.NeoVis ?? import_neovis.default.default ?? import_neovis.default;
 function neoVisInt(value) {
   return { low: Number(value) || 0, high: 0 };
 }
@@ -77351,477 +78384,6 @@ function syncNeoVisSelection(visualization, graphData, focusedItem, highlightNod
   });
   applyNeoVisSelectionStyles(visualization, graphData, styleNodeVisIds, styleRelationVisIds);
 }
-function findNodeNearViewportPoint({ graphologyGraph, point, renderer }) {
-  if (!renderer || !graphologyGraph || !Number.isFinite(point?.x) || !Number.isFinite(point?.y)) {
-    return null;
-  }
-  const displayedLabels = renderer.getNodeDisplayedLabels?.() ?? /* @__PURE__ */ new Set();
-  const labelsCanvas = renderer.getCanvases?.().labels;
-  const labelsContext = labelsCanvas?.getContext?.("2d");
-  const settings = renderer.getSettings?.() ?? {};
-  const labelSize = settings.labelSize ?? 12;
-  const labelWeight = settings.labelWeight ?? "normal";
-  const labelFont = settings.labelFont ?? "Arial";
-  if (labelsContext) {
-    labelsContext.font = `${labelWeight} ${labelSize}px ${labelFont}`;
-  }
-  let bestNodeId = null;
-  let bestDistance = Infinity;
-  graphologyGraph.forEachNode((nodeId, attributes) => {
-    if (!Number.isFinite(attributes?.x) || !Number.isFinite(attributes?.y)) {
-      return;
-    }
-    const displayData = renderer.getNodeDisplayData(nodeId) ?? attributes;
-    if (displayData.hidden) {
-      return;
-    }
-    const viewportPosition = renderer.graphToViewport({ x: attributes.x, y: attributes.y });
-    const nodeSize = renderer.scaleSize?.(displayData.size ?? attributes.size ?? 8) ?? (displayData.size ?? attributes.size ?? 8);
-    const nodeDistance = Math.hypot(point.x - viewportPosition.x, point.y - viewportPosition.y);
-    if (nodeDistance <= Math.max(nodeSize + 10, 18) && nodeDistance < bestDistance) {
-      bestNodeId = nodeId;
-      bestDistance = nodeDistance;
-    }
-    const label = displayData.label ?? attributes.label;
-    if (!label || !displayedLabels.has(nodeId) && !displayData.highlighted) {
-      return;
-    }
-    const labelText = String(label);
-    const labelWidth = labelsContext?.measureText(labelText).width ?? labelText.length * labelSize * 0.58;
-    const labelLeft = viewportPosition.x + nodeSize + 3;
-    const labelRight = labelLeft + labelWidth + 16;
-    const labelTop = viewportPosition.y - labelSize - 3;
-    const labelBottom = viewportPosition.y + labelSize + 3;
-    const insideLabel = point.x >= labelLeft && point.x <= labelRight && point.y >= labelTop && point.y <= labelBottom;
-    if (insideLabel && nodeDistance < bestDistance) {
-      bestNodeId = nodeId;
-      bestDistance = nodeDistance;
-    }
-  });
-  return bestNodeId;
-}
-function bindInteractionHandlers({
-  centerCameraOnNode,
-  draggedNodeRef,
-  graphologyGraphRef,
-  hoveredNodeIdRef,
-  onFocus,
-  onOpenItem,
-  pinnedNodeIdRef,
-  renderer,
-  syncHighlightSettings
-}) {
-  renderer.on("enterNode", (event) => {
-    hoveredNodeIdRef.current = event.node;
-    syncHighlightSettings();
-  });
-  renderer.on("leaveNode", () => {
-    hoveredNodeIdRef.current = null;
-    syncHighlightSettings();
-  });
-  let pendingNodeSelection = null;
-  const selectionDelay = renderer.getSetting("doubleClickTimeout") ?? 300;
-  function clearPendingNodeSelection() {
-    if (pendingNodeSelection) {
-      window.clearTimeout(pendingNodeSelection);
-      pendingNodeSelection = null;
-    }
-  }
-  function focusNode(nodeId) {
-    pinnedNodeIdRef.current = nodeId;
-    onFocus({ type: "node", id: nodeId });
-    syncHighlightSettings();
-  }
-  function selectNode(nodeId) {
-    focusNode(nodeId);
-    window.requestAnimationFrame(() => centerCameraOnNode(nodeId));
-  }
-  function scheduleNodeSelection(nodeId) {
-    clearPendingNodeSelection();
-    pendingNodeSelection = window.setTimeout(() => {
-      pendingNodeSelection = null;
-      selectNode(nodeId);
-    }, selectionDelay);
-  }
-  renderer.on("clickNode", (event) => {
-    event.preventSigmaDefault();
-    scheduleNodeSelection(event.node);
-  });
-  renderer.on("clickEdge", (event) => {
-    clearPendingNodeSelection();
-    pinnedNodeIdRef.current = null;
-    event.preventSigmaDefault();
-    onFocus({ type: "relation", id: event.edge });
-    syncHighlightSettings();
-  });
-  renderer.on("doubleClickNode", (event) => {
-    clearPendingNodeSelection();
-    event.preventSigmaDefault();
-    pinnedNodeIdRef.current = event.node;
-    onOpenItem({ type: "node", id: event.node, skipCamera: true });
-    syncHighlightSettings();
-  });
-  renderer.on("doubleClickEdge", (event) => {
-    clearPendingNodeSelection();
-    pinnedNodeIdRef.current = null;
-    event.preventSigmaDefault();
-    onFocus({ type: "relation", id: event.edge });
-    onOpenItem({ type: "relation", id: event.edge });
-    syncHighlightSettings();
-  });
-  renderer.on("clickStage", (event) => {
-    const graphologyGraph = graphologyGraphRef.current;
-    const nodeId = findNodeNearViewportPoint({
-      graphologyGraph,
-      point: event.event,
-      renderer
-    });
-    if (nodeId) {
-      event.preventSigmaDefault();
-      scheduleNodeSelection(nodeId);
-      return;
-    }
-    clearPendingNodeSelection();
-    pinnedNodeIdRef.current = null;
-    onFocus(null);
-    syncHighlightSettings();
-  });
-  renderer.on("doubleClickStage", (event) => {
-    const graphologyGraph = graphologyGraphRef.current;
-    const nodeId = findNodeNearViewportPoint({
-      graphologyGraph,
-      point: event.event,
-      renderer
-    });
-    if (!nodeId) {
-      return;
-    }
-    clearPendingNodeSelection();
-    event.preventSigmaDefault();
-    pinnedNodeIdRef.current = nodeId;
-    onOpenItem({ type: "node", id: nodeId, skipCamera: true });
-    syncHighlightSettings();
-  });
-  renderer.on("downNode", (event) => {
-    draggedNodeRef.current = event.node;
-    event.preventSigmaDefault();
-    renderer.setSetting("enableCameraPanning", false);
-  });
-  renderer.getMouseCaptor().on("mousemovebody", (event) => {
-    const draggedNode = draggedNodeRef.current;
-    const graphologyGraph = graphologyGraphRef.current;
-    if (!draggedNode || !graphologyGraph) {
-      return;
-    }
-    const position = renderer.viewportToGraph({ x: event.x, y: event.y });
-    graphologyGraph.mergeNodeAttributes(draggedNode, position);
-    renderer.refresh({ partialGraph: { nodes: [draggedNode] }, skipIndexation: true });
-  });
-  renderer.getMouseCaptor().on("mouseup", () => {
-    if (!draggedNodeRef.current) {
-      return;
-    }
-    draggedNodeRef.current = null;
-    renderer.setSetting("enableCameraPanning", true);
-    const graphologyGraph = graphologyGraphRef.current;
-    if (graphologyGraph && graphologyGraph.order > 0) {
-      import_graphology_layout_force.default.assign(graphologyGraph, {
-        maxIterations: 80,
-        settings: {
-          attraction: 8e-4,
-          repulsion: 0.18,
-          gravity: 0.04,
-          inertia: 0.6,
-          maxMove: 12
-        }
-      });
-    }
-    renderer.refresh();
-  });
-  return clearPendingNodeSelection;
-}
-function GraphRendererToggle({ onRendererMode, rendererMode }) {
-  return /* @__PURE__ */ u3("div", { class: "renderer-toggle", "aria-label": "Graph renderer", role: "group", children: [
-    /* @__PURE__ */ u3(
-      "button",
-      {
-        type: "button",
-        class: rendererMode === GRAPH_RENDERERS.sigma ? "active" : "",
-        onClick: () => onRendererMode(GRAPH_RENDERERS.sigma),
-        children: "Sigma"
-      }
-    ),
-    /* @__PURE__ */ u3(
-      "button",
-      {
-        type: "button",
-        class: rendererMode === GRAPH_RENDERERS.neovis ? "active" : "",
-        onClick: () => onRendererMode(GRAPH_RENDERERS.neovis),
-        children: "NeoVis"
-      }
-    )
-  ] });
-}
-function normalizedRoutePath(pathname = window.location.pathname) {
-  return pathname.replace(/\/+$/, "") || "/";
-}
-function RouteSwitcher() {
-  const currentPath = normalizedRoutePath();
-  const activeRoute = APP_ROUTES.find((route) => route.href === currentPath) ?? APP_ROUTES[0];
-  const renderRouteLinks = () => APP_ROUTES.map((route) => /* @__PURE__ */ u3(
-    "a",
-    {
-      class: `route-switcher-link${route.href === activeRoute.href ? " active" : ""}`,
-      href: route.href,
-      "aria-current": route.href === activeRoute.href ? "page" : void 0,
-      children: route.label
-    },
-    route.href
-  ));
-  return /* @__PURE__ */ u3("nav", { class: "route-switcher", "aria-label": "Workspace navigation", children: [
-    /* @__PURE__ */ u3("div", { class: "route-switcher-links", children: renderRouteLinks() }),
-    /* @__PURE__ */ u3("details", { class: "route-switcher-menu", children: [
-      /* @__PURE__ */ u3("summary", { children: activeRoute.label }),
-      /* @__PURE__ */ u3("div", { children: renderRouteLinks() })
-    ] })
-  ] });
-}
-function GraphPanelHeader({ onReload, onRendererMode, rendererMode, statsText }) {
-  return /* @__PURE__ */ u3("header", { class: "panel-header graph-header", children: [
-    /* @__PURE__ */ u3("div", { children: [
-      /* @__PURE__ */ u3("p", { class: "eyebrow", children: "Knowledge Graph" }),
-      /* @__PURE__ */ u3("h1", { id: "graph-title", children: "Graph preview" })
-    ] }),
-    /* @__PURE__ */ u3("div", { class: "header-actions", children: [
-      /* @__PURE__ */ u3(GraphRendererToggle, { onRendererMode, rendererMode }),
-      /* @__PURE__ */ u3("button", { type: "button", class: "compact-button", onClick: onReload, children: "Reload" }),
-      /* @__PURE__ */ u3("div", { class: "graph-stats", children: statsText })
-    ] })
-  ] });
-}
-function GraphPreview({
-  actionPanel,
-  focusedItem,
-  graph,
-  highlightNodeIds,
-  highlightRelationIds,
-  onFocus,
-  onOpenItem,
-  onReload,
-  onRendererMode,
-  rendererMode,
-  searchPanel,
-  statsText
-}) {
-  const containerRef = A2(null);
-  const draggedNodeRef = A2(null);
-  const edgeEndpointByIdRef = A2(/* @__PURE__ */ new Map());
-  const graphologyGraphRef = A2(new Graph({ multi: true, type: "directed" }));
-  const hoveredNodeIdRef = A2(null);
-  const pinnedNodeIdRef = A2(null);
-  const rendererRef = A2(null);
-  const resultNodeIdsRef = A2(/* @__PURE__ */ new Set());
-  const resultRelationIdsRef = A2(/* @__PURE__ */ new Set());
-  const focusedItemRef = A2(null);
-  const normalizedGraph = T2(() => normalizeGraph(graph), [graph]);
-  const centerCameraOnNode = q2((nodeId) => {
-    const renderer = rendererRef.current;
-    const graphologyGraph = graphologyGraphRef.current;
-    if (!renderer || !graphologyGraph?.hasNode(nodeId)) {
-      return false;
-    }
-    renderer.resize();
-    renderer.refresh();
-    const camera = renderer.getCamera();
-    const cameraState = camera.getState();
-    const nodeAttributes = graphologyGraph.getNodeAttributes(nodeId);
-    if (!Number.isFinite(nodeAttributes?.x) || !Number.isFinite(nodeAttributes?.y)) {
-      return false;
-    }
-    const nodeViewportPosition = renderer.graphToViewport({
-      x: nodeAttributes.x,
-      y: nodeAttributes.y
-    });
-    const framedNodePosition = renderer.viewportToFramedGraph(nodeViewportPosition);
-    const targetRatio = camera.getBoundedRatio(Math.min(cameraState.ratio, 0.45));
-    camera.animate({
-      x: framedNodePosition.x,
-      y: framedNodePosition.y,
-      ratio: targetRatio,
-      angle: cameraState.angle
-    }, { duration: 420 });
-    return true;
-  }, []);
-  const syncHighlightSettings = q2(() => {
-    const renderer = rendererRef.current;
-    const graphologyGraph = graphologyGraphRef.current;
-    if (!renderer || !graphologyGraph) {
-      return;
-    }
-    const focused = focusedItemRef.current;
-    const activeNodeId = pinnedNodeIdRef.current || hoveredNodeIdRef.current || (focused?.type === "node" ? focused.id : null);
-    const focusNodeIds = new Set(resultNodeIdsRef.current);
-    const focusRelationIds = new Set(resultRelationIdsRef.current);
-    if (focused?.type === "relation") {
-      focusRelationIds.add(focused.id);
-      const endpoints = edgeEndpointByIdRef.current.get(focused.id);
-      if (endpoints) {
-        focusNodeIds.add(endpoints.sourceId);
-        focusNodeIds.add(endpoints.targetId);
-      }
-    }
-    if (activeNodeId && graphologyGraph.hasNode(activeNodeId)) {
-      focusNodeIds.add(activeNodeId);
-      for (const neighbor of graphologyGraph.neighbors(activeNodeId)) {
-        focusNodeIds.add(neighbor);
-      }
-    }
-    const hasFocus = focusNodeIds.size > 0 || focusRelationIds.size > 0;
-    renderer.setSetting("nodeReducer", (node, data2) => {
-      const isFocused = focusNodeIds.has(node);
-      const baseColor = data2.baseColor || data2.color || DEFAULT_NODE_COLOR;
-      if (!hasFocus) {
-        return data2;
-      }
-      return {
-        ...data2,
-        color: isFocused ? data2.pendingHitl ? baseColor : GRAPH_SELECTION_COLOR : data2.pendingHitl ? baseColor : GRAPH_SELECTION_DIM_NODE_COLOR,
-        size: isFocused ? (data2.size ?? DEFAULT_NODE_SIZE) + NODE_FOCUS_SIZE_DELTA : Math.max((data2.size ?? DEFAULT_NODE_SIZE) - NODE_FOCUS_SIZE_DELTA, SIGMA_DIMMED_NODE_MIN_SIZE),
-        highlighted: isFocused,
-        label: isFocused ? data2.label : ""
-      };
-    });
-    renderer.setSetting("edgeReducer", (edge, data2) => {
-      const endpoints = edgeEndpointByIdRef.current.get(edge);
-      const touchesActiveNode = Boolean(activeNodeId && endpoints && (endpoints.sourceId === activeNodeId || endpoints.targetId === activeNodeId));
-      const isFocused = focusRelationIds.has(edge) || touchesActiveNode;
-      const baseColor = data2.baseColor || data2.color || "#65758a";
-      if (!hasFocus) {
-        return data2;
-      }
-      return {
-        ...data2,
-        color: isFocused ? data2.pendingHitl ? baseColor : GRAPH_SELECTION_COLOR : data2.pendingHitl ? baseColor : GRAPH_SELECTION_DIM_EDGE_COLOR,
-        size: isFocused ? (data2.size ?? SIGMA_EDGE_SIZE) + 1.8 : SIGMA_DIMMED_EDGE_SIZE,
-        labelColor: isFocused ? GRAPH_SELECTION_COLOR : data2.labelColor,
-        label: isFocused ? data2.label : ""
-      };
-    });
-    renderer.refresh();
-  }, []);
-  y2(() => {
-    resultNodeIdsRef.current = new Set(highlightNodeIds);
-    resultRelationIdsRef.current = new Set(highlightRelationIds);
-    syncHighlightSettings();
-  }, [highlightNodeIds, highlightRelationIds, syncHighlightSettings]);
-  y2(() => {
-    focusedItemRef.current = focusedItem;
-    pinnedNodeIdRef.current = focusedItem?.type === "node" ? focusedItem.id : null;
-    if (focusedItem?.type === "node" && !focusedItem.skipCamera) {
-      window.requestAnimationFrame(() => centerCameraOnNode(focusedItem.id));
-    }
-    syncHighlightSettings();
-  }, [centerCameraOnNode, focusedItem, syncHighlightSettings]);
-  y2(() => {
-    const container = containerRef.current;
-    if (!container) {
-      return void 0;
-    }
-    draggedNodeRef.current = null;
-    hoveredNodeIdRef.current = null;
-    if (rendererRef.current) {
-      rendererRef.current.kill();
-      rendererRef.current = null;
-    }
-    container.replaceChildren();
-    graphologyGraphRef.current = new Graph({ multi: true, type: "directed" });
-    edgeEndpointByIdRef.current = /* @__PURE__ */ new Map();
-    if (normalizedGraph.nodes.length === 0) {
-      return void 0;
-    }
-    const { graphologyGraph, edgeEndpointById } = createGraphologyGraph(normalizedGraph, container);
-    graphologyGraphRef.current = graphologyGraph;
-    edgeEndpointByIdRef.current = edgeEndpointById;
-    const renderer = new Sigma(graphologyGraph, container, {
-      allowInvalidContainer: true,
-      autoCenter: true,
-      autoRescale: true,
-      doubleClickZoomingRatio: 1,
-      defaultEdgeColor: "#65758a",
-      defaultEdgeType: "arrow",
-      defaultNodeColor: DEFAULT_NODE_COLOR,
-      defaultDrawNodeHover: drawDarkNodeHover,
-      enableEdgeEvents: true,
-      labelColor: { color: "#edf2f7" },
-      labelDensity: 0.12,
-      labelRenderedSizeThreshold: 3,
-      labelSize: 12,
-      renderEdgeLabels: true,
-      edgeLabelColor: { attribute: "labelColor", color: "#f6ad55" },
-      edgeLabelSize: 14,
-      edgeProgramClasses: {
-        arrow: LargeArrowProgram,
-        curved: LargeCurvedArrowProgram
-      },
-      hideEdgesOnMove: false,
-      hideLabelsOnMove: false
-    });
-    rendererRef.current = renderer;
-    const clearInteractionState = bindInteractionHandlers({
-      centerCameraOnNode,
-      draggedNodeRef,
-      graphologyGraphRef,
-      hoveredNodeIdRef,
-      onFocus,
-      onOpenItem,
-      pinnedNodeIdRef,
-      renderer,
-      syncHighlightSettings
-    });
-    syncHighlightSettings();
-    if (focusedItemRef.current?.type === "node" && !focusedItemRef.current.skipCamera) {
-      window.requestAnimationFrame(() => centerCameraOnNode(focusedItemRef.current.id));
-    }
-    return () => {
-      clearInteractionState();
-      if (rendererRef.current === renderer) {
-        rendererRef.current = null;
-      }
-      renderer.kill();
-    };
-  }, [centerCameraOnNode, normalizedGraph, onFocus, onOpenItem, syncHighlightSettings]);
-  y2(() => {
-    function handleResize() {
-      const renderer = rendererRef.current;
-      if (renderer) {
-        renderer.resize();
-        renderer.refresh();
-      }
-    }
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, []);
-  return /* @__PURE__ */ u3("section", { class: "graph-panel", "aria-labelledby": "graph-title", children: [
-    /* @__PURE__ */ u3(
-      GraphPanelHeader,
-      {
-        onReload,
-        onRendererMode,
-        rendererMode,
-        statsText
-      }
-    ),
-    searchPanel,
-    /* @__PURE__ */ u3("div", { class: "graph-stage", children: [
-      /* @__PURE__ */ u3("div", { id: "graph-container", ref: containerRef, role: "img", "aria-label": "Knowledge graph preview" }),
-      /* @__PURE__ */ u3("div", { class: "empty-state", hidden: normalizedGraph.nodes.length > 0, children: [
-        /* @__PURE__ */ u3("h2", { children: "No graph data yet" }),
-        /* @__PURE__ */ u3("p", { children: "Ingest text from the chat panel to populate the preview." })
-      ] }),
-      actionPanel
-    ] })
-  ] });
-}
 function NeoVisGraphPreview({
   actionPanel,
   focusedItem,
@@ -78134,773 +78696,8 @@ function NeoVisGraphPreview({
     ] })
   ] });
 }
-function TripletContent({ triplets }) {
-  const list = triplets ?? [];
-  return /* @__PURE__ */ u3("div", { children: [
-    /* @__PURE__ */ u3("div", { children: list.length === 0 ? "Ingest complete, but no relations were extracted." : `Ingest complete. Extracted ${list.length} triplet${list.length === 1 ? "" : "s"}.` }),
-    list.length > 0 && /* @__PURE__ */ u3("div", { class: "triplet-list", children: list.map((triplet, index2) => /* @__PURE__ */ u3("div", { class: "triplet", children: [
-      /* @__PURE__ */ u3("strong", { children: triplet.sourceLabel }),
-      ` ${relationLabel2(triplet.relation)} `,
-      /* @__PURE__ */ u3("strong", { children: triplet.targetLabel }),
-      triplet.information && /* @__PURE__ */ u3("div", { children: triplet.information })
-    ] }, `${triplet.sourceId}-${triplet.targetId}-${triplet.relation}-${index2}`)) })
-  ] });
-}
-function buildIngestMutation(result) {
-  return {
-    status: result.status || "applied",
-    applied: result.applied ?? true,
-    hitlNote: result.hitlNote,
-    nodes: result.nodes ?? [],
-    relations: result.relations ?? [],
-    nodeDeletes: result.nodeDeletes ?? [],
-    relationDeletes: result.relationDeletes ?? [],
-    deletedNodeIds: result.deletedNodeIds ?? [],
-    deletedRelationIds: result.deletedRelationIds ?? [],
-    triplets: result.triplets ?? [],
-    schemaViolations: result.schemaViolations ?? [],
-    schemaWarnings: result.schemaWarnings ?? []
-  };
-}
-function MutationContent({ mutation }) {
-  const nodes = mutation?.nodes ?? [];
-  const relations = mutation?.relations ?? [];
-  const nodeDeletes = mutation?.nodeDeletes ?? [];
-  const relationDeletes = mutation?.relationDeletes ?? [];
-  const triplets = mutation?.triplets ?? [];
-  const schemaViolations = mutation?.schemaViolations ?? [];
-  const totalMutations = nodes.length + relations.length + nodeDeletes.length + relationDeletes.length;
-  const isPendingHitl = mutation?.status === "pending_hitl";
-  const summaryParts = [
-    nodes.length > 0 ? `${nodes.length} node upsert${nodes.length === 1 ? "" : "s"}` : "",
-    relations.length > 0 ? `${relations.length} relation upsert${relations.length === 1 ? "" : "s"}` : "",
-    nodeDeletes.length > 0 ? `${nodeDeletes.length} node delete${nodeDeletes.length === 1 ? "" : "s"}` : "",
-    relationDeletes.length > 0 ? `${relationDeletes.length} relation delete${relationDeletes.length === 1 ? "" : "s"}` : ""
-  ].filter(Boolean);
-  const nodeLabels = /* @__PURE__ */ new Map();
-  for (const node of nodes) {
-    const key = nodeReferenceKey(node.name || node.id);
-    if (key) {
-      nodeLabels.set(key, node.label || displayNameFromIdentifier2(key));
-    }
-  }
-  function nodeLabel2(reference) {
-    const key = nodeReferenceKey(reference);
-    return nodeLabels.get(key) ?? displayNameFromIdentifier2(key);
-  }
-  return /* @__PURE__ */ u3("div", { children: [
-    /* @__PURE__ */ u3("div", { children: isPendingHitl ? totalMutations === 0 ? "Ingest produced no graph mutations. The LLM response was saved for HITL review." : "Ingest proposal saved for HITL review. No graph changes were applied." : totalMutations === 0 ? "Ingest complete. No graph mutations were extracted or applied." : `Ingest complete. Applied ${totalMutations} graph mutation${totalMutations === 1 ? "" : "s"}.` }),
-    summaryParts.length > 0 && /* @__PURE__ */ u3("div", { children: [
-      isPendingHitl ? "Proposed: " : "",
-      summaryParts.join(", "),
-      "."
-    ] }),
-    schemaViolations.length > 0 && /* @__PURE__ */ u3("div", { class: "triplet-list", children: schemaViolations.map((violation, index2) => /* @__PURE__ */ u3("div", { class: "triplet", children: [
-      /* @__PURE__ */ u3("strong", { children: "Schema review required" }),
-      /* @__PURE__ */ u3("div", { children: violation.message || String(violation) })
-    ] }, `schema-violation-${index2}`)) }),
-    totalMutations > 0 && /* @__PURE__ */ u3("div", { class: "triplet-list", children: [
-      nodes.map((node, index2) => /* @__PURE__ */ u3("div", { class: "triplet", children: [
-        /* @__PURE__ */ u3("strong", { children: [
-          operationVerb(node.operation),
-          " node"
-        ] }),
-        `: ${node.label || displayNameFromIdentifier2(node.name || node.id)}`,
-        node.description && /* @__PURE__ */ u3("div", { class: "multiline-text", children: displayText(node.description) }),
-        node.metadata && /* @__PURE__ */ u3("div", { class: "multiline-text", children: displayText(node.metadata) })
-      ] }, `node-${node.id ?? node.name}-${index2}`)),
-      nodeDeletes.map((node, index2) => /* @__PURE__ */ u3("div", { class: "triplet", children: [
-        /* @__PURE__ */ u3("strong", { children: "Deleted node" }),
-        `: ${nodeLabel2(node.name || node.id)}`,
-        node.metadata && /* @__PURE__ */ u3("div", { class: "multiline-text", children: displayText(node.metadata) })
-      ] }, `node-delete-${node.id ?? node.name}-${index2}`)),
-      relations.map((relation, index2) => {
-        const triplet = triplets[index2];
-        const sourceLabel = triplet?.sourceLabel ?? nodeLabel2(relation.sourceId);
-        const targetLabel = triplet?.targetLabel ?? nodeLabel2(relation.targetId);
-        return /* @__PURE__ */ u3("div", { class: "triplet", children: [
-          /* @__PURE__ */ u3("strong", { children: [
-            operationVerb(relation.operation),
-            " relation"
-          ] }),
-          /* @__PURE__ */ u3("div", { children: [
-            /* @__PURE__ */ u3("strong", { children: sourceLabel }),
-            ` ${relationLabel2(relation.relation)} `,
-            /* @__PURE__ */ u3("strong", { children: targetLabel })
-          ] }),
-          relation.information && /* @__PURE__ */ u3("div", { class: "multiline-text", children: displayText(relation.information) }),
-          relation.description && /* @__PURE__ */ u3("div", { class: "multiline-text", children: displayText(relation.description) }),
-          relation.metadata && /* @__PURE__ */ u3("div", { class: "multiline-text", children: displayText(relation.metadata) })
-        ] }, `relation-${relation.id ?? index2}`);
-      }),
-      relationDeletes.map((relation, index2) => /* @__PURE__ */ u3("div", { class: "triplet", children: [
-        /* @__PURE__ */ u3("strong", { children: "Deleted relation" }),
-        /* @__PURE__ */ u3("div", { children: [
-          /* @__PURE__ */ u3("strong", { children: nodeLabel2(relation.sourceId || relation.sourceName) }),
-          ` ${relationLabel2(relation.relation)} `,
-          /* @__PURE__ */ u3("strong", { children: nodeLabel2(relation.targetId || relation.targetName) })
-        ] }),
-        relation.metadata && /* @__PURE__ */ u3("div", { children: relation.metadata })
-      ] }, `relation-delete-${relation.id ?? index2}`))
-    ] })
-  ] });
-}
-function MessageContent({ message }) {
-  if (message.mutation) {
-    return /* @__PURE__ */ u3(MutationContent, { mutation: message.mutation });
-  }
-  if (message.triplets) {
-    return /* @__PURE__ */ u3(TripletContent, { triplets: message.triplets });
-  }
-  if (message.role === "assistant" && typeof message.text === "string" && !message.error) {
-    return /* @__PURE__ */ u3(MarkdownPreview, { text: message.text });
-  }
-  return message.text;
-}
-function MessageList({ className = "", messages }) {
-  const messagesRef = A2(null);
-  const isAskMessages = className.split(/\s+/).includes("ask-messages");
-  y2(() => {
-    const element = messagesRef.current;
-    if (element) {
-      element.scrollTop = element.scrollHeight;
-    }
-  }, [messages]);
-  return /* @__PURE__ */ u3("div", { class: `messages${className ? ` ${className}` : ""}`, ref: messagesRef, "aria-live": "polite", children: messages.map((message) => {
-    const canCopy = isAskMessages && message.role === "assistant" && !message.error && typeof message.text === "string" && message.copyable === true && hasCopyableLlmText(message.text);
-    return /* @__PURE__ */ u3("article", { class: `message ${message.role}${message.error ? " error" : ""}`, children: /* @__PURE__ */ u3("div", { class: "message-stack", children: [
-      /* @__PURE__ */ u3("div", { class: "bubble", children: /* @__PURE__ */ u3(MessageContent, { message }) }),
-      canCopy && /* @__PURE__ */ u3("div", { class: "message-copy-row", children: /* @__PURE__ */ u3(CopyButton, { className: "message-copy-button", text: message.text }) })
-    ] }) }, message.id);
-  }) });
-}
-function PaperclipIcon() {
-  return /* @__PURE__ */ u3("svg", { "aria-hidden": "true", viewBox: "0 0 24 24", focusable: "false", children: /* @__PURE__ */ u3("path", { d: "m21.4 11.05-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.65 5.65l-8.9 8.9a2.2 2.2 0 0 1-3.1-3.1l8.45-8.45" }) });
-}
-function TrashIcon() {
-  return /* @__PURE__ */ u3("svg", { "aria-hidden": "true", viewBox: "0 0 24 24", focusable: "false", children: [
-    /* @__PURE__ */ u3("path", { d: "M3 6h18" }),
-    /* @__PURE__ */ u3("path", { d: "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" }),
-    /* @__PURE__ */ u3("path", { d: "M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" }),
-    /* @__PURE__ */ u3("path", { d: "M10 11v6" }),
-    /* @__PURE__ */ u3("path", { d: "M14 11v6" })
-  ] });
-}
-function Composer({
-  actionLabel,
-  autoGrow = false,
-  className = "",
-  clearAction = null,
-  files = [],
-  fileAccept,
-  inputId,
-  inputRef,
-  disabled = false,
-  isBusy,
-  onFileClear,
-  onFilesSelect,
-  onInput,
-  onSubmit,
-  placeholder,
-  value
-}) {
-  const [isDragActive, setIsDragActive] = d2(false);
-  const dragDepthRef = A2(0);
-  const fileInputRef = A2(null);
-  const textareaRef = A2(null);
-  const canAttachFile = Boolean(onFilesSelect);
-  const hasFiles = files.length > 0;
-  const isDisabled = isBusy || disabled;
-  function resizeTextarea(element = textareaRef.current) {
-    if (!autoGrow || !element) {
-      return;
-    }
-    const maxHeight = 180;
-    const minHeight = 42;
-    element.style.height = "auto";
-    const nextHeight = Math.max(minHeight, Math.min(element.scrollHeight, maxHeight));
-    element.style.height = `${nextHeight}px`;
-    element.style.overflowY = element.scrollHeight > maxHeight ? "auto" : "hidden";
-  }
-  function setTextareaRef(element) {
-    textareaRef.current = element;
-    if (typeof inputRef === "function") {
-      inputRef(element);
-    } else if (inputRef) {
-      inputRef.current = element;
-    }
-    resizeTextarea(element);
-  }
-  y2(() => {
-    resizeTextarea();
-  }, [autoGrow, files.length, value]);
-  function handleSubmit(event) {
-    event.preventDefault();
-    if (isDisabled) {
-      return;
-    }
-    onSubmit();
-  }
-  function handleKeyDown(event) {
-    if (!isDisabled && event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-      event.preventDefault();
-      onSubmit();
-    }
-  }
-  function handleTextareaInput(event) {
-    if (isDisabled) {
-      return;
-    }
-    resizeTextarea(event.currentTarget);
-    onInput(event.currentTarget.value);
-  }
-  function hasDraggedFiles(event) {
-    return Array.from(event.dataTransfer?.types ?? []).includes("Files");
-  }
-  function handleDragEnter(event) {
-    if (!canAttachFile || isDisabled || !hasDraggedFiles(event)) {
-      return;
-    }
-    event.preventDefault();
-    dragDepthRef.current += 1;
-    setIsDragActive(true);
-  }
-  function handleDragOver(event) {
-    if (!canAttachFile || isDisabled || !hasDraggedFiles(event)) {
-      return;
-    }
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "copy";
-    setIsDragActive(true);
-  }
-  function handleDragLeave(event) {
-    if (!canAttachFile) {
-      return;
-    }
-    event.preventDefault();
-    dragDepthRef.current = Math.max(dragDepthRef.current - 1, 0);
-    if (dragDepthRef.current === 0) {
-      setIsDragActive(false);
-    }
-  }
-  function handleDrop(event) {
-    if (!canAttachFile || isDisabled) {
-      return;
-    }
-    event.preventDefault();
-    dragDepthRef.current = 0;
-    setIsDragActive(false);
-    const nextFiles = Array.from(event.dataTransfer?.files ?? []);
-    if (nextFiles.length > 0) {
-      onFilesSelect(nextFiles);
-    }
-  }
-  function handleFileInput(event) {
-    const nextFiles = Array.from(event.currentTarget.files ?? []);
-    if (nextFiles.length > 0) {
-      onFilesSelect(nextFiles);
-    }
-    event.currentTarget.value = "";
-  }
-  return /* @__PURE__ */ u3("form", { class: `composer${className ? ` ${className}` : ""}`, onSubmit: handleSubmit, children: [
-    /* @__PURE__ */ u3("label", { class: "sr-only", htmlFor: inputId, children: "Text input" }),
-    /* @__PURE__ */ u3(
-      "div",
-      {
-        class: `composer-input-shell${isDragActive ? " drag-active" : ""}${hasFiles ? " has-file" : ""}`,
-        onDragEnter: handleDragEnter,
-        onDragLeave: handleDragLeave,
-        onDragOver: handleDragOver,
-        onDrop: handleDrop,
-        children: [
-          hasFiles && /* @__PURE__ */ u3("div", { class: "file-list", children: files.map((file) => /* @__PURE__ */ u3("div", { class: "file-pill", children: [
-            /* @__PURE__ */ u3("span", { children: file.name }),
-            /* @__PURE__ */ u3("small", { children: formatFileSize(file.size) }),
-            /* @__PURE__ */ u3(
-              "button",
-              {
-                "aria-label": `Remove ${file.name}`,
-                class: "file-remove",
-                disabled: isDisabled,
-                onClick: () => onFileClear(file),
-                type: "button",
-                children: "x"
-              }
-            )
-          ] }, fileKey(file))) }),
-          /* @__PURE__ */ u3(
-            "textarea",
-            {
-              id: inputId,
-              rows: autoGrow ? "1" : "5",
-              placeholder,
-              disabled: isDisabled,
-              onInput: handleTextareaInput,
-              onKeyDown: handleKeyDown,
-              ref: setTextareaRef,
-              value
-            }
-          ),
-          isDragActive && /* @__PURE__ */ u3("div", { class: "drop-hint", children: "Drop to attach" })
-        ]
-      }
-    ),
-    /* @__PURE__ */ u3("div", { class: `actions${clearAction || canAttachFile ? " with-tools" : ""}`, children: [
-      clearAction && /* @__PURE__ */ u3(
-        "button",
-        {
-          type: "button",
-          class: "icon-action-button trash-button",
-          "aria-label": clearAction.label,
-          "data-tooltip": clearAction.label,
-          title: clearAction.label,
-          disabled: isDisabled,
-          onClick: clearAction.onClick,
-          children: /* @__PURE__ */ u3(TrashIcon, {})
-        }
-      ),
-      canAttachFile && /* @__PURE__ */ u3(S, { children: [
-        /* @__PURE__ */ u3(
-          "input",
-          {
-            accept: fileAccept,
-            class: "sr-only",
-            disabled: isDisabled,
-            multiple: true,
-            onChange: handleFileInput,
-            ref: fileInputRef,
-            type: "file"
-          }
-        ),
-        /* @__PURE__ */ u3(
-          "button",
-          {
-            "aria-label": "Add PDF, Word Doc",
-            class: "icon-action-button upload-button",
-            "data-tooltip": "Add PDF, Word Doc",
-            disabled: isDisabled,
-            onClick: () => fileInputRef.current?.click(),
-            title: "Add PDF, Word Doc",
-            type: "button",
-            children: /* @__PURE__ */ u3(PaperclipIcon, {})
-          }
-        )
-      ] }),
-      /* @__PURE__ */ u3("button", { type: "submit", class: "primary", disabled: isDisabled, children: actionLabel })
-    ] })
-  ] });
-}
-function SearchPanel({ clientResults, isSearching, onFocusNode, onQuery, onSearch, query, searchMessage, serverResults }) {
-  const panelRef = A2(null);
-  const [isOpen, setIsOpen] = d2(false);
-  const shownResults = serverResults.length > 0 ? serverResults : clientResults;
-  const hasQuery = Boolean(query.trim());
-  const hasResults = shownResults.length > 0;
-  y2(() => {
-    if (!hasQuery) {
-      setIsOpen(false);
-      return void 0;
-    }
-    function handlePointerDown(event) {
-      if (!panelRef.current?.contains(event.target)) {
-        setIsOpen(false);
-      }
-    }
-    document.addEventListener("pointerdown", handlePointerDown, true);
-    return () => document.removeEventListener("pointerdown", handlePointerDown, true);
-  }, [hasQuery]);
-  function handleSubmit(event) {
-    event.preventDefault();
-    setIsOpen(true);
-    onSearch();
-  }
-  return /* @__PURE__ */ u3("form", { class: "search-panel", onSubmit: handleSubmit, ref: panelRef, children: [
-    /* @__PURE__ */ u3("label", { class: "sr-only", htmlFor: "node-search", children: "Search nodes" }),
-    /* @__PURE__ */ u3(
-      "input",
-      {
-        id: "node-search",
-        type: "search",
-        placeholder: "Search loaded nodes, or press Enter for full search...",
-        value: query,
-        onFocus: () => {
-          if (hasQuery) {
-            setIsOpen(true);
-          }
-        },
-        onInput: (event) => {
-          onQuery(event.currentTarget.value);
-          setIsOpen(Boolean(event.currentTarget.value.trim()));
-        },
-        onKeyDown: (event) => {
-          if (event.key === "Escape") {
-            setIsOpen(false);
-          }
-        }
-      }
-    ),
-    /* @__PURE__ */ u3("button", { type: "submit", class: "compact-button", disabled: isSearching, children: isSearching ? "Searching" : "Search" }),
-    searchMessage && /* @__PURE__ */ u3("div", { class: "search-status", role: "status", children: searchMessage }),
-    isOpen && hasQuery && hasResults && /* @__PURE__ */ u3("div", { class: "search-results", children: shownResults.map((node) => /* @__PURE__ */ u3(
-      "button",
-      {
-        type: "button",
-        class: "search-result",
-        onClick: () => {
-          setIsOpen(false);
-          onFocusNode(node);
-        },
-        children: [
-          /* @__PURE__ */ u3("span", { children: node.label }),
-          /* @__PURE__ */ u3("small", { children: node.type })
-        ]
-      },
-      node.id
-    )) })
-  ] });
-}
-function Field({ label, children }) {
-  return /* @__PURE__ */ u3("label", { class: "field", children: [
-    /* @__PURE__ */ u3("span", { children: label }),
-    children
-  ] });
-}
-function createNodeDraft(node) {
-  return {
-    label: node?.label ?? "",
-    name: node?.name ?? "",
-    type: node?.type ?? "concept",
-    description: displayText(node?.description)
-  };
-}
-function createRelationDraft(relation) {
-  return {
-    sourceId: relation?.sourceId ?? "",
-    targetId: relation?.targetId ?? "",
-    relation: relation?.relation ?? "relates_to",
-    information: displayText(relation?.information),
-    description: displayText(relation?.description)
-  };
-}
-function NodeForm({
-  deleteLabel = "Delete",
-  draft: controlledDraft,
-  node,
-  nodeTypes = [],
-  onCancel,
-  onDelete,
-  onDraftChange,
-  onSave,
-  saveLabel = "Save node"
-}) {
-  const isControlled = Boolean(controlledDraft && onDraftChange);
-  const [localDraft, setLocalDraft] = d2(() => createNodeDraft(node));
-  const draft = isControlled ? controlledDraft : localDraft;
-  const setDraft = isControlled ? onDraftChange : setLocalDraft;
-  y2(() => {
-    if (!isControlled) {
-      setLocalDraft(createNodeDraft(node));
-    }
-  }, [isControlled, node]);
-  function updateField(field, value) {
-    setDraft((current) => ({ ...current, [field]: value }));
-  }
-  function handleSubmit(event) {
-    event.preventDefault();
-    onSave({ ...draft, name: draft.name || toSnakeCase2(draft.label) });
-  }
-  return /* @__PURE__ */ u3("form", { class: "edit-form", onSubmit: handleSubmit, children: [
-    /* @__PURE__ */ u3(Field, { label: "Label", children: /* @__PURE__ */ u3("input", { value: draft.label, onInput: (event) => updateField("label", event.currentTarget.value), required: true }) }),
-    /* @__PURE__ */ u3(Field, { label: "Name", children: /* @__PURE__ */ u3("input", { value: draft.name, onInput: (event) => updateField("name", event.currentTarget.value), placeholder: "auto_from_label" }) }),
-    /* @__PURE__ */ u3(Field, { label: "Type", children: [
-      /* @__PURE__ */ u3("datalist", { id: "node-type-options", children: nodeTypes.map((type) => /* @__PURE__ */ u3("option", { value: type, children: type }, type)) }),
-      /* @__PURE__ */ u3("input", { list: "node-type-options", value: draft.type, onInput: (event) => updateField("type", event.currentTarget.value), required: true })
-    ] }),
-    /* @__PURE__ */ u3(Field, { label: "Description", children: /* @__PURE__ */ u3("textarea", { rows: "4", value: draft.description, onInput: (event) => updateField("description", event.currentTarget.value) }) }),
-    /* @__PURE__ */ u3("div", { class: "form-actions", children: [
-      /* @__PURE__ */ u3("button", { type: "submit", class: "primary", children: saveLabel }),
-      onCancel && /* @__PURE__ */ u3("button", { type: "button", onClick: onCancel, children: "Cancel" }),
-      onDelete && /* @__PURE__ */ u3("button", { type: "button", class: "danger-button", onClick: onDelete, children: deleteLabel })
-    ] })
-  ] });
-}
-function RelationForm({
-  deleteLabel = "Delete",
-  draft: controlledDraft,
-  graph,
-  relationshipTypes = [],
-  onCancel,
-  onDelete,
-  onDraftChange,
-  onSave,
-  relation,
-  saveLabel = "Save relation"
-}) {
-  const isControlled = Boolean(controlledDraft && onDraftChange);
-  const [localDraft, setLocalDraft] = d2(() => createRelationDraft(relation));
-  const draft = isControlled ? controlledDraft : localDraft;
-  const setDraft = isControlled ? onDraftChange : setLocalDraft;
-  y2(() => {
-    if (!isControlled) {
-      setLocalDraft(createRelationDraft(relation));
-    }
-  }, [isControlled, relation]);
-  function updateField(field, value) {
-    setDraft((current) => ({ ...current, [field]: value }));
-  }
-  function handleSubmit(event) {
-    event.preventDefault();
-    onSave({ ...draft, relation: toSnakeCase2(draft.relation) || "relates_to" });
-  }
-  return /* @__PURE__ */ u3("form", { class: "edit-form", onSubmit: handleSubmit, children: [
-    /* @__PURE__ */ u3("datalist", { id: "node-id-options", children: graph.nodes.map((node) => /* @__PURE__ */ u3("option", { value: node.id, children: node.label }, node.id)) }),
-    /* @__PURE__ */ u3(Field, { label: "Source node", children: /* @__PURE__ */ u3("input", { list: "node-id-options", value: draft.sourceId, onInput: (event) => updateField("sourceId", event.currentTarget.value), required: true }) }),
-    /* @__PURE__ */ u3(Field, { label: "Target node", children: /* @__PURE__ */ u3("input", { list: "node-id-options", value: draft.targetId, onInput: (event) => updateField("targetId", event.currentTarget.value), required: true }) }),
-    /* @__PURE__ */ u3(Field, { label: "Relation", children: [
-      /* @__PURE__ */ u3("datalist", { id: "relation-type-options", children: relationshipTypes.map((type) => /* @__PURE__ */ u3("option", { value: type, children: type }, type)) }),
-      /* @__PURE__ */ u3("input", { list: "relation-type-options", value: draft.relation, onInput: (event) => updateField("relation", event.currentTarget.value), required: true })
-    ] }),
-    /* @__PURE__ */ u3(Field, { label: "Information", children: /* @__PURE__ */ u3("textarea", { rows: "3", value: draft.information, onInput: (event) => updateField("information", event.currentTarget.value) }) }),
-    /* @__PURE__ */ u3(Field, { label: "Description", children: /* @__PURE__ */ u3("textarea", { rows: "4", value: draft.description, onInput: (event) => updateField("description", event.currentTarget.value) }) }),
-    /* @__PURE__ */ u3("div", { class: "form-actions", children: [
-      /* @__PURE__ */ u3("button", { type: "submit", class: "primary", children: saveLabel }),
-      onCancel && /* @__PURE__ */ u3("button", { type: "button", onClick: onCancel, children: "Cancel" }),
-      onDelete && /* @__PURE__ */ u3("button", { type: "button", class: "danger-button", onClick: onDelete, children: deleteLabel })
-    ] })
-  ] });
-}
-function nodeLabelById(graph, nodeId) {
-  return graph.nodes.find((node) => node.id === nodeId)?.label ?? nodeId;
-}
-function NodeRelationshipList({ graph, nodeId, onSelectItem }) {
-  const relationships = graph.relations.filter((relation) => relation.sourceId === nodeId || relation.targetId === nodeId);
-  return /* @__PURE__ */ u3("section", { class: "relationship-section", children: [
-    /* @__PURE__ */ u3("div", { class: "section-heading", children: [
-      /* @__PURE__ */ u3("h3", { children: "Relationships" }),
-      /* @__PURE__ */ u3("span", { children: relationships.length })
-    ] }),
-    relationships.length === 0 ? /* @__PURE__ */ u3("p", { class: "muted-copy", children: "No loaded relationships for this node." }) : /* @__PURE__ */ u3("div", { class: "relationship-list", children: relationships.map((relation) => {
-      const isOutgoing = relation.sourceId === nodeId;
-      const sourceLabel = nodeLabelById(graph, relation.sourceId);
-      const targetLabel = nodeLabelById(graph, relation.targetId);
-      return /* @__PURE__ */ u3(
-        "button",
-        {
-          type: "button",
-          class: "relationship-row",
-          onClick: () => onSelectItem({ type: "relation", id: relation.id, returnToNodeId: nodeId }),
-          children: [
-            /* @__PURE__ */ u3("span", { class: "direction-badge", children: isOutgoing ? "out" : "in" }),
-            /* @__PURE__ */ u3("span", { children: [
-              /* @__PURE__ */ u3("strong", { children: sourceLabel }),
-              /* @__PURE__ */ u3("small", { children: relationLabel2(relation.relation) }),
-              /* @__PURE__ */ u3("strong", { children: targetLabel })
-            ] })
-          ]
-        },
-        relation.id
-      );
-    }) })
-  ] });
-}
-function DetailPanel({
-  graph,
-  nodeTypes = [],
-  nodeDeleteLabel = "Delete",
-  nodeSaveLabel = "Save node",
-  onDeleteNode,
-  onDeleteRelation,
-  onSaveNode,
-  onSaveRelation,
-  onSelectItem,
-  relationshipTypes = [],
-  relationDeleteLabel = "Delete",
-  relationSaveLabel = "Save relation",
-  selectedItem
-}) {
-  const selectedNode = selectedItem?.type === "node" ? graph.nodes.find((node) => node.id === selectedItem.id) : null;
-  const selectedRelation = selectedItem?.type === "relation" ? graph.relations.find((relation) => relation.id === selectedItem.id) : null;
-  const returnNode = selectedItem?.returnToNodeId ? graph.nodes.find((node) => node.id === selectedItem.returnToNodeId) : null;
-  if (!selectedItem) {
-    return /* @__PURE__ */ u3("div", { class: "placeholder-panel", children: /* @__PURE__ */ u3("p", { children: "Select a node or relation in the graph to inspect and edit it." }) });
-  }
-  if (selectedNode) {
-    return /* @__PURE__ */ u3("div", { class: "detail-panel", children: [
-      /* @__PURE__ */ u3("div", { class: "detail-heading", children: [
-        /* @__PURE__ */ u3("p", { class: "eyebrow", children: "Node" }),
-        /* @__PURE__ */ u3("h3", { children: selectedNode.label }),
-        /* @__PURE__ */ u3("code", { children: selectedNode.id })
-      ] }),
-      selectedNode.metadata && /* @__PURE__ */ u3("div", { class: "detail-kv", children: [
-        /* @__PURE__ */ u3("span", { children: "Metadata" }),
-        /* @__PURE__ */ u3("strong", { class: "multiline-text", children: displayText(selectedNode.metadata) })
-      ] }),
-      /* @__PURE__ */ u3(
-        NodeForm,
-        {
-          deleteLabel: nodeDeleteLabel,
-          node: selectedNode,
-          nodeTypes,
-          onDelete: () => onDeleteNode(selectedNode),
-          onSave: (draft) => onSaveNode(selectedNode.id, draft),
-          saveLabel: nodeSaveLabel
-        }
-      ),
-      /* @__PURE__ */ u3(
-        NodeRelationshipList,
-        {
-          graph,
-          nodeId: selectedNode.id,
-          onSelectItem
-        }
-      )
-    ] });
-  }
-  if (selectedRelation) {
-    return /* @__PURE__ */ u3("div", { class: "detail-panel", children: [
-      /* @__PURE__ */ u3("div", { class: "detail-heading", children: /* @__PURE__ */ u3("div", { class: "detail-title-row", children: [
-        /* @__PURE__ */ u3("div", { children: [
-          /* @__PURE__ */ u3("p", { class: "eyebrow", children: "Relation" }),
-          /* @__PURE__ */ u3("h3", { children: relationLabel2(selectedRelation.relation) }),
-          /* @__PURE__ */ u3("code", { children: selectedRelation.id })
-        ] }),
-        returnNode && /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "button",
-            class: "compact-button",
-            onClick: () => onSelectItem({ type: "node", id: returnNode.id }),
-            children: "Back to node"
-          }
-        )
-      ] }) }),
-      selectedRelation.metadata && /* @__PURE__ */ u3("div", { class: "detail-kv", children: [
-        /* @__PURE__ */ u3("span", { children: "Metadata" }),
-        /* @__PURE__ */ u3("strong", { class: "multiline-text", children: displayText(selectedRelation.metadata) })
-      ] }),
-      /* @__PURE__ */ u3(
-        RelationForm,
-        {
-          deleteLabel: relationDeleteLabel,
-          graph,
-          relation: selectedRelation,
-          relationshipTypes,
-          onCancel: returnNode ? () => onSelectItem({ type: "node", id: returnNode.id }) : void 0,
-          onDelete: () => onDeleteRelation(selectedRelation),
-          onSave: (draft) => onSaveRelation(selectedRelation.id, draft),
-          saveLabel: relationSaveLabel
-        }
-      )
-    ] });
-  }
-  return /* @__PURE__ */ u3("div", { class: "placeholder-panel", children: /* @__PURE__ */ u3("p", { children: "The selected item is not in the current graph view." }) });
-}
-function GraphActionButtons({ onCreateNode, onCreateRelation }) {
-  return /* @__PURE__ */ u3("div", { class: "graph-action-bar", "aria-label": "Create graph items", children: [
-    /* @__PURE__ */ u3("button", { type: "button", class: "primary", onClick: onCreateNode, children: [
-      "\u2295",
-      " Node"
-    ] }),
-    /* @__PURE__ */ u3("button", { type: "button", onClick: onCreateRelation, children: [
-      "\u2194",
-      " Relation"
-    ] })
-  ] });
-}
-function HitlGraphActionPanel({ isDraftMode, isDirty, onCreateNode, onCreateRelation }) {
-  return /* @__PURE__ */ u3("div", { class: "hitl-graph-action-panel", children: [
-    /* @__PURE__ */ u3("div", { class: `hitl-mode-banner ${isDraftMode ? "draft" : "direct"}${isDirty ? " dirty" : ""}`, children: [
-      /* @__PURE__ */ u3("strong", { children: isDraftMode ? "Proposal draft mode" : "Direct graph edit mode" }),
-      /* @__PURE__ */ u3("span", { children: isDraftMode ? "Graph edits update the open HITL proposal only." : "Approved graph edits apply directly to the DB." })
-    ] }),
-    /* @__PURE__ */ u3(
-      GraphActionButtons,
-      {
-        onCreateNode,
-        onCreateRelation
-      }
-    ),
-    /* @__PURE__ */ u3(HitlOperationLegend, {})
-  ] });
-}
-function EntityModal({ children, onClose, title }) {
-  y2(() => {
-    function handleKeyDown(event) {
-      if (event.key === "Escape") {
-        onClose();
-      }
-    }
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
-  return /* @__PURE__ */ u3("div", { class: "modal-backdrop", role: "presentation", onMouseDown: onClose, children: /* @__PURE__ */ u3(
-    "section",
-    {
-      class: "modal-panel",
-      role: "dialog",
-      "aria-modal": "true",
-      "aria-labelledby": "modal-title",
-      onMouseDown: (event) => event.stopPropagation(),
-      children: [
-        /* @__PURE__ */ u3("header", { class: "modal-header", children: [
-          /* @__PURE__ */ u3("h3", { id: "modal-title", children: title }),
-          /* @__PURE__ */ u3("button", { type: "button", class: "icon-button", "aria-label": "Close modal", onClick: onClose, children: "x" })
-        ] }),
-        children
-      ]
-    }
-  ) });
-}
-function RequiredNameModal({
-  eyebrow = "Workspace access",
-  fieldLabel = "Name",
-  helperText = "Ask and Ingest unlock after this step. The name is kept only for this page session.",
-  initialName = "",
-  onSubmit,
-  placeholder = "Enter your name to continue",
-  title = "Enter your name"
-}) {
-  const [draftName, setDraftName] = d2(initialName);
-  const cleanName = draftName.trim();
-  function handleSubmit(event) {
-    event.preventDefault();
-    if (cleanName) {
-      onSubmit(cleanName);
-    }
-  }
-  return /* @__PURE__ */ u3("div", { class: "modal-backdrop locked-modal-backdrop", role: "presentation", children: /* @__PURE__ */ u3(
-    "section",
-    {
-      class: "modal-panel name-modal",
-      role: "dialog",
-      "aria-modal": "true",
-      "aria-labelledby": "name-modal-title",
-      children: [
-        /* @__PURE__ */ u3("header", { class: "modal-header", children: /* @__PURE__ */ u3("div", { children: [
-          /* @__PURE__ */ u3("p", { class: "eyebrow", children: eyebrow }),
-          /* @__PURE__ */ u3("h3", { id: "name-modal-title", children: title })
-        ] }) }),
-        /* @__PURE__ */ u3("form", { class: "edit-form", onSubmit: handleSubmit, children: [
-          /* @__PURE__ */ u3("label", { class: "field", children: [
-            /* @__PURE__ */ u3("span", { children: fieldLabel }),
-            /* @__PURE__ */ u3(
-              "input",
-              {
-                autoFocus: true,
-                type: "text",
-                placeholder,
-                value: draftName,
-                onInput: (event) => setDraftName(event.currentTarget.value)
-              }
-            )
-          ] }),
-          /* @__PURE__ */ u3("p", { class: "muted-copy", children: helperText }),
-          /* @__PURE__ */ u3("button", { type: "submit", class: "primary", disabled: !cleanName, children: "Continue" })
-        ] })
-      ]
-    }
-  ) });
-}
+
+// src/server/public/components/jobs/JobsPanel.js
 function jobTitle(jobType) {
   return jobType === "scanner" ? "Graph Scanner" : "Knowledge Nugget";
 }
@@ -78985,66 +78782,8 @@ function JobsPanel({
     ] })
   ] });
 }
-function cloneJson(value) {
-  return JSON.parse(JSON.stringify(value ?? {}));
-}
-function normalizeSchemaEntries(entries2, { includeReason = false } = {}) {
-  const merged = /* @__PURE__ */ new Map();
-  for (const entry of Array.isArray(entries2) ? entries2 : []) {
-    const name = toSnakeCase2(entry?.name);
-    if (!name) {
-      continue;
-    }
-    const existing = merged.get(name);
-    merged.set(name, {
-      name,
-      description: String(entry?.description ?? existing?.description ?? "").trim(),
-      ...includeReason ? { reason: String(entry?.reason ?? existing?.reason ?? "").trim() } : {}
-    });
-  }
-  return [...merged.values()].sort((left, right) => left.name.localeCompare(right.name));
-}
-function normalizeSchemaDraft(schema) {
-  const nextSchema = {
-    ...cloneJson(schema),
-    nodeTypes: normalizeSchemaEntries(schema?.nodeTypes),
-    relationshipTypes: normalizeSchemaEntries(schema?.relationshipTypes)
-  };
-  delete nextSchema.path;
-  delete nextSchema.fallbacks;
-  delete nextSchema.suggestions;
-  return nextSchema;
-}
-function formatSchemaJson(schema) {
-  return `${JSON.stringify(normalizeSchemaDraft(schema), null, "	")}
-`;
-}
-function updateSchemaEntries(draft, key, updater) {
-  return {
-    ...draft,
-    [key]: updater(Array.isArray(draft?.[key]) ? draft[key] : [])
-  };
-}
-function SchemaPropertySummary({ schema }) {
-  const nodeRequired = schema?.nodeProperties?.required ?? [];
-  const nodeOptional = schema?.nodeProperties?.optional ?? [];
-  const relationRequired = schema?.relationshipProperties?.required ?? [];
-  const relationOptional = schema?.relationshipProperties?.optional ?? [];
-  return /* @__PURE__ */ u3("section", { class: "schema-property-summary", "aria-label": "Schema property summary", children: [
-    /* @__PURE__ */ u3("div", { children: [
-      /* @__PURE__ */ u3("span", { children: "Version" }),
-      /* @__PURE__ */ u3("strong", { children: schema?.version ?? "n/a" })
-    ] }),
-    /* @__PURE__ */ u3("div", { children: [
-      /* @__PURE__ */ u3("span", { children: "Node properties" }),
-      /* @__PURE__ */ u3("strong", { children: [...nodeRequired, ...nodeOptional].join(", ") || "None" })
-    ] }),
-    /* @__PURE__ */ u3("div", { children: [
-      /* @__PURE__ */ u3("span", { children: "Relation properties" }),
-      /* @__PURE__ */ u3("strong", { children: [...relationRequired, ...relationOptional].join(", ") || "None" })
-    ] })
-  ] });
-}
+
+// src/server/public/components/schema/SchemaEntryList.js
 function SchemaEntryList({ entries: entries2, onEntriesChange, title }) {
   function updateEntry(index2, field, value) {
     onEntriesChange(entries2.map((entry, entryIndex) => entryIndex === index2 ? { ...entry, [field]: value } : entry));
@@ -79099,6 +78838,91 @@ function SchemaEntryList({ entries: entries2, onEntriesChange, title }) {
       )
     ] })
   ] });
+}
+
+// src/server/public/components/schema/SchemaPropertySummary.js
+function SchemaPropertySummary({ schema }) {
+  const nodeRequired = schema?.nodeProperties?.required ?? [];
+  const nodeOptional = schema?.nodeProperties?.optional ?? [];
+  const relationRequired = schema?.relationshipProperties?.required ?? [];
+  const relationOptional = schema?.relationshipProperties?.optional ?? [];
+  return /* @__PURE__ */ u3("section", { class: "schema-property-summary", "aria-label": "Schema property summary", children: [
+    /* @__PURE__ */ u3("div", { children: [
+      /* @__PURE__ */ u3("span", { children: "Version" }),
+      /* @__PURE__ */ u3("strong", { children: schema?.version ?? "n/a" })
+    ] }),
+    /* @__PURE__ */ u3("div", { children: [
+      /* @__PURE__ */ u3("span", { children: "Node properties" }),
+      /* @__PURE__ */ u3("strong", { children: [...nodeRequired, ...nodeOptional].join(", ") || "None" })
+    ] }),
+    /* @__PURE__ */ u3("div", { children: [
+      /* @__PURE__ */ u3("span", { children: "Relation properties" }),
+      /* @__PURE__ */ u3("strong", { children: [...relationRequired, ...relationOptional].join(", ") || "None" })
+    ] })
+  ] });
+}
+
+// src/server/public/lib/api.js
+async function requestJson(url, options2 = {}) {
+  const isFormData = options2.body instanceof FormData;
+  const headers = {
+    ...isFormData ? {} : { "content-type": "application/json" },
+    ...options2.headers ?? {}
+  };
+  const response = await fetch(url, {
+    ...options2,
+    headers
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(body.error || `Request failed with status ${response.status}.`);
+    error.status = response.status;
+    error.url = url;
+    throw error;
+  }
+  return body;
+}
+
+// src/server/public/components/schema/SchemaPanel.js
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value ?? {}));
+}
+function normalizeSchemaEntries(entries2, { includeReason = false } = {}) {
+  const merged = /* @__PURE__ */ new Map();
+  for (const entry of Array.isArray(entries2) ? entries2 : []) {
+    const name = toSnakeCase2(entry?.name);
+    if (!name) {
+      continue;
+    }
+    const existing = merged.get(name);
+    merged.set(name, {
+      name,
+      description: String(entry?.description ?? existing?.description ?? "").trim(),
+      ...includeReason ? { reason: String(entry?.reason ?? existing?.reason ?? "").trim() } : {}
+    });
+  }
+  return [...merged.values()].sort((left, right) => left.name.localeCompare(right.name));
+}
+function normalizeSchemaDraft(schema) {
+  const nextSchema = {
+    ...cloneJson(schema),
+    nodeTypes: normalizeSchemaEntries(schema?.nodeTypes),
+    relationshipTypes: normalizeSchemaEntries(schema?.relationshipTypes)
+  };
+  delete nextSchema.path;
+  delete nextSchema.fallbacks;
+  delete nextSchema.suggestions;
+  return nextSchema;
+}
+function formatSchemaJson(schema) {
+  return `${JSON.stringify(normalizeSchemaDraft(schema), null, "	")}
+`;
+}
+function updateSchemaEntries(draft, key, updater) {
+  return {
+    ...draft,
+    [key]: updater(Array.isArray(draft?.[key]) ? draft[key] : [])
+  };
 }
 function SchemaPanel() {
   const [activeTab, setActiveTab] = d2("types");
@@ -79271,170 +79095,460 @@ function SchemaPanel() {
     ] })
   ] });
 }
-function ChatPanel({
-  activeTab,
-  askMessages,
-  askText,
-  includeUnverifiedKnowledge,
-  ingestFiles,
-  ingestMessages,
-  ingestText,
-  inputRef,
-  isBusy,
-  onClearIngest,
-  onIngestFileClear,
-  onIngestFiles,
-  onIngestText,
-  onAsk,
-  onAskText,
-  onIncludeUnverifiedKnowledgeChange,
-  onIngest,
-  onTab,
-  statusMessage,
-  userName,
-  onChangeUserName,
-  workspaceLocked = false
-}) {
-  return /* @__PURE__ */ u3("aside", { class: "chat-panel", "aria-label": "Ask and ingest workspace", children: [
-    /* @__PURE__ */ u3("div", { class: "workspace-identity", children: [
-      /* @__PURE__ */ u3("div", { class: "workspace-identity-main", children: [
-        /* @__PURE__ */ u3("span", { children: "Workspace user" }),
-        /* @__PURE__ */ u3("strong", { children: userName || "Name required" })
-      ] }),
-      /* @__PURE__ */ u3("button", { type: "button", class: "identity-change-button", onClick: onChangeUserName, children: "Change" }),
-      /* @__PURE__ */ u3(RouteSwitcher, {})
-    ] }),
-    /* @__PURE__ */ u3("div", { class: "tabs", role: "tablist", "aria-label": "Workspace views", children: ["ask", "ingest"].map((tab) => /* @__PURE__ */ u3(
-      "button",
-      {
-        type: "button",
-        class: activeTab === tab ? "active" : "",
-        onClick: () => onTab(tab),
-        children: tab
-      },
-      tab
-    )) }),
-    statusMessage && /* @__PURE__ */ u3("div", { class: "status-line", children: statusMessage }),
-    activeTab === "ask" && /* @__PURE__ */ u3(S, { children: [
-      /* @__PURE__ */ u3(MessageList, { className: "ask-messages", messages: askMessages }),
-      /* @__PURE__ */ u3(
-        Composer,
-        {
-          actionLabel: "Ask",
-          autoGrow: true,
-          className: "ask-composer",
-          disabled: workspaceLocked,
-          inputId: "ask-input",
-          inputRef,
-          isBusy,
-          onInput: onAskText,
-          onSubmit: onAsk,
-          placeholder: "Ask a question about the graph...",
-          value: askText
-        }
-      ),
-      /* @__PURE__ */ u3("label", { class: "ask-unverified-option", children: [
-        /* @__PURE__ */ u3(
-          "input",
-          {
-            type: "checkbox",
-            checked: includeUnverifiedKnowledge,
-            disabled: isBusy || workspaceLocked,
-            onChange: (event) => onIncludeUnverifiedKnowledgeChange(event.currentTarget.checked)
-          }
-        ),
-        /* @__PURE__ */ u3("span", { children: "Include unapproved HITL information?" })
-      ] })
-    ] }),
-    activeTab === "ingest" && /* @__PURE__ */ u3(S, { children: [
-      /* @__PURE__ */ u3(MessageList, { className: "ingest-messages", messages: ingestMessages }),
-      /* @__PURE__ */ u3(
-        Composer,
-        {
-          actionLabel: "Ingest",
-          autoGrow: true,
-          className: "ingest-composer",
-          clearAction: { label: "Clear ingest chat", onClick: onClearIngest },
-          disabled: workspaceLocked,
-          files: ingestFiles,
-          fileAccept: INGEST_FILE_ACCEPT,
-          inputId: "ingest-input",
-          inputRef,
-          isBusy,
-          onFileClear: onIngestFileClear,
-          onFilesSelect: onIngestFiles,
-          onInput: onIngestText,
-          onSubmit: onIngest,
-          placeholder: "Paste source text to extract nodes and relationships...",
-          value: ingestText
-        }
-      )
-    ] })
-  ] });
+
+// src/server/public/app.js
+var GRAPH_LIMIT = 150;
+var EMPTY_GRAPH = { nodes: [], relations: [] };
+var ASK_WELCOME_MESSAGE = "Ask a question using the current graph context.";
+var ASK_MEMORY_STORAGE_KEY = "mindmesh.askMemory";
+var ASK_SESSION_STORAGE_KEY = "mindmesh.askSessionId";
+var WORKSPACE_USER_STORAGE_KEY = "mindmesh.workspaceUserName";
+var HITL_REVIEWER_STORAGE_KEY = "mindmesh.hitlReviewerName";
+var DEFAULT_JOB_DEPTH = 2;
+var INGEST_WELCOME_MESSAGE = "Paste source text to extract nodes and relationships.";
+var MAX_INGEST_FILES = 10;
+var MAX_INGEST_FILE_SIZE_BYTES = 25 * 1024 * 1024;
+var ASK_MEMORY_MAX_MESSAGES = 10;
+var ASK_MEMORY_MAX_MESSAGE_CHARS = 2e3;
+var SUPPORTED_INGEST_FILE_EXTENSIONS = /* @__PURE__ */ new Set(["pdf", "docx", "doc"]);
+var DEFAULT_WORKSPACE_WIDTH = 25;
+var DEFAULT_TOOL_WORKSPACE_WIDTH = 40;
+var MIN_WORKSPACE_WIDTH = 0;
+var MAX_WORKSPACE_WIDTH = 100;
+var PANEL_SNAP_THRESHOLD = 10;
+function graphNameFromId2(id2) {
+  return String(id2 ?? "").replace(/^node:/i, "");
 }
-function WorkspaceDivider({
-  handleClick,
-  maxWidth,
-  minWidth,
-  onCloseGraph,
-  onCloseWorkspace,
-  onDoubleClick,
-  onKeyDown,
-  onPointerDown,
-  workspaceLabel = "Ask/Ingest",
-  workspaceWidth
-}) {
-  return /* @__PURE__ */ u3(
-    "div",
-    {
-      "aria-label": `Resize ${workspaceLabel} panel`,
-      "aria-orientation": "vertical",
-      "aria-valuemax": maxWidth,
-      "aria-valuemin": minWidth,
-      "aria-valuenow": Math.round(workspaceWidth),
-      class: "workspace-resize-handle",
-      onClick: handleClick,
-      onDblClick: onDoubleClick,
-      onKeyDown,
-      onPointerDown,
-      role: "separator",
-      tabIndex: 0,
-      children: /* @__PURE__ */ u3("div", { class: "workspace-resize-actions", children: [
-        /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "button",
-            class: "workspace-resize-action",
-            "aria-label": "Close graph panel",
-            title: "Close graph panel",
-            onClick: (event) => {
-              event.stopPropagation();
-              onCloseGraph();
-            },
-            onDblClick: onDoubleClick,
-            onPointerDown: (event) => event.stopPropagation(),
-            children: "\u25C0"
-          }
-        ),
-        /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "button",
-            class: "workspace-resize-action",
-            "aria-label": `Close ${workspaceLabel} panel`,
-            title: `Close ${workspaceLabel} panel`,
-            onClick: (event) => {
-              event.stopPropagation();
-              onCloseWorkspace();
-            },
-            onDblClick: onDoubleClick,
-            onPointerDown: (event) => event.stopPropagation(),
-            children: "\u25B6"
-          }
-        )
-      ] })
+function encodePipelineField2(value) {
+  if (value === void 0 || value === null) {
+    return "";
+  }
+  return String(value).replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\t/g, "\\t").trim();
+}
+function safePipelineField2(value) {
+  return encodePipelineField2(value);
+}
+function pipelineRecordLine2(recordType, fields) {
+  return [recordType, ...fields].map(safePipelineField2).join("|");
+}
+function pipelineNodeLine(recordType, node) {
+  const name = toSnakeCase2(node.name || node.label || graphNameFromId2(node.id));
+  return pipelineRecordLine2(recordType, [
+    name,
+    node.label || displayNameFromIdentifier2(name),
+    node.type || "concept",
+    node.description || "",
+    node.metadata || ""
+  ]);
+}
+function pipelineNodeDeleteLine(node) {
+  return pipelineRecordLine2("NODE_DELETE", [
+    graphNameFromId2(node.name || node.id),
+    node.metadata || ""
+  ]);
+}
+function pipelineRelationLine(recordType, relation) {
+  return pipelineRecordLine2(recordType, [
+    graphNameFromId2(relation.sourceId),
+    graphNameFromId2(relation.targetId),
+    relation.relation || "relates_to",
+    relation.information || "",
+    relation.description || "",
+    relation.metadata || ""
+  ]);
+}
+function pipelineRelationDeleteLine(relation) {
+  return pipelineRecordLine2("RELATION_DELETE", [
+    graphNameFromId2(relation.sourceId),
+    graphNameFromId2(relation.targetId),
+    relation.relation || "relates_to",
+    relation.metadata || ""
+  ]);
+}
+function isPipelineStart2(line) {
+  return ["<start#$#$>", "start#$#$"].includes(String(line ?? "").trim().toLowerCase());
+}
+function isPipelineEnd2(line) {
+  return ["</end#$#$>", "<end#$#$>", "end#$#$"].includes(String(line ?? "").trim().toLowerCase());
+}
+function pipelineLines2(text) {
+  const rawLines = String(text ?? "").split(/\r?\n/);
+  const startIndex = rawLines.findIndex(isPipelineStart2);
+  const endIndex = rawLines.findIndex((line, index2) => index2 > startIndex && isPipelineEnd2(line));
+  const bodyLines = startIndex === -1 ? rawLines : rawLines.slice(startIndex + 1, endIndex === -1 ? void 0 : endIndex);
+  return bodyLines.map((line) => line.trim()).filter(Boolean);
+}
+function pipelineEditorText2(text) {
+  return pipelineLines2(text).join("\n");
+}
+function withPipelineMarkers(lines) {
+  return lines.filter(Boolean).join("\n");
+}
+function pipelineParts2(line) {
+  const raw = String(line ?? "");
+  const parts = [];
+  let current = "";
+  for (let index2 = 0; index2 < raw.length; index2 += 1) {
+    const char = raw[index2];
+    if (char === "\\" && index2 + 1 < raw.length) {
+      current += char + raw[index2 + 1];
+      index2 += 1;
+      continue;
     }
-  );
+    if (char === "|") {
+      parts.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  parts.push(current.trim());
+  return parts.map(decodePipelineField2);
+}
+function isNodeRecord(parts) {
+  return ["NODE", "NODE_CREATE", "NODE_UPDATE"].includes(parts[0]?.toUpperCase());
+}
+function isNodeDeleteRecord(parts) {
+  return parts[0]?.toUpperCase() === "NODE_DELETE";
+}
+function isNodeMutationRecord(parts) {
+  return isNodeRecord(parts) || isNodeDeleteRecord(parts);
+}
+function isRelationRecord(parts) {
+  return ["RELATION", "EDGE", "RELATION_CREATE", "RELATION_UPDATE"].includes(parts[0]?.toUpperCase());
+}
+function isRelationMutationRecord(parts) {
+  return isRelationRecord(parts) || parts[0]?.toUpperCase() === "RELATION_DELETE";
+}
+function normalizedPipelineName(value) {
+  return toSnakeCase2(graphNameFromId2(value));
+}
+function updatePipelineNode(text, node, draft) {
+  const oldName = normalizedPipelineName(node.name || node.id);
+  const newNode = {
+    ...node,
+    ...draft,
+    name: toSnakeCase2(draft.name || draft.label || node.name || graphNameFromId2(node.id))
+  };
+  const lines = pipelineLines2(text);
+  let found = false;
+  const nextLines = lines.map((line) => {
+    const parts = pipelineParts2(line);
+    const recordType = parts[0]?.toUpperCase();
+    if (!isNodeMutationRecord(parts) || normalizedPipelineName(parts[1]) !== oldName) {
+      if (isRelationMutationRecord(parts)) {
+        const sourceName = normalizedPipelineName(parts[1]);
+        const targetName = normalizedPipelineName(parts[2]);
+        if (sourceName === oldName || targetName === oldName) {
+          const nextParts = [...parts];
+          if (sourceName === oldName) {
+            nextParts[1] = newNode.name;
+          }
+          if (targetName === oldName) {
+            nextParts[2] = newNode.name;
+          }
+          return nextParts.map(safePipelineField2).join("|");
+        }
+      }
+      return line;
+    }
+    found = true;
+    if (recordType === "NODE_DELETE") {
+      return pipelineNodeDeleteLine(newNode);
+    }
+    return pipelineNodeLine(recordType === "NODE" ? "NODE_UPDATE" : recordType, newNode);
+  });
+  if (!found) {
+    nextLines.push(pipelineNodeLine("NODE_UPDATE", newNode));
+  }
+  return withPipelineMarkers(nextLines);
+}
+function removePipelineNode(text, node) {
+  const nodeName = normalizedPipelineName(node.name || node.id);
+  const nextLines = pipelineLines2(text).filter((line) => {
+    const parts = pipelineParts2(line);
+    if (isNodeMutationRecord(parts)) {
+      return normalizedPipelineName(parts[1]) !== nodeName;
+    }
+    if (isRelationMutationRecord(parts)) {
+      return normalizedPipelineName(parts[1]) !== nodeName && normalizedPipelineName(parts[2]) !== nodeName;
+    }
+    return true;
+  });
+  return withPipelineMarkers(nextLines);
+}
+function appendPipelineLine(text, nextLine) {
+  const lines = pipelineLines2(text);
+  if (!lines.some((line) => line === nextLine)) {
+    lines.push(nextLine);
+  }
+  return withPipelineMarkers(lines);
+}
+function deletePipelineNode(text, node, { removeOnly = false } = {}) {
+  const cleanedText = removePipelineNode(text, node);
+  return removeOnly ? cleanedText : appendPipelineLine(cleanedText, pipelineNodeDeleteLine(node));
+}
+function relationMatchesPipeline(parts, relation) {
+  return normalizedPipelineName(parts[1]) === normalizedPipelineName(relation.sourceId) && normalizedPipelineName(parts[2]) === normalizedPipelineName(relation.targetId) && toSnakeCase2(parts[3]) === toSnakeCase2(relation.relation);
+}
+function updatePipelineRelation(text, relation, draft) {
+  const nextRelation = {
+    ...relation,
+    ...draft,
+    relation: toSnakeCase2(draft.relation) || "relates_to"
+  };
+  const lines = pipelineLines2(text);
+  let found = false;
+  const nextLines = lines.map((line) => {
+    const parts = pipelineParts2(line);
+    const recordType = parts[0]?.toUpperCase();
+    if (!isRelationMutationRecord(parts) || !relationMatchesPipeline(parts, relation)) {
+      return line;
+    }
+    found = true;
+    if (recordType === "RELATION_DELETE") {
+      return pipelineRelationDeleteLine(nextRelation);
+    }
+    return pipelineRelationLine(recordType === "RELATION" || recordType === "EDGE" ? "RELATION_UPDATE" : recordType, nextRelation);
+  });
+  if (!found) {
+    nextLines.push(pipelineRelationLine("RELATION_UPDATE", nextRelation));
+  }
+  return withPipelineMarkers(nextLines);
+}
+function removePipelineRelation(text, relation) {
+  const nextLines = pipelineLines2(text).filter((line) => {
+    const parts = pipelineParts2(line);
+    return !isRelationMutationRecord(parts) || !relationMatchesPipeline(parts, relation);
+  });
+  return withPipelineMarkers(nextLines);
+}
+function deletePipelineRelation(text, relation, { removeOnly = false } = {}) {
+  const cleanedText = removePipelineRelation(text, relation);
+  return removeOnly ? cleanedText : appendPipelineLine(cleanedText, pipelineRelationDeleteLine(relation));
+}
+function createPipelineNode(text, node) {
+  return appendPipelineLine(text, pipelineNodeLine("NODE_CREATE", node));
+}
+function createPipelineRelation(text, relation) {
+  return appendPipelineLine(text, pipelineRelationLine("RELATION_CREATE", relation));
+}
+function fileExtension(file) {
+  return String(file?.name ?? "").split(".").pop()?.toLowerCase() ?? "";
+}
+function isSupportedIngestFile(file) {
+  return SUPPORTED_INGEST_FILE_EXTENSIONS.has(fileExtension(file));
+}
+function normalizedSearchText(value) {
+  return String(value ?? "").trim().toLowerCase();
+}
+function nodeSearchValues(node) {
+  return [node?.label, node?.name, node?.id, node?.type, node?.description].map((value) => normalizedSearchText(value)).filter(Boolean);
+}
+function findBestLoadedSearchResult(results, query) {
+  const normalizedQuery = normalizedSearchText(query);
+  if (!normalizedQuery || results.length === 0) {
+    return null;
+  }
+  return results.find((node) => nodeSearchValues(node).some((value) => value === normalizedQuery)) ?? (results.length === 1 ? results[0] : null);
+}
+function snapWorkspaceWidth(value) {
+  const boundedValue = clampNumber(value, MIN_WORKSPACE_WIDTH, MAX_WORKSPACE_WIDTH);
+  if (boundedValue <= PANEL_SNAP_THRESHOLD) {
+    return MIN_WORKSPACE_WIDTH;
+  }
+  if (boundedValue >= MAX_WORKSPACE_WIDTH - PANEL_SNAP_THRESHOLD) {
+    return MAX_WORKSPACE_WIDTH;
+  }
+  return boundedValue;
+}
+function graphStatsLabel(graph) {
+  const normalized = normalizeGraph(graph);
+  return `${normalized.nodes.length} nodes / ${normalized.relations.length} relations`;
+}
+function mergeGraph(currentGraph, nextGraph) {
+  const current = normalizeGraph(currentGraph);
+  const next3 = normalizeGraph(nextGraph);
+  const nodeMap = new Map(current.nodes.map((node) => [node.id, node]));
+  const relationMap = new Map(current.relations.map((relation) => [relation.id, relation]));
+  for (const node of next3.nodes) {
+    nodeMap.set(node.id, node);
+  }
+  for (const relation of next3.relations) {
+    relationMap.set(relation.id, relation);
+  }
+  return {
+    nodes: [...nodeMap.values()],
+    relations: [...relationMap.values()],
+    schema: next3.schema ?? current.schema ?? null
+  };
+}
+function replaceNode(graph, node) {
+  const current = normalizeGraph(graph);
+  const exists = current.nodes.some((entry) => entry.id === node.id);
+  return {
+    nodes: exists ? current.nodes.map((entry) => entry.id === node.id ? node : entry) : [node, ...current.nodes],
+    relations: current.relations,
+    schema: current.schema ?? null
+  };
+}
+function replaceRelation(graph, relation) {
+  const current = normalizeGraph(graph);
+  const exists = current.relations.some((entry) => entry.id === relation.id);
+  return {
+    nodes: current.nodes,
+    relations: exists ? current.relations.map((entry) => entry.id === relation.id ? relation : entry) : [relation, ...current.relations],
+    schema: current.schema ?? null
+  };
+}
+function removeNodeFromGraph(graph, nodeId) {
+  const current = normalizeGraph(graph);
+  return {
+    nodes: current.nodes.filter((node) => node.id !== nodeId),
+    relations: current.relations.filter((relation) => relation.sourceId !== nodeId && relation.targetId !== nodeId),
+    schema: current.schema ?? null
+  };
+}
+function removeRelationFromGraph(graph, relationId) {
+  const current = normalizeGraph(graph);
+  return {
+    nodes: current.nodes,
+    relations: current.relations.filter((relation) => relation.id !== relationId),
+    schema: current.schema ?? null
+  };
+}
+function hitlDirectSaveErrorMessage(error) {
+  if (error?.status === 404 && error?.message === "Not found.") {
+    return "Direct HITL save API is not loaded yet. Restart the web server and try again.";
+  }
+  return error.message;
+}
+function isPageRefreshNavigation() {
+  try {
+    const [navigationEntry] = window.performance?.getEntriesByType?.("navigation") ?? [];
+    if (navigationEntry?.type) {
+      return navigationEntry.type === "reload";
+    }
+    return window.performance?.navigation?.type === 1;
+  } catch {
+    return false;
+  }
+}
+function clearAskSessionStorage() {
+  try {
+    const keysToRemove = [];
+    for (let index2 = 0; index2 < window.sessionStorage.length; index2 += 1) {
+      const key = window.sessionStorage.key(index2);
+      if (key === ASK_SESSION_STORAGE_KEY || key?.startsWith(`${ASK_MEMORY_STORAGE_KEY}:`)) {
+        keysToRemove.push(key);
+      }
+    }
+    keysToRemove.forEach((key) => window.sessionStorage.removeItem(key));
+  } catch {
+  }
+}
+function clearAskSessionStorageOnPageRefresh() {
+  if (isPageRefreshNavigation()) {
+    clearAskSessionStorage();
+  }
+}
+function createAskSessionId() {
+  if (window.crypto?.randomUUID) {
+    return window.crypto.randomUUID();
+  }
+  return `ask-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+function getAskSessionId() {
+  try {
+    const currentSessionId = window.sessionStorage.getItem(ASK_SESSION_STORAGE_KEY);
+    if (currentSessionId) {
+      return currentSessionId;
+    }
+    const nextSessionId = createAskSessionId();
+    window.sessionStorage.setItem(ASK_SESSION_STORAGE_KEY, nextSessionId);
+    return nextSessionId;
+  } catch {
+    return createAskSessionId();
+  }
+}
+function readSessionValue(key) {
+  try {
+    return window.sessionStorage?.getItem(key) ?? "";
+  } catch {
+    return "";
+  }
+}
+function writeSessionValue(key, value) {
+  const text = String(value ?? "").trim();
+  try {
+    if (text) {
+      window.sessionStorage?.setItem(key, text);
+    } else {
+      window.sessionStorage?.removeItem(key);
+    }
+  } catch {
+  }
+}
+function askMemoryStorageKey(sessionId) {
+  return `${ASK_MEMORY_STORAGE_KEY}:${sessionId}`;
+}
+function normalizeAskMemoryMessage(message) {
+  const content = String(message?.content ?? message?.text ?? "").replace(/\s+/g, " ").trim();
+  if (!content) {
+    return null;
+  }
+  return {
+    role: message?.role === "assistant" ? "assistant" : "user",
+    content: content.length > ASK_MEMORY_MAX_MESSAGE_CHARS ? `${content.slice(0, ASK_MEMORY_MAX_MESSAGE_CHARS - 3)}...` : content
+  };
+}
+function normalizeAskMemoryMessages(messages) {
+  if (!Array.isArray(messages)) {
+    return [];
+  }
+  return messages.map(normalizeAskMemoryMessage).filter(Boolean).slice(-ASK_MEMORY_MAX_MESSAGES);
+}
+function readAskMemory(sessionId) {
+  try {
+    const rawMemory = window.sessionStorage.getItem(askMemoryStorageKey(sessionId));
+    return normalizeAskMemoryMessages(JSON.parse(rawMemory || "[]"));
+  } catch {
+    return [];
+  }
+}
+function writeAskMemory(sessionId, messages) {
+  try {
+    window.sessionStorage.setItem(
+      askMemoryStorageKey(sessionId),
+      JSON.stringify(normalizeAskMemoryMessages(messages))
+    );
+  } catch {
+  }
+}
+function appendAskMemoryTurn(sessionId, { user, assistant }) {
+  const messages = readAskMemory(sessionId);
+  writeAskMemory(sessionId, [
+    ...messages,
+    { role: "user", content: user },
+    { role: "assistant", content: assistant }
+  ]);
+}
+clearAskSessionStorageOnPageRefresh();
+function buildIngestMutation(result) {
+  return {
+    status: result.status || "applied",
+    applied: result.applied ?? true,
+    hitlNote: result.hitlNote,
+    nodes: result.nodes ?? [],
+    relations: result.relations ?? [],
+    nodeDeletes: result.nodeDeletes ?? [],
+    relationDeletes: result.relationDeletes ?? [],
+    deletedNodeIds: result.deletedNodeIds ?? [],
+    deletedRelationIds: result.deletedRelationIds ?? [],
+    triplets: result.triplets ?? [],
+    schemaViolations: result.schemaViolations ?? [],
+    schemaWarnings: result.schemaWarnings ?? []
+  };
 }
 function App() {
   const currentPath = window.location.pathname.replace(/\/+$/, "") || "/";

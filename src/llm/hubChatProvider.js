@@ -81,7 +81,7 @@ export class HubChatProvider {
 		this.temperature = temperature;
 	}
 
-	async generateText({ systemPrompt, prompt }) {
+	async generateText({ systemPrompt, prompt, debugLogger }) {
 		
 		const body = {
 			model: this.model,
@@ -103,6 +103,8 @@ export class HubChatProvider {
 		});
 		const responseText = await response.text();
 		let responseBody = null;
+
+		debugLogger?.section("Raw LLM Response", `STATUS - ${response.status}\nBODY - ${responseText}`);
 
 		try {
 			responseBody = responseText ? JSON.parse(responseText) : {};
@@ -211,6 +213,7 @@ export class HubChatProvider {
 		const responseText = await this.generateText({
 			systemPrompt,
 			prompt: extractionPrompt,
+			debugLogger : debugLogger
 		});
 
 		debugLogger?.section("Raw LLM Extraction Response", responseText);

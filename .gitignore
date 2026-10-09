@@ -14,3 +14,9 @@ llm-api-call.txt
 schema/graphSchema 2.json
 embedding_request.txt
 embedding_response.txt
+.vscode/tasks.json
+.gitignore
+.sf/
+overview.json
+overview_architecture.puml
+app.bundle.js
