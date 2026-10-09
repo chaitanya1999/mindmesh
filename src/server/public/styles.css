@@ -1709,6 +1709,79 @@ button:focus-visible {
 	padding: 0 10px 10px;
 }
 
+.raw-response-label {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+.detail-kv .proposal-id {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+	color: var(--ink);
+	font-weight: 600;
+	text-transform: none;
+}
+
+.proposal-id code {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 0.76rem;
+}
+
+.proposal-id .copy-button {
+	width: 28px;
+	min-width: 28px;
+	height: 28px;
+	min-height: 28px;
+}
+
+.reviewer-notes {
+	display: grid;
+	gap: 8px;
+	padding: 10px;
+	border: 1px solid rgba(96, 165, 250, 0.35);
+	border-radius: 8px;
+	background: rgba(96, 165, 250, 0.06);
+}
+
+.reviewer-notes-hint {
+	margin: 0;
+	color: var(--muted);
+	font-size: 0.76rem;
+	line-height: 1.45;
+}
+
+.reviewer-notes-actions {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 7px;
+	flex-wrap: wrap;
+}
+
+.note-tag {
+	margin-left: 6px;
+	padding: 1px 6px;
+	border-radius: 999px;
+	font-size: 0.68rem;
+	font-weight: 800;
+}
+
+.note-tag.regenerated {
+	color: #bfdbfe;
+	background: rgba(96, 165, 250, 0.16);
+}
+
+.note-tag.notes {
+	color: #fde68a;
+	background: rgba(245, 159, 0, 0.14);
+}
+
 .hitl-decision-footer {
 	position: sticky;
 	z-index: 3;

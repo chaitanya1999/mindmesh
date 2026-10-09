@@ -225,3 +225,5 @@ RELATION_TYPE_SUGGESTION|requested_by|Source exists or changed because of a requ
 
 New user input:
 {{USER_INPUT}}
+
+{{REVIEWER_REVISION}}

@@ -85,6 +85,11 @@ function hitlNoteFromRecord(id, document, metadata = {}) {
 		schemaSuggestionCount: Number(metadata.schemaSuggestionCount ?? 0),
 		ambiguityCount: Number(metadata.ambiguityCount ?? 0),
 		contradictionCount: Number(metadata.contradictionCount ?? 0),
+		reviewerNotes: metadata.reviewerNotes || "",
+		regenerated: metadata.regenerated === true,
+		regeneratedBy: metadata.regeneratedBy || "",
+		regeneratedAt: metadata.regeneratedAt || "",
+		regenerationOrigin: metadata.regenerationOrigin || "",
 		metadata,
 	};
 }
@@ -186,6 +191,11 @@ export class ChromaVectorStore {
 				schemaSuggestionCount: Number(note.schemaSuggestionCount ?? 0),
 				ambiguityCount: Number(note.ambiguityCount ?? 0),
 				contradictionCount: Number(note.contradictionCount ?? 0),
+				reviewerNotes: String(note.reviewerNotes ?? ""),
+				regenerated: Boolean(note.regenerated),
+				regeneratedBy: String(note.regeneratedBy ?? ""),
+				regeneratedAt: String(note.regeneratedAt ?? ""),
+				regenerationOrigin: String(note.regenerationOrigin ?? ""),
 			}],
 		});
 

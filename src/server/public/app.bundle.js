@@ -65486,6 +65486,9 @@ function parseHitlProposal(text) {
     errors
   };
 }
+function hitlShortRef(id2) {
+  return `#${String(id2 ?? "").split(":").pop().slice(0, 6)}`;
+}
 function formatHitlDate(value) {
   if (!value) {
     return "Unknown time";
@@ -65881,6 +65884,82 @@ function HitlProposalSummary({
   ] });
 }
 
+// src/server/public/components/common/CopyButton.js
+function hasCopyableLlmText(value) {
+  const text = String(value ?? "").trim();
+  return Boolean(text && !["thinking...", "thinking", "loading...", "loading"].includes(text.toLowerCase()));
+}
+async function copyTextToClipboard(value) {
+  const text = String(value ?? "");
+  if (!text.trim()) {
+    return false;
+  }
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return true;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  document.body.removeChild(textarea);
+  return copied;
+}
+function CopyIcon() {
+  return /* @__PURE__ */ u3("svg", { "aria-hidden": "true", viewBox: "0 0 24 24", focusable: "false", children: [
+    /* @__PURE__ */ u3("rect", { x: "9", y: "9", width: "10", height: "10", rx: "2" }),
+    /* @__PURE__ */ u3("path", { d: "M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" })
+  ] });
+}
+function CopyButton({ className = "", label = "Copy to clipboard", onStatus, text }) {
+  const [copied, setCopied] = d2(false);
+  const timeoutRef = A2(null);
+  const hasText = hasCopyableLlmText(text);
+  y2(() => () => {
+    if (timeoutRef.current) {
+      window.clearTimeout(timeoutRef.current);
+    }
+  }, []);
+  const handleCopy = q2(async () => {
+    try {
+      const didCopy = await copyTextToClipboard(text);
+      if (!didCopy) {
+        onStatus?.("Nothing to copy.");
+        return;
+      }
+      setCopied(true);
+      onStatus?.("Copied to clipboard.");
+      if (timeoutRef.current) {
+        window.clearTimeout(timeoutRef.current);
+      }
+      timeoutRef.current = window.setTimeout(() => setCopied(false), 1400);
+    } catch (error) {
+      onStatus?.(error.message || "Copy failed.");
+    }
+  }, [onStatus, text]);
+  if (!hasText) {
+    return null;
+  }
+  return /* @__PURE__ */ u3(
+    "button",
+    {
+      type: "button",
+      class: `copy-button${copied ? " copied" : ""}${className ? ` ${className}` : ""}`,
+      onClick: handleCopy,
+      title: copied ? "Copied" : label,
+      "aria-label": copied ? "Copied" : label,
+      children: [
+        /* @__PURE__ */ u3(CopyIcon, {}),
+        /* @__PURE__ */ u3("span", { class: "sr-only", children: copied ? "Copied" : label })
+      ]
+    }
+  );
+}
+
 // src/server/public/components/hitl/HitlReviewPanel.js
 var FILTERS = [
   { id: "all", label: "All" },
@@ -66019,7 +66098,11 @@ function HitlReviewPanel({
   const [isLoading, setIsLoading] = d2(false);
   const [notes, setNotes] = d2([]);
   const [panelMessage, setPanelMessage] = d2("");
+  const [isRegenerating, setIsRegenerating] = d2(false);
+  const [reviewerNotesDraft, setReviewerNotesDraft] = d2("");
   const proposal = T2(() => parseHitlProposal(editedResponse), [editedResponse]);
+  const savedReviewerNotes = selectedNote?.reviewerNotes ?? "";
+  const reviewerNotesDirty = reviewerNotesDraft.trim() !== savedReviewerNotes.trim();
   const filteredNotes = T2(() => sortHitlNotes(notes).filter((note) => noteMatchesFilter(note, activeFilter)), [activeFilter, notes]);
   const pendingNodeCount = notes.reduce((total, note) => total + (note.nodeCount ?? 0) + (note.nodeDeleteCount ?? 0), 0);
   const pendingRelationCount = notes.reduce((total, note) => total + (note.relationCount ?? 0) + (note.relationDeleteCount ?? 0), 0);
@@ -66043,6 +66126,9 @@ function HitlReviewPanel({
   y2(() => {
     loadNotes();
   }, [loadNotes]);
+  y2(() => {
+    setReviewerNotesDraft(selectedNote?.reviewerNotes ?? "");
+  }, [selectedNote?.id, selectedNote?.reviewerNotes]);
   function changeChipDensity(value) {
     const nextDensity = value === "strong" ? "strong" : "compact";
     setChipDensity(nextDensity);
@@ -66111,6 +66197,57 @@ function HitlReviewPanel({
       setIsActing(false);
     }
   }, [onEditedResponseChange, onSelectNote, refreshReview, requestJson2, selectedNote, showPanelMessage]);
+  const saveReviewerNotes = q2(async () => {
+    if (!selectedNote) {
+      return;
+    }
+    setIsActing(true);
+    try {
+      const result = await requestJson2(`/api/hitl/notes/${encodeURIComponent(selectedNote.id)}/reviewer-notes`, {
+        method: "PUT",
+        body: JSON.stringify({ reviewerNotes: reviewerNotesDraft })
+      });
+      onSelectNote({ ...result.note, llmResponse: selectedNote.llmResponse });
+      await loadNotes();
+      showPanelMessage("Reviewer notes saved.");
+    } catch (error) {
+      showPanelMessage(error.message);
+    } finally {
+      setIsActing(false);
+    }
+  }, [loadNotes, onSelectNote, requestJson2, reviewerNotesDraft, selectedNote, showPanelMessage]);
+  const regenerateSelectedNote = q2(async () => {
+    const activeReviewerName = reviewerName.trim();
+    if (!selectedNote || !activeReviewerName || !reviewerNotesDraft.trim()) {
+      return;
+    }
+    if (!window.confirm("Regenerate replaces this proposal with a new LLM extraction guided by your reviewer notes. Continue?")) {
+      return;
+    }
+    setIsActing(true);
+    setIsRegenerating(true);
+    showPanelMessage("Regenerating proposal with reviewer notes...");
+    try {
+      const result = await requestJson2(`/api/hitl/notes/${encodeURIComponent(selectedNote.id)}/regenerate`, {
+        method: "POST",
+        body: JSON.stringify({
+          reviewerNotes: reviewerNotesDraft,
+          llmResponse: editedResponse,
+          reviewedBy: activeReviewerName
+        })
+      });
+      onSelectNote(result.note);
+      onEditedResponseChange(pipelineEditorText(result.note?.llmResponse ?? ""));
+      setActiveProposalRowKey("");
+      await refreshReview();
+      showPanelMessage("Proposal regenerated. Review the new version before approving.");
+    } catch (error) {
+      showPanelMessage(`Regeneration failed; the proposal was not changed. ${error.message}`);
+    } finally {
+      setIsRegenerating(false);
+      setIsActing(false);
+    }
+  }, [editedResponse, onEditedResponseChange, onSelectNote, refreshReview, requestJson2, reviewerName, reviewerNotesDraft, selectedNote, showPanelMessage]);
   function focusProposalRow(record) {
     setActiveProposalRowKey(record.key);
     onProposalFocus?.(record);
@@ -66198,7 +66335,13 @@ function HitlReviewPanel({
                   /* @__PURE__ */ u3("span", { class: "submission-main", children: [
                     /* @__PURE__ */ u3("strong", { children: note.ingestedBy || note.userName || "Unknown user" }),
                     /* @__PURE__ */ u3("small", { children: truncateText(note.inputPreview, 72) }),
-                    /* @__PURE__ */ u3("small", { children: formatHitlDate(note.createdAt) })
+                    /* @__PURE__ */ u3("small", { children: [
+                      formatHitlDate(note.createdAt),
+                      " \xB7 ",
+                      /* @__PURE__ */ u3("code", { children: hitlShortRef(note.id) }),
+                      note.regenerated && /* @__PURE__ */ u3("span", { class: "note-tag regenerated", children: "Regenerated" }),
+                      note.reviewerNotes && /* @__PURE__ */ u3("span", { class: "note-tag notes", title: note.reviewerNotes, children: "Notes" })
+                    ] })
                   ] }),
                   /* @__PURE__ */ u3("span", { class: `status-chip ${note.status}`, children: note.status }),
                   /* @__PURE__ */ u3(HitlNoteChips, { density: chipDensity, note })
@@ -66237,6 +66380,22 @@ function HitlReviewPanel({
           /* @__PURE__ */ u3("span", { children: "Created" }),
           /* @__PURE__ */ u3("strong", { children: formatHitlDate(selectedNote.createdAt) })
         ] }),
+        /* @__PURE__ */ u3("div", { class: "detail-kv", children: [
+          /* @__PURE__ */ u3("span", { children: "Proposal ID" }),
+          /* @__PURE__ */ u3("span", { class: "proposal-id", children: [
+            /* @__PURE__ */ u3("code", { title: `Short reference for agent chat: ${hitlShortRef(selectedNote.id)}`, children: selectedNote.id }),
+            /* @__PURE__ */ u3(CopyButton, { label: "Copy proposal ID", text: selectedNote.id })
+          ] })
+        ] }),
+        selectedNote.regenerated && /* @__PURE__ */ u3("div", { class: "detail-kv", children: [
+          /* @__PURE__ */ u3("span", { children: "Regenerated" }),
+          /* @__PURE__ */ u3("strong", { children: [
+            selectedNote.regeneratedBy || "Unknown",
+            " \xB7 ",
+            formatHitlDate(selectedNote.regeneratedAt),
+            selectedNote.regenerationOrigin === "agent" ? " \xB7 via agent" : ""
+          ] })
+        ] }),
         /* @__PURE__ */ u3("label", { class: "field", children: [
           /* @__PURE__ */ u3("span", { children: "User input" }),
           /* @__PURE__ */ u3("textarea", { readOnly: true, rows: "4", value: selectedNote.userInput || selectedNote.prompt || "" })
@@ -66253,16 +66412,66 @@ function HitlReviewPanel({
             proposal
           }
         ),
+        /* @__PURE__ */ u3("section", { class: "reviewer-notes", children: [
+          /* @__PURE__ */ u3("label", { class: "field", children: [
+            /* @__PURE__ */ u3("span", { children: "Reviewer notes" }),
+            /* @__PURE__ */ u3(
+              "textarea",
+              {
+                rows: "4",
+                value: reviewerNotesDraft,
+                disabled: isRegenerating,
+                placeholder: "e.g. EKYC is a UI section shown on the Pre DA screen, not a separate screen. Reuse mobile_number__c instead of creating Mobile Number.",
+                onInput: (event) => setReviewerNotesDraft(event.currentTarget.value)
+              }
+            )
+          ] }),
+          /* @__PURE__ */ u3("p", { class: "reviewer-notes-hint", children: [
+            "Instructions for the LLM. ",
+            /* @__PURE__ */ u3("strong", { children: "Regenerate" }),
+            " re-runs extraction on the original input with these notes as top-priority corrections and replaces this proposal. Saved notes are also used when you ask your agent to regenerate proposal ",
+            /* @__PURE__ */ u3("code", { children: hitlShortRef(selectedNote.id) }),
+            "."
+          ] }),
+          /* @__PURE__ */ u3("div", { class: "reviewer-notes-actions", children: [
+            reviewerNotesDirty && /* @__PURE__ */ u3("span", { class: "proposal-status warning", children: "Unsaved notes" }),
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                class: "compact-button",
+                disabled: isActing || !reviewerNotesDirty,
+                onClick: saveReviewerNotes,
+                children: "Save notes"
+              }
+            ),
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                class: "primary compact-button",
+                disabled: isActing || !reviewerName.trim() || !reviewerNotesDraft.trim(),
+                title: "Replaces the current proposal. Copy the raw response below first if you want a backup.",
+                onClick: regenerateSelectedNote,
+                children: isRegenerating ? "Regenerating..." : "Regenerate"
+              }
+            )
+          ] })
+        ] }),
         /* @__PURE__ */ u3("details", { class: "hitl-raw-response", children: [
           /* @__PURE__ */ u3("summary", { children: "Advanced raw response" }),
           /* @__PURE__ */ u3("label", { class: "field", children: [
-            /* @__PURE__ */ u3("span", { children: "Editable piped LLM response" }),
+            /* @__PURE__ */ u3("span", { class: "raw-response-label", children: [
+              "Editable piped LLM response",
+              /* @__PURE__ */ u3(CopyButton, { label: "Copy raw response", text: editedResponse })
+            ] }),
             /* @__PURE__ */ u3(
               "textarea",
               {
                 class: "pipeline-preview",
                 rows: "12",
                 value: editedResponse,
+                readOnly: isRegenerating,
                 onInput: (event) => onEditedResponseChange(event.currentTarget.value)
               }
             )
@@ -66825,82 +67034,6 @@ function MessageContent({ message }) {
     return /* @__PURE__ */ u3(MarkdownPreview, { text: message.text });
   }
   return message.text;
-}
-
-// src/server/public/components/common/CopyButton.js
-function hasCopyableLlmText(value) {
-  const text = String(value ?? "").trim();
-  return Boolean(text && !["thinking...", "thinking", "loading...", "loading"].includes(text.toLowerCase()));
-}
-async function copyTextToClipboard(value) {
-  const text = String(value ?? "");
-  if (!text.trim()) {
-    return false;
-  }
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return true;
-  }
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.setAttribute("readonly", "");
-  textarea.style.position = "fixed";
-  textarea.style.left = "-9999px";
-  document.body.appendChild(textarea);
-  textarea.select();
-  const copied = document.execCommand("copy");
-  document.body.removeChild(textarea);
-  return copied;
-}
-function CopyIcon() {
-  return /* @__PURE__ */ u3("svg", { "aria-hidden": "true", viewBox: "0 0 24 24", focusable: "false", children: [
-    /* @__PURE__ */ u3("rect", { x: "9", y: "9", width: "10", height: "10", rx: "2" }),
-    /* @__PURE__ */ u3("path", { d: "M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" })
-  ] });
-}
-function CopyButton({ className = "", label = "Copy to clipboard", onStatus, text }) {
-  const [copied, setCopied] = d2(false);
-  const timeoutRef = A2(null);
-  const hasText = hasCopyableLlmText(text);
-  y2(() => () => {
-    if (timeoutRef.current) {
-      window.clearTimeout(timeoutRef.current);
-    }
-  }, []);
-  const handleCopy = q2(async () => {
-    try {
-      const didCopy = await copyTextToClipboard(text);
-      if (!didCopy) {
-        onStatus?.("Nothing to copy.");
-        return;
-      }
-      setCopied(true);
-      onStatus?.("Copied to clipboard.");
-      if (timeoutRef.current) {
-        window.clearTimeout(timeoutRef.current);
-      }
-      timeoutRef.current = window.setTimeout(() => setCopied(false), 1400);
-    } catch (error) {
-      onStatus?.(error.message || "Copy failed.");
-    }
-  }, [onStatus, text]);
-  if (!hasText) {
-    return null;
-  }
-  return /* @__PURE__ */ u3(
-    "button",
-    {
-      type: "button",
-      class: `copy-button${copied ? " copied" : ""}${className ? ` ${className}` : ""}`,
-      onClick: handleCopy,
-      title: copied ? "Copied" : label,
-      "aria-label": copied ? "Copied" : label,
-      children: [
-        /* @__PURE__ */ u3(CopyIcon, {}),
-        /* @__PURE__ */ u3("span", { class: "sr-only", children: copied ? "Copied" : label })
-      ]
-    }
-  );
 }
 
 // src/server/public/components/chat/MessageList.js

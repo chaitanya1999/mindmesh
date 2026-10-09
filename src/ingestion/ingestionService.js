@@ -264,7 +264,8 @@ function customGraphResponseFromPayload(graphPayload) {
 	].join("\n");
 }
 
-async function retrievePendingHitlNotes(vectorStore, text, topK) {
+async function retrievePendingHitlNotes(vectorStore, text, topK, excludeNoteIds = []) {
+	const excluded = new Set(excludeNoteIds);
 	const byId = new Map();
 	if (typeof vectorStore.queryHitlNotes === "function") {
 		for (const note of await vectorStore.queryHitlNotes(text, topK)) {
@@ -283,7 +284,7 @@ async function retrievePendingHitlNotes(vectorStore, text, topK) {
 		}
 	}
 
-	return [...byId.values()];
+	return [...byId.values()].filter((note) => !excluded.has(note.id));
 }
 
 export class IngestionService {
@@ -302,7 +303,7 @@ export class IngestionService {
 		};
 	}
 
-	async retrievePendingHitlContext({ text, graphSchema }) {
+	async retrievePendingHitlContext({ text, graphSchema, excludeNoteIds = [] }) {
 		if (typeof this.vectorStore.queryHitlNotes !== "function" && typeof this.vectorStore.listHitlNotes !== "function") {
 			return {
 				notes: [],
@@ -314,7 +315,7 @@ export class IngestionService {
 			};
 		}
 
-		const notes = await retrievePendingHitlNotes(this.vectorStore, text, this.ingestion.contextTopK);
+		const notes = await retrievePendingHitlNotes(this.vectorStore, text, this.ingestion.contextTopK, excludeNoteIds);
 		const nodeMap = new Map();
 		const relationMap = new Map();
 		const nodeDeleteMap = new Map();
@@ -379,7 +380,8 @@ export class IngestionService {
 		};
 	}
 
-	async retrieveExistingContext({ text, graphSchema }) {
+	// excludeNoteIds keeps a regenerated HITL note from treating its own previous proposal as pending context.
+	async retrieveExistingContext({ text, graphSchema, excludeNoteIds = [] }) {
 		if (!this.ingestion.contextEnabled) {
 			return {
 				entryNodes: [],
@@ -401,7 +403,7 @@ export class IngestionService {
 		const graph = nodeIds.length > 0
 			? await this.graphStore.expandFromNodes(nodeIds, this.ingestion.contextDepth)
 			: { nodes: [], relations: [] };
-		const pendingHitl = await this.retrievePendingHitlContext({ text, graphSchema });
+		const pendingHitl = await this.retrievePendingHitlContext({ text, graphSchema, excludeNoteIds });
 		const contextParts = [formatExtractionGraphContext(graph)];
 		if (pendingHitl.context) {
 			contextParts.push(pendingHitl.context);
@@ -548,6 +550,167 @@ export class IngestionService {
 			schemaViolations: graphPayload.schemaViolations ?? [],
 			schemaWarnings: graphPayload.schemaWarnings,
 		};
+	}
+
+	async getHitlNote(noteId) {
+		const note = typeof this.vectorStore.getHitlNote === "function"
+			? await this.vectorStore.getHitlNote(noteId)
+			: null;
+		if (!note) {
+			const error = new Error(`HITL note not found: ${noteId}`);
+			error.status = 404;
+			throw error;
+		}
+
+		return note;
+	}
+
+	// Accepts a full note id ("hitl:muzxnk3c:d964dbbae577") or a short reference such as "#d964db".
+	async resolveHitlNoteId(reference) {
+		const value = String(reference ?? "").trim();
+		if (value.startsWith("hitl:")) {
+			return value;
+		}
+
+		const suffix = value.replace(/^#/, "").toLowerCase();
+		if (suffix.length < 4) {
+			throw new Error("A HITL reference needs at least 4 characters, for example #d964db.");
+		}
+
+		const notes = await this.vectorStore.listHitlNotes({ status: "pending", limit: 500 });
+		const matches = notes.filter((note) => String(note.id).split(":").pop().startsWith(suffix));
+		if (matches.length !== 1) {
+			throw new Error(matches.length === 0
+				? `No pending HITL proposal matches "${value}".`
+				: `"${value}" matches ${matches.length} pending HITL proposals; use more characters or the full id.`);
+		}
+
+		return matches[0].id;
+	}
+
+	async saveHitlReviewerNotes({ noteId, reviewerNotes }) {
+		const note = await this.getHitlNote(noteId);
+		await this.vectorStore.upsertHitlNote({
+			...note,
+			reviewerNotes: String(reviewerNotes ?? "").trim(),
+		});
+
+		return this.getHitlNote(noteId);
+	}
+
+	// Same extraction prompt as ingestion, plus the reviewer revision section; the note itself is
+	// excluded from pending context so it does not compete with its own previous proposal.
+	async buildHitlRegenerationPrompt({ note, reviewerNotes, previousProposal }) {
+		const graphSchema = loadGraphSchema({ schema: this.prompts.graphSchema });
+		const existingContext = await this.retrieveExistingContext({
+			text: note.userInput,
+			graphSchema,
+			excludeNoteIds: [note.id],
+		});
+		const extractionPrompt = buildExtractionPrompt(this.prompts.extractionSystemTemplate, {
+			graphSchema,
+			existingGraphContext: existingContext.context,
+			userInput: note.userInput,
+			reviewerRevision: { reviewerNotes, previousProposal },
+		});
+
+		return { graphSchema, existingContext, extractionPrompt };
+	}
+
+	// Overwrites the note's proposal. Parsing happens first, so an unparseable response leaves the note untouched.
+	async storeHitlRegeneration({
+		note,
+		rawResponse,
+		extractedGraph = null,
+		existingContext = null,
+		graphSchema = null,
+		reviewerNotes,
+		regeneratedBy,
+		origin,
+	}) {
+		const schema = graphSchema ?? loadGraphSchema({ schema: this.prompts.graphSchema });
+		const parsedGraph = extractedGraph ?? parseGraphExtraction(rawResponse);
+		const pendingHitl = existingContext?.pendingHitl ?? await this.retrievePendingHitlContext({
+			text: note.userInput,
+			graphSchema: schema,
+			excludeNoteIds: [note.id],
+		});
+		const reconciledGraph = reconcileExtractionWithPendingHitl(parsedGraph, pendingHitl);
+		const graphPayload = normalizeGraphPayload(reconciledGraph, { schema });
+		const llmResponse = rawResponse && reconciledGraph === parsedGraph
+			? rawResponse
+			: customGraphResponseFromPayload(graphPayload);
+		const reviewSignals = countReviewSignals(graphPayload);
+
+		await this.vectorStore.upsertHitlNote({
+			...note,
+			llmResponse,
+			nodeCount: graphPayload.nodes.length,
+			relationCount: graphPayload.relations.length,
+			nodeDeleteCount: graphPayload.nodeDeletes.length,
+			relationDeleteCount: graphPayload.relationDeletes.length,
+			schemaSuggestionCount: countSchemaSuggestions(graphPayload.schemaSuggestions),
+			ambiguityCount: reviewSignals.ambiguityCount,
+			contradictionCount: reviewSignals.contradictionCount,
+			reviewerNotes: String(reviewerNotes ?? "").trim(),
+			regenerated: true,
+			regeneratedBy: regeneratedBy || "unknown",
+			regeneratedAt: new Date().toISOString(),
+			regenerationOrigin: origin,
+		});
+
+		return {
+			note: await this.getHitlNote(note.id),
+			graphPayload,
+		};
+	}
+
+	async regenerateHitlProposal({ noteId, reviewerNotes, previousProposal, regeneratedBy }) {
+		const startedAt = Date.now();
+		const debugLogger = createDebugLogger({
+			...this.logging,
+			name: "ingest-regenerate",
+		});
+
+		try {
+			const note = await this.getHitlNote(noteId);
+			const notes = String(reviewerNotes ?? note.reviewerNotes ?? "").trim();
+			const baseline = String(previousProposal || note.llmResponse || "").trim();
+			logIngest(debugLogger, `[regenerate] Regenerating HITL proposal ${note.id} for ${regeneratedBy || "unknown"}.`);
+
+			const { graphSchema, existingContext, extractionPrompt } = await this.buildHitlRegenerationPrompt({
+				note,
+				reviewerNotes: notes,
+				previousProposal: baseline,
+			});
+			debugLogger.section("Reviewer Notes", notes);
+			debugLogger.section("Rendered Regeneration Prompt", extractionPrompt);
+
+			logIngest(debugLogger, "[regenerate] Sending regeneration prompt to LLM...");
+			const { extractedGraph, rawResponse } = await this.extractGraphWithRawResponse({
+				text: note.userInput,
+				extractionPrompt,
+				debugLogger,
+			});
+			debugLogger.section("Raw Regeneration Response", rawResponse);
+
+			const result = await this.storeHitlRegeneration({
+				note,
+				rawResponse,
+				extractedGraph,
+				existingContext,
+				graphSchema,
+				reviewerNotes: notes,
+				regeneratedBy,
+				origin: "ui",
+			});
+			logIngest(debugLogger, `[regenerate] Overwrote HITL proposal ${note.id} in ${Date.now() - startedAt} ms.`);
+			return result;
+		} catch (error) {
+			logIngest(debugLogger, `[regenerate] Failed after ${Date.now() - startedAt} ms: ${error?.message ?? String(error)}`);
+			debugLogger.json("Regeneration Error", errorDetails(error));
+			throw error;
+		}
 	}
 
 	async ingestText({ text, source, userName }) {

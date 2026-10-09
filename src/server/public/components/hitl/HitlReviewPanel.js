@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "preact/hooks";
 
 import { HitlProposalSummary } from "./HitlProposalSummary.js";
+import { CopyButton } from "../common/CopyButton.js";
 import {
 	HITL_CHIP_DENSITY_KEY,
 	appendSchemaSuggestion,
@@ -8,6 +9,7 @@ import {
 	deleteSchemaSuggestion,
 	formatHitlDate,
 	hitlCountLabel,
+	hitlShortRef,
 	hitlSignalCounts,
 	needsAttention,
 	noteMatchesFilter,
@@ -162,7 +164,11 @@ export function HitlReviewPanel({
 	const [isLoading, setIsLoading] = useState(false);
 	const [notes, setNotes] = useState([]);
 	const [panelMessage, setPanelMessage] = useState("");
+	const [isRegenerating, setIsRegenerating] = useState(false);
+	const [reviewerNotesDraft, setReviewerNotesDraft] = useState("");
 	const proposal = useMemo(() => parseHitlProposal(editedResponse), [editedResponse]);
+	const savedReviewerNotes = selectedNote?.reviewerNotes ?? "";
+	const reviewerNotesDirty = reviewerNotesDraft.trim() !== savedReviewerNotes.trim();
 	const filteredNotes = useMemo(() => (
 		sortHitlNotes(notes).filter((note) => noteMatchesFilter(note, activeFilter))
 	), [activeFilter, notes]);
@@ -191,6 +197,10 @@ export function HitlReviewPanel({
 	useEffect(() => {
 		loadNotes();
 	}, [loadNotes]);
+
+	useEffect(() => {
+		setReviewerNotesDraft(selectedNote?.reviewerNotes ?? "");
+	}, [selectedNote?.id, selectedNote?.reviewerNotes]);
 
 	function changeChipDensity(value) {
 		const nextDensity = value === "strong" ? "strong" : "compact";
@@ -266,6 +276,62 @@ export function HitlReviewPanel({
 			setIsActing(false);
 		}
 	}, [onEditedResponseChange, onSelectNote, refreshReview, requestJson, selectedNote, showPanelMessage]);
+
+	const saveReviewerNotes = useCallback(async () => {
+		if (!selectedNote) {
+			return;
+		}
+
+		setIsActing(true);
+		try {
+			const result = await requestJson(`/api/hitl/notes/${encodeURIComponent(selectedNote.id)}/reviewer-notes`, {
+				method: "PUT",
+				body: JSON.stringify({ reviewerNotes: reviewerNotesDraft }),
+			});
+			// Keep any unsaved proposal edits; only the note's saved fields change.
+			onSelectNote({ ...result.note, llmResponse: selectedNote.llmResponse });
+			await loadNotes();
+			showPanelMessage("Reviewer notes saved.");
+		} catch (error) {
+			showPanelMessage(error.message);
+		} finally {
+			setIsActing(false);
+		}
+	}, [loadNotes, onSelectNote, requestJson, reviewerNotesDraft, selectedNote, showPanelMessage]);
+
+	const regenerateSelectedNote = useCallback(async () => {
+		const activeReviewerName = reviewerName.trim();
+		if (!selectedNote || !activeReviewerName || !reviewerNotesDraft.trim()) {
+			return;
+		}
+		if (!window.confirm("Regenerate replaces this proposal with a new LLM extraction guided by your reviewer notes. Continue?")) {
+			return;
+		}
+
+		setIsActing(true);
+		setIsRegenerating(true);
+		showPanelMessage("Regenerating proposal with reviewer notes...");
+		try {
+			const result = await requestJson(`/api/hitl/notes/${encodeURIComponent(selectedNote.id)}/regenerate`, {
+				method: "POST",
+				body: JSON.stringify({
+					reviewerNotes: reviewerNotesDraft,
+					llmResponse: editedResponse,
+					reviewedBy: activeReviewerName,
+				}),
+			});
+			onSelectNote(result.note);
+			onEditedResponseChange(pipelineEditorText(result.note?.llmResponse ?? ""));
+			setActiveProposalRowKey("");
+			await refreshReview();
+			showPanelMessage("Proposal regenerated. Review the new version before approving.");
+		} catch (error) {
+			showPanelMessage(`Regeneration failed; the proposal was not changed. ${error.message}`);
+		} finally {
+			setIsRegenerating(false);
+			setIsActing(false);
+		}
+	}, [editedResponse, onEditedResponseChange, onSelectNote, refreshReview, requestJson, reviewerName, reviewerNotesDraft, selectedNote, showPanelMessage]);
 
 	function focusProposalRow(record) {
 		setActiveProposalRowKey(record.key);
@@ -361,7 +427,11 @@ export function HitlReviewPanel({
 										<span class="submission-main">
 											<strong>{note.ingestedBy || note.userName || "Unknown user"}</strong>
 											<small>{truncateText(note.inputPreview, 72)}</small>
-											<small>{formatHitlDate(note.createdAt)}</small>
+											<small>
+												{formatHitlDate(note.createdAt)} · <code>{hitlShortRef(note.id)}</code>
+												{note.regenerated && <span class="note-tag regenerated">Regenerated</span>}
+												{note.reviewerNotes && <span class="note-tag notes" title={note.reviewerNotes}>Notes</span>}
+											</small>
 										</span>
 										<span class={`status-chip ${note.status}`}>{note.status}</span>
 										<HitlNoteChips density={chipDensity} note={note} />
@@ -400,6 +470,22 @@ export function HitlReviewPanel({
 							<span>Created</span>
 							<strong>{formatHitlDate(selectedNote.createdAt)}</strong>
 						</div>
+						<div class="detail-kv">
+							<span>Proposal ID</span>
+							<span class="proposal-id">
+								<code title={`Short reference for agent chat: ${hitlShortRef(selectedNote.id)}`}>{selectedNote.id}</code>
+								<CopyButton label="Copy proposal ID" text={selectedNote.id} />
+							</span>
+						</div>
+						{selectedNote.regenerated && (
+							<div class="detail-kv">
+								<span>Regenerated</span>
+								<strong>
+									{selectedNote.regeneratedBy || "Unknown"} · {formatHitlDate(selectedNote.regeneratedAt)}
+									{selectedNote.regenerationOrigin === "agent" ? " · via agent" : ""}
+								</strong>
+							</div>
+						)}
 						<label class="field">
 							<span>User input</span>
 							<textarea readOnly rows="4" value={selectedNote.userInput || selectedNote.prompt || ""} />
@@ -413,14 +499,55 @@ export function HitlReviewPanel({
 							onUpdateSchemaSuggestion={editSchemaSuggestion}
 							proposal={proposal}
 						/>
+						<section class="reviewer-notes">
+							<label class="field">
+								<span>Reviewer notes</span>
+								<textarea
+									rows="4"
+									value={reviewerNotesDraft}
+									disabled={isRegenerating}
+									placeholder="e.g. EKYC is a UI section shown on the Pre DA screen, not a separate screen. Reuse mobile_number__c instead of creating Mobile Number."
+									onInput={(event) => setReviewerNotesDraft(event.currentTarget.value)}
+								/>
+							</label>
+							<p class="reviewer-notes-hint">
+								Instructions for the LLM. <strong>Regenerate</strong> re-runs extraction on the original input with
+								these notes as top-priority corrections and replaces this proposal. Saved notes are also used when
+								you ask your agent to regenerate proposal <code>{hitlShortRef(selectedNote.id)}</code>.
+							</p>
+							<div class="reviewer-notes-actions">
+								{reviewerNotesDirty && <span class="proposal-status warning">Unsaved notes</span>}
+								<button
+									type="button"
+									class="compact-button"
+									disabled={isActing || !reviewerNotesDirty}
+									onClick={saveReviewerNotes}
+								>
+									Save notes
+								</button>
+								<button
+									type="button"
+									class="primary compact-button"
+									disabled={isActing || !reviewerName.trim() || !reviewerNotesDraft.trim()}
+									title="Replaces the current proposal. Copy the raw response below first if you want a backup."
+									onClick={regenerateSelectedNote}
+								>
+									{isRegenerating ? "Regenerating..." : "Regenerate"}
+								</button>
+							</div>
+						</section>
 						<details class="hitl-raw-response">
 							<summary>Advanced raw response</summary>
 							<label class="field">
-								<span>Editable piped LLM response</span>
+								<span class="raw-response-label">
+									Editable piped LLM response
+									<CopyButton label="Copy raw response" text={editedResponse} />
+								</span>
 								<textarea
 									class="pipeline-preview"
 									rows="12"
 									value={editedResponse}
+									readOnly={isRegenerating}
 									onInput={(event) => onEditedResponseChange(event.currentTarget.value)}
 								/>
 							</label>

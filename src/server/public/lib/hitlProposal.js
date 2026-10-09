@@ -414,6 +414,11 @@ export function parseHitlProposal(text) {
 	};
 }
 
+// Short reference for agent chat, e.g. "hitl:muzxnk3c:d964dbbae577" -> "#d964db".
+export function hitlShortRef(id) {
+	return `#${String(id ?? "").split(":").pop().slice(0, 6)}`;
+}
+
 export function formatHitlDate(value) {
 	if (!value) {
 		return "Unknown time";

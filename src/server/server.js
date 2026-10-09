@@ -460,6 +460,11 @@ function hitlNoteSummary(note) {
 		schemaSuggestionCount: note.schemaSuggestionCount,
 		ambiguityCount: reviewSignals.ambiguityCount,
 		contradictionCount: reviewSignals.contradictionCount,
+		reviewerNotes: note.reviewerNotes ?? "",
+		regenerated: Boolean(note.regenerated),
+		regeneratedBy: note.regeneratedBy ?? "",
+		regeneratedAt: note.regeneratedAt ?? "",
+		regenerationOrigin: note.regenerationOrigin ?? "",
 	};
 }
 
@@ -922,6 +927,34 @@ app.get("/api/hitl/notes/:id", asyncRoute(async (req, res) => {
 	
 	res.json({
 		note: hitlNoteDetail(note),
+	});
+}));
+
+app.put("/api/hitl/notes/:id/reviewer-notes", asyncRoute(async (req, res) => {
+	const note = await requireHitlNote(req.params.id);
+	const updatedNote = await ingestionService.saveHitlReviewerNotes({
+		noteId: note.id,
+		reviewerNotes: req.body?.reviewerNotes,
+	});
+
+	res.json({
+		note: hitlNoteDetail(updatedNote),
+	});
+}));
+
+// Overwrites the proposal with a fresh extraction guided by the reviewer notes; the note is untouched if it fails.
+app.post("/api/hitl/notes/:id/regenerate", asyncRoute(async (req, res) => {
+	const note = await requireHitlNote(req.params.id);
+	const regeneratedBy = requireString(req.body?.reviewedBy, "reviewedBy");
+	const result = await ingestionService.regenerateHitlProposal({
+		noteId: note.id,
+		reviewerNotes: req.body?.reviewerNotes,
+		previousProposal: req.body?.llmResponse,
+		regeneratedBy,
+	});
+
+	res.json({
+		note: hitlNoteDetail(result.note),
 	});
 }));
 
