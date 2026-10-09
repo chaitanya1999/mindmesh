@@ -574,15 +574,19 @@ export class IngestionService {
 
 		const suffix = value.replace(/^#/, "").toLowerCase();
 		if (suffix.length < 4) {
-			throw new Error("A HITL reference needs at least 4 characters, for example #d964db.");
+			const error = new Error("A HITL reference needs at least 4 characters, for example #d964db.");
+			error.status = 400;
+			throw error;
 		}
 
 		const notes = await this.vectorStore.listHitlNotes({ status: "pending", limit: 500 });
 		const matches = notes.filter((note) => String(note.id).split(":").pop().startsWith(suffix));
 		if (matches.length !== 1) {
-			throw new Error(matches.length === 0
+			const error = new Error(matches.length === 0
 				? `No pending HITL proposal matches "${value}".`
 				: `"${value}" matches ${matches.length} pending HITL proposals; use more characters or the full id.`);
+			error.status = 400;
+			throw error;
 		}
 
 		return matches[0].id;
@@ -630,6 +634,18 @@ export class IngestionService {
 	}) {
 		const schema = graphSchema ?? loadGraphSchema({ schema: this.prompts.graphSchema });
 		const parsedGraph = extractedGraph ?? parseGraphExtraction(rawResponse);
+		// The parser returns an empty graph for unparseable text; never overwrite a proposal with nothing.
+		const recordCount = (parsedGraph.nodes?.length ?? 0)
+			+ (parsedGraph.relations?.length ?? 0)
+			+ (parsedGraph.nodeDeletes?.length ?? 0)
+			+ (parsedGraph.relationDeletes?.length ?? 0)
+			+ (parsedGraph.schemaSuggestions?.nodeTypes?.length ?? 0)
+			+ (parsedGraph.schemaSuggestions?.relationshipTypes?.length ?? 0);
+		if (recordCount === 0) {
+			const error = new Error("The regenerated response contains no graph records, so the proposal was not changed.");
+			error.status = 400;
+			throw error;
+		}
 		const pendingHitl = existingContext?.pendingHitl ?? await this.retrievePendingHitlContext({
 			text: note.userInput,
 			graphSchema: schema,

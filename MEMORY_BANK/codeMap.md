@@ -193,7 +193,7 @@ Main path:
 MCP client (any LLM/coding agent)
   -> stdio JSON-RPC
   -> McpServer (src/mcp/server.js)
-  -> tools: ask, ingest-context, apply-ingestion
+  -> tools: ask, ingest-context, apply-ingestion, regenerate-context, apply-regeneration
   -> resources: mindmesh://schema, mindmesh://graph, mindmesh://hitl/notes,
      mindmesh://nodes/{nodeId}, mindmesh://relations/{relationId}
 ```
@@ -209,6 +209,14 @@ Notes:
 - `ask` returns verified graph context + answer system prompt + instructions for the calling agent.
 - `ingest-context` returns retrieval-augmented extraction context + fully rendered extraction prompt + schema catalog + field guidance + instructions.
 - `apply-ingestion` parses/normalizes pipe-delimited graph records and applies them (auto mode, no schema violations) or stores a HITL proposal.
+- `regenerate-context` / `apply-regeneration` regenerate a pending HITL proposal with reviewer notes (chat notes override notes saved in the UI). They share `IngestionService.buildHitlRegenerationPrompt()` and `storeHitlRegeneration()` with the web `POST /api/hitl/notes/:id/regenerate` route. Proposals are referenced by full id or short ref (`#d964db`) via `resolveHitlNoteId()`.
+
+## HITL Regeneration
+
+- Prompt: the normal extraction template plus `{{REVIEWER_REVISION}}` (rendered by `formatReviewerRevision()` in `src/prompts/promptRegistry.js`; empty for normal ingestion).
+- The regenerated note is excluded from its own pending-HITL context (`excludeNoteIds`), otherwise its creates would be reconciled into updates.
+- `storeHitlRegeneration()` refuses a response with zero records, because the parser returns an empty graph for unparseable text.
+- Note metadata: `reviewerNotes`, `regenerated`, `regeneratedBy`, `regeneratedAt`, `regenerationOrigin` (`ui` | `agent`). The proposal is overwritten; no history is kept.
 - No MCP-specific config is required; the server reads the same `config.json`.
 
 ## Smoke Test Commands

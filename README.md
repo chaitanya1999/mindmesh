@@ -290,7 +290,9 @@ npm run kg:mcp
 
 - `ask` — `{ query, includeUnverifiedKnowledge? }`. Returns verified graph context, the answer system prompt, and instructions so the calling agent can answer the user's question. No LLM is invoked.
 - `ingest-context` — `{ text }`. Returns retrieval-augmented extraction context (existing graph + pending HITL), the fully rendered extraction system prompt, schema catalog, field guidance, and instructions so the calling agent can extract graph records.
-- `apply-ingestion` — `{ graphRecords, text, userName?, source? }`. Parses, normalizes, and applies the pipe-delimited graph records an agent extracted. Applies mutations directly when ingestion mode is `auto` and no schema violations exist; otherwise stores a pending HITL proposal.
+- `apply-ingestion` — `{ graphRecords, text, userName?, source? }`. Parses, normalizes, and applies the pipe-delimited graph records an agent extracted. Applies mutations directly when ingestion mode is `auto` and no schema violations exist; otherwise stores a pending HITL proposal and returns its `hitlNoteId` and short `hitlNoteRef` (e.g. `#d964db`).
+- `regenerate-context` — `{ proposal, notes? }`. `proposal` is a HITL note id or short ref. Returns the extraction prompt for regenerating that proposal: the normal ingestion prompt plus a `REVIEWER REVISION` section with the reviewer notes and the previous proposal as baseline. `notes` from chat take precedence over notes saved in the HITL UI; one of them is required. The proposal itself is excluded from pending HITL context.
+- `apply-regeneration` — `{ proposal, graphRecords, notes?, regeneratedBy? }`. Overwrites the pending proposal with the regenerated records, saves the notes, and flags it `regenerated` with origin `agent`. A block with no parseable records is rejected and the proposal is left unchanged.
 
 ### Resources
 
@@ -553,7 +555,7 @@ RELATION|ekyc_screen|pan_api|uses|during identity verification|Triggered during 
 
 For relationships, `sourceName`, `relation`, and `targetName` already express the core fact. `information` should contain only extra qualifiers such as conditions, timing, scope, state, or reason; leave it empty when it would merely repeat the relation. `description` is reserved for longer source-backed explanation. Node descriptions should add useful context or disambiguation, not restate the label/type.
 
-`extractCustomGraph()` accepts raw, fenced, or demarcated custom graph records. When demarcators are present, text outside them is ignored; otherwise it falls back to parsing the full response. It ignores blank/header lines, captures schema suggestion records, supports create/update/delete operation records, and throws if no valid records can be parsed.
+`extractCustomGraph()` accepts raw, fenced, or demarcated custom graph records. When demarcators are present, text outside them is ignored; otherwise it falls back to parsing the full response. It ignores blank/header lines, captures schema suggestion records, and supports create/update/delete operation records. Unparseable text yields an empty graph rather than an error, so callers that overwrite data (HITL regeneration) check for zero records themselves.
 
 `normalizeGraphPayload()` then:
 
@@ -744,6 +746,8 @@ API endpoints:
 - `GET /api/hitl/graph`: returns approved graph overlaid with pending HITL proposals.
 - `POST /api/hitl/nodes`, `PUT /api/hitl/nodes/:id`, `DELETE /api/hitl/nodes/:id`: direct reviewer node mutations, or pending proposals when schema validation fails.
 - `POST /api/hitl/relations`, `PUT /api/hitl/relations/:id`, `DELETE /api/hitl/relations/:id`: direct reviewer relation mutations, or pending proposals when schema validation fails.
+- `PUT /api/hitl/notes/:id/reviewer-notes`: saves reviewer notes on a pending proposal.
+- `POST /api/hitl/notes/:id/regenerate`: accepts `{ reviewerNotes, llmResponse, reviewedBy }`, re-runs extraction on the original input with the notes and the current draft as baseline, and overwrites the proposal. Fails without changing the note if the LLM output has no records.
 - `POST /api/hitl/notes/:id/approve`: validates and applies an edited HITL proposal, then removes the pending note.
 - `DELETE /api/hitl/notes/:id`: rejects and deletes a HITL proposal.
 - Errors return `{ error: "message" }`.

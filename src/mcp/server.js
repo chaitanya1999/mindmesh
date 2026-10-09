@@ -65,6 +65,34 @@ function hasSchemaViolations(graphPayload) {
 	return (graphPayload.schemaViolations?.length ?? 0) > 0;
 }
 
+// Short reference shown on HITL cards, e.g. "hitl:muzxnk3c:d964dbbae577" -> "#d964db".
+function hitlShortRef(id) {
+	return id ? `#${String(id).split(":").pop().slice(0, 6)}` : null;
+}
+
+function toolError(toolName, error) {
+	const message = `${toolName} failed: ${error?.message ?? String(error)}`;
+	const status = Number(error?.status);
+	return new McpError(status === 400 || status === 404 ? ErrorCode.InvalidParams : ErrorCode.InternalError, message);
+}
+
+// Notes passed in chat win over notes saved in the UI; one of them is required.
+function resolveReviewerNotes(notes, note) {
+	const chatNotes = String(notes ?? "").trim();
+	if (chatNotes) {
+		return { reviewerNotes: chatNotes, notesSource: "chat" };
+	}
+
+	const savedNotes = String(note.reviewerNotes ?? "").trim();
+	if (savedNotes) {
+		return { reviewerNotes: savedNotes, notesSource: "saved" };
+	}
+
+	const error = new Error(`Proposal ${hitlShortRef(note.id)} has no saved reviewer notes. Pass \`notes\` with the user's instructions.`);
+	error.status = 400;
+	throw error;
+}
+
 const ASK_INSTRUCTIONS = [
 	"You are the answering agent. Use the tool result to answer the user's question.",
 	"",
@@ -97,6 +125,21 @@ const INGEST_INSTRUCTIONS = [
 	"10. Report the `apply-ingestion` result to the user, including whether it was applied or stored as a pending HITL proposal.",
 ].join("\n");
 
+const REGENERATE_INSTRUCTIONS = [
+	"You are regenerating an existing pending HITL proposal using a human reviewer's notes.",
+	"",
+	"Instructions:",
+	"1. Use the `extractionSystemPrompt` exactly as your system prompt. It already contains the original input, the graph context, the reviewer notes, and the previous proposal.",
+	"2. The reviewer notes have the highest priority: apply them, but never break the schema or the output syntax.",
+	"3. Treat `previousProposal` as the baseline. Keep its records unchanged unless the notes ask for a change.",
+	"4. Output the COMPLETE revised proposal (not a diff) between <start#$#$> and </end#$#$> markers.",
+	"5. Then call `apply-regeneration` with:",
+	"   - `proposal`: the `noteId` returned here",
+	"   - `graphRecords`: the full revised block (including markers)",
+	"   - `notes`: the `reviewerNotes` returned here, so they are saved on the proposal",
+	"6. Tell the user the proposal was regenerated and give its `shortRef` so they can review it in the HITL UI.",
+].join("\n");
+
 const server = new McpServer(
 	{
 		name: "mindmesh-ask-ingest",
@@ -115,6 +158,13 @@ const server = new McpServer(
 			"- `ask`: retrieve verified graph context + answer system prompt + instructions to answer a user question.",
 			"- `ingest-context`: retrieve retrieval-augmented extraction context (existing graph + pending HITL), the fully rendered extraction prompt, schema catalog, and instructions to extract graph records.",
 			"- `apply-ingestion`: parse, normalize, and apply (or store as HITL proposal) the graph records an agent extracted.",
+			"- `regenerate-context`: get the extraction prompt to regenerate a pending HITL proposal with reviewer notes (from chat or saved in the UI).",
+			"- `apply-regeneration`: overwrite that HITL proposal with the regenerated graph records.",
+			"",
+			"Recommended flow for regenerating a HITL proposal (the user names it by id or short ref such as #d964db):",
+			"1. Call `regenerate-context` with the proposal reference and any instructions the user gave in chat as `notes`.",
+			"2. Produce the complete revised graph records following the returned `extractionSystemPrompt`.",
+			"3. Call `apply-regeneration` with the same proposal reference, the records, and the notes.",
 			"",
 			"Recommended flow for ingestion:",
 			"1. Call `ingest-context` with the user's text.",
@@ -282,6 +332,7 @@ server.registerTool(
 				schemaViolations: result.schemaViolations ?? [],
 				schemaWarnings: result.schemaWarnings ?? [],
 				hitlNoteId: result.hitlNote?.id ?? null,
+				hitlNoteRef: hitlShortRef(result.hitlNote?.id),
 				hitlNoteStatus: result.hitlNote?.status ?? null,
 			});
 		} catch (error) {
@@ -290,6 +341,97 @@ server.registerTool(
 				throw new McpError(ErrorCode.InvalidParams, message);
 			}
 			throw new McpError(ErrorCode.InternalError, message);
+		}
+	},
+);
+
+server.registerTool(
+	"regenerate-context",
+	{
+		title: "Regenerate HITL Proposal Context",
+		description: [
+			"Get everything needed to regenerate a pending HITL proposal with reviewer notes. ",
+			"Accepts the proposal's full id or its short reference (e.g. #d964db). Notes passed here take precedence over notes saved in the HITL UI; one of them is required. ",
+			"Returns the extraction system prompt (same as ingestion, plus a reviewer revision section), the original input, the previous proposal, and instructions. No LLM is invoked by this server.",
+		].join(""),
+		inputSchema: {
+			proposal: z.string().describe("HITL proposal id (hitl:...) or short reference such as #d964db."),
+			notes: z.string().optional().describe("Reviewer instructions given in chat. Omit to use the notes saved on the proposal in the HITL UI."),
+		},
+	},
+	async ({ proposal, notes }) => {
+		try {
+			const noteId = await ingestionService.resolveHitlNoteId(proposal);
+			const note = await ingestionService.getHitlNote(noteId);
+			const { reviewerNotes, notesSource } = resolveReviewerNotes(notes, note);
+			const { existingContext, extractionPrompt } = await ingestionService.buildHitlRegenerationPrompt({
+				note,
+				reviewerNotes,
+				previousProposal: note.llmResponse,
+			});
+
+			return textContent({
+				noteId,
+				shortRef: hitlShortRef(noteId),
+				reviewerNotes,
+				notesSource,
+				originalText: note.userInput,
+				previousProposal: note.llmResponse,
+				context: existingContext.context,
+				extractionSystemPrompt: extractionPrompt,
+				instructions: REGENERATE_INSTRUCTIONS,
+			});
+		} catch (error) {
+			throw toolError("regenerate-context", error);
+		}
+	},
+);
+
+server.registerTool(
+	"apply-regeneration",
+	{
+		title: "Apply HITL Proposal Regeneration",
+		description: [
+			"Overwrite a pending HITL proposal with regenerated graph records and save the reviewer notes on it. ",
+			"The records are parsed before anything is written, so an invalid block leaves the proposal unchanged. ",
+			"The proposal stays pending for human approval in the HITL UI.",
+		].join(""),
+		inputSchema: {
+			proposal: z.string().describe("HITL proposal id (hitl:...) or short reference such as #d964db."),
+			graphRecords: z.string().describe("The complete revised pipe-delimited block, enclosed between <start#$#$> and </end#$#$> markers."),
+			notes: z.string().optional().describe("The reviewer notes used for this regeneration. Omit to keep the notes saved on the proposal."),
+			regeneratedBy: z.string().optional().describe("Who requested the regeneration. Defaults to 'mcp-agent'."),
+		},
+	},
+	async ({ proposal, graphRecords, notes, regeneratedBy }) => {
+		try {
+			const noteId = await ingestionService.resolveHitlNoteId(proposal);
+			const note = await ingestionService.getHitlNote(noteId);
+			const { reviewerNotes } = resolveReviewerNotes(notes, note);
+			const { note: updatedNote, graphPayload } = await ingestionService.storeHitlRegeneration({
+				note,
+				rawResponse: graphRecords,
+				reviewerNotes,
+				regeneratedBy: String(regeneratedBy || "mcp-agent").trim() || "mcp-agent",
+				origin: "agent",
+			});
+
+			return textContent({
+				status: "pending_hitl",
+				noteId,
+				shortRef: hitlShortRef(noteId),
+				regeneratedBy: updatedNote.regeneratedBy,
+				regeneratedAt: updatedNote.regeneratedAt,
+				reviewerNotes: updatedNote.reviewerNotes,
+				nodeCount: graphPayload.nodes.length,
+				relationCount: graphPayload.relations.length,
+				nodeDeleteCount: graphPayload.nodeDeletes.length,
+				relationDeleteCount: graphPayload.relationDeletes.length,
+				schemaViolations: graphPayload.schemaViolations ?? [],
+				schemaWarnings: graphPayload.schemaWarnings ?? [],
+			});
+		} catch (error) {
+			throw toolError("apply-regeneration", error);
 		}
 	},
 );
