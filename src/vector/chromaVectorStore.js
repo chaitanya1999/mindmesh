@@ -6,7 +6,6 @@ function nodeDocument(node) {
 		node.name,
 		node.type,
 		node.description,
-		node.metadata,
 	].filter(Boolean).join("\n");
 }
 
@@ -15,7 +14,6 @@ function relationDocument(relation) {
 		relation.relation,
 		relation.information,
 		relation.description,
-		relation.metadata,
 		`source:${relation.sourceId}`,
 		`target:${relation.targetId}`,
 	].filter(Boolean).join("\n");
@@ -146,6 +144,24 @@ export class ChromaVectorStore {
 			name: this.config.relationCollection,
 			embeddingFunction: this.embeddingProvider ? null : undefined,
 		});
+	}
+
+	// Drops only the graph index collections (nodes, relations). HITL notes are never touched.
+	async clearGraphIndex() {
+		const deleted = [];
+		for (const name of [this.config.nodeCollection, this.config.relationCollection]) {
+			try {
+				await this.client.deleteCollection({ name });
+				deleted.push(name);
+			} catch (error) {
+				const message = String(error?.message ?? "").toLowerCase();
+				if (error?.name !== "ChromaNotFoundError" && !message.includes("does not exist") && !message.includes("not found")) {
+					throw error;
+				}
+			}
+		}
+
+		return deleted;
 	}
 
 	async getHitlCollection() {
@@ -304,7 +320,6 @@ export class ChromaVectorStore {
 					name: node.name,
 					type: node.type,
 					description: node.description ?? "",
-					metadata: node.metadata ?? "",
 				})),
 			});
 		}
@@ -322,7 +337,6 @@ export class ChromaVectorStore {
 					relation: relation.relation,
 					information: relation.information ?? "",
 					description: relation.description ?? "",
-					metadata: relation.metadata ?? "",
 				})),
 			});
 		}

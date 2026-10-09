@@ -15,7 +15,7 @@
 		"kg:test-llm": "node src/cli/testLlm.js",
 		"kg:test-parser": "node src/cli/testParser.js",
 		"kg:clear-chroma": "node src/cli/clearChroma.js",
-		"kg:reindex-vectors": "node src/cli/reindexVectors.js",
+		"kg:reindex-vectors": "node src/cli/reindexVectors.js -- --fresh",
 		"kg:mcp": "node src/mcp/server.js",
 		"chroma:start": "chroma run --path ./chroma_data"
 	},

@@ -23,6 +23,9 @@ export function NodeForm({
 	saveLabel = "Save node",
 }) {
 	const isControlled = Boolean(controlledDraft && onDraftChange);
+	// The id is node:<name>, so nodes already in the graph keep their name. Pending items without an
+	// approved DB version (new in a proposal) can still be renamed.
+	const isNameLocked = Boolean(node?.id) && (!node.pendingHitl || Boolean(node.approved));
 	const [localDraft, setLocalDraft] = useState(() => createNodeDraft(node));
 	const draft = isControlled ? controlledDraft : localDraft;
 	const setDraft = isControlled ? onDraftChange : setLocalDraft;
@@ -39,7 +42,7 @@ export function NodeForm({
 
 	function handleSubmit(event) {
 		event.preventDefault();
-		onSave({ ...draft, name: draft.name || toSnakeCase(draft.label) });
+		onSave({ ...draft, name: isNameLocked ? node.name : draft.name || toSnakeCase(draft.label) });
 	}
 
 	return (
@@ -48,7 +51,13 @@ export function NodeForm({
 				<input value={draft.label} onInput={(event) => updateField("label", event.currentTarget.value)} required />
 			</Field>
 			<Field label="Name">
-				<input value={draft.name} onInput={(event) => updateField("name", event.currentTarget.value)} placeholder="auto_from_label" />
+				<input
+					value={draft.name}
+					onInput={(event) => updateField("name", event.currentTarget.value)}
+					placeholder="auto_from_label"
+					readOnly={isNameLocked}
+					title={isNameLocked ? "The name is this node's permanent id. Change the label instead." : undefined}
+				/>
 			</Field>
 			<Field label="Type">
 				<datalist id="node-type-options">

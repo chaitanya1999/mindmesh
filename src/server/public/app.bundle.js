@@ -66421,7 +66421,7 @@ function HitlReviewPanel({
                 rows: "4",
                 value: reviewerNotesDraft,
                 disabled: isRegenerating,
-                placeholder: "e.g. EKYC is a UI section shown on the Pre DA screen, not a separate screen. Reuse mobile_number__c instead of creating Mobile Number.",
+                placeholder: "e.g. Merge the two duplicate nodes into one. Use an existing node instead of creating a new one. Change this node's type.",
                 onInput: (event) => setReviewerNotesDraft(event.currentTarget.value)
               }
             )
@@ -67368,6 +67368,7 @@ function NodeForm({
   saveLabel = "Save node"
 }) {
   const isControlled = Boolean(controlledDraft && onDraftChange);
+  const isNameLocked = Boolean(node?.id) && (!node.pendingHitl || Boolean(node.approved));
   const [localDraft, setLocalDraft] = d2(() => createNodeDraft(node));
   const draft = isControlled ? controlledDraft : localDraft;
   const setDraft = isControlled ? onDraftChange : setLocalDraft;
@@ -67381,11 +67382,20 @@ function NodeForm({
   }
   function handleSubmit(event) {
     event.preventDefault();
-    onSave({ ...draft, name: draft.name || toSnakeCase2(draft.label) });
+    onSave({ ...draft, name: isNameLocked ? node.name : draft.name || toSnakeCase2(draft.label) });
   }
   return /* @__PURE__ */ u3("form", { class: "edit-form", onSubmit: handleSubmit, children: [
     /* @__PURE__ */ u3(Field, { label: "Label", children: /* @__PURE__ */ u3("input", { value: draft.label, onInput: (event) => updateField("label", event.currentTarget.value), required: true }) }),
-    /* @__PURE__ */ u3(Field, { label: "Name", children: /* @__PURE__ */ u3("input", { value: draft.name, onInput: (event) => updateField("name", event.currentTarget.value), placeholder: "auto_from_label" }) }),
+    /* @__PURE__ */ u3(Field, { label: "Name", children: /* @__PURE__ */ u3(
+      "input",
+      {
+        value: draft.name,
+        onInput: (event) => updateField("name", event.currentTarget.value),
+        placeholder: "auto_from_label",
+        readOnly: isNameLocked,
+        title: isNameLocked ? "The name is this node's permanent id. Change the label instead." : void 0
+      }
+    ) }),
     /* @__PURE__ */ u3(Field, { label: "Type", children: [
       /* @__PURE__ */ u3("datalist", { id: "node-type-options", children: nodeTypes.map((type) => /* @__PURE__ */ u3("option", { value: type, children: type }, type)) }),
       /* @__PURE__ */ u3("input", { list: "node-type-options", value: draft.type, onInput: (event) => updateField("type", event.currentTarget.value), required: true })

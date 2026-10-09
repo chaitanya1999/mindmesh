@@ -506,7 +506,7 @@ export function HitlReviewPanel({
 									rows="4"
 									value={reviewerNotesDraft}
 									disabled={isRegenerating}
-									placeholder="e.g. EKYC is a UI section shown on the Pre DA screen, not a separate screen. Reuse mobile_number__c instead of creating Mobile Number."
+									placeholder="e.g. Merge the two duplicate nodes into one. Use an existing node instead of creating a new one. Change this node's type."
 									onInput={(event) => setReviewerNotesDraft(event.currentTarget.value)}
 								/>
 							</label>

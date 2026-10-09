@@ -95,7 +95,14 @@ function requireString(value, fieldName) {
 }
 
 function normalizeManualNode(body, existingId = "") {
-	const name = toSnakeCase(body?.name || body?.label || existingId.replace(/^node:/, ""));
+	// A node's id is node:<name>, so the name of an existing node is fixed; only the label is free text.
+	const existingName = existingId.replace(/^node:/, "");
+	if (existingName && body?.name && toSnakeCase(body.name) !== existingName) {
+		const error = new Error(`Node names are permanent identifiers (${existingId}); renaming is not supported. Change the label instead.`);
+		error.status = 400;
+		throw error;
+	}
+	const name = existingName || toSnakeCase(body?.name || body?.label);
 	if (!name) {
 		const error = new Error("Node name or label is required.");
 		error.status = 400;
@@ -1084,7 +1091,8 @@ app.post("/api/hitl/relations", asyncRoute(async (req, res) => {
 app.put("/api/hitl/relations/:id", asyncRoute(async (req, res) => {
 	requireDirectGraphCrudSupport();
 	const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
-	const relation = normalizeManualRelation(req.body, req.params.id);
+	// The id is recomputed from source, relation and target, so a changed relation or endpoint gets its canonical id.
+	const relation = normalizeManualRelation(req.body);
 	const llmResponse = pipelinePayload([relationPipelineRecord("RELATION_UPDATE", relation)]);
 	const pendingProposal = await pendingProposalForSchemaViolation({
 		reviewedBy,
@@ -1094,6 +1102,10 @@ app.put("/api/hitl/relations/:id", asyncRoute(async (req, res) => {
 	if (pendingProposal) {
 		res.status(202).json(pendingProposal);
 		return;
+	}
+	if (relation.id !== req.params.id) {
+		await graphStore.deleteRelation(req.params.id);
+		await vectorStore.deleteRelations([req.params.id]);
 	}
 	const storedRelation = await graphStore.upsertRelation(relation);
 	await vectorStore.upsertRelation(storedRelation);

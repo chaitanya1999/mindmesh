@@ -485,6 +485,7 @@ export class IngestionService {
 			await this.vectorStore.deleteRelations([...deletedRelationIds]);
 		}
 
+		// Record metadata only carries HITL review signals; the graph store does not persist it.
 		const storedGraph = await this.graphStore.upsertGraph(graphPayload, { source });
 		if (storedGraph.nodes.length > 0 || storedGraph.relations.length > 0) {
 			await this.vectorStore.upsertGraphIndex(storedGraph);
@@ -686,6 +687,7 @@ export class IngestionService {
 		const debugLogger = createDebugLogger({
 			...this.logging,
 			name: "ingest-regenerate",
+			scope: "ingest",
 		});
 
 		try {

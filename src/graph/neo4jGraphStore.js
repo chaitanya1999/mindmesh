@@ -7,7 +7,6 @@ function formatNode(node) {
 		name: node.properties.name,
 		type: node.properties.type,
 		description: node.properties.description ?? "",
-		metadata: node.properties.metadata ?? "",
 		createdAt: node.properties.createdAt,
 		updatedAt: node.properties.updatedAt,
 	};
@@ -21,7 +20,6 @@ function formatRelationship(relationship) {
 		relation: relationship.properties.relation,
 		information: relationship.properties.information ?? "",
 		description: relationship.properties.description ?? "",
-		metadata: relationship.properties.metadata ?? "",
 		createdAt: relationship.properties.createdAt,
 		updatedAt: relationship.properties.updatedAt,
 	};
@@ -60,14 +58,62 @@ export class Neo4jGraphStore {
 		await this.driver.verifyConnectivity();
 	}
 
+	// Uniqueness of the custom `id` is enforced by Neo4j constraints, created once per process before
+	// the first write. Syntax differs between Neo4j 3.5, 4.x and 5+/calendar versions (2025.x and later).
+	ensureConstraints() {
+		this.constraintsReady ??= this.createConstraints().catch((error) => {
+			this.constraintsReady = null;
+			throw error;
+		});
+		return this.constraintsReady;
+	}
+
+	async createConstraints() {
+		const session = this.driver.session(this.sessionOptions);
+
+		try {
+			const versionResult = await session.run("CALL dbms.components() YIELD versions RETURN versions[0] AS version");
+			const [major = 0, minor = 0] = String(versionResult.records[0]?.get("version") ?? "")
+				.split(".")
+				.map((part) => Number.parseInt(part, 10) || 0);
+			const nodeConstraint = major >= 5
+				? "CREATE CONSTRAINT knowledge_node_id IF NOT EXISTS FOR (n:KnowledgeNode) REQUIRE n.id IS UNIQUE"
+				: major === 4
+					? "CREATE CONSTRAINT knowledge_node_id IF NOT EXISTS ON (n:KnowledgeNode) ASSERT n.id IS UNIQUE"
+					: "CREATE CONSTRAINT ON (n:KnowledgeNode) ASSERT n.id IS UNIQUE";
+
+			try {
+				await session.run(nodeConstraint);
+			} catch (error) {
+				// 3.5 has no IF NOT EXISTS; an existing equivalent constraint is fine.
+				if (!/already exists|equivalent/i.test(error?.message ?? "")) {
+					throw new Error(`Could not enforce unique KnowledgeNode ids (duplicate ids may exist): ${error.message}`);
+				}
+			}
+
+			// Relationship property uniqueness needs Neo4j 5.7+. Older versions rely on deterministic relation ids.
+			if (major > 5 || (major === 5 && minor >= 7)) {
+				await session.run("CREATE CONSTRAINT relates_to_id IF NOT EXISTS FOR ()-[r:RELATES_TO]-() REQUIRE r.id IS UNIQUE");
+			}
+		} finally {
+			await session.close();
+		}
+	}
+
+	// Returns what Neo4j actually stored, so vector documents match the graph exactly (same as a reindex).
 	async upsertGraph(graphPayload) {
+		await this.ensureConstraints();
 		const session = this.driver.session(this.sessionOptions);
 		const now = new Date().toISOString();
+		const storedNodes = [];
+		const storedRelations = [];
 
 		try {
 			await session.executeWrite(async (tx) => {
+				storedNodes.length = 0;
+				storedRelations.length = 0;
 				for (const node of graphPayload.nodes) {
-					await tx.run(
+					const nodeResult = await tx.run(
 						`
 						MERGE (n:KnowledgeNode {id: $id})
 						ON CREATE SET n.createdAt = $now
@@ -75,20 +121,20 @@ export class Neo4jGraphStore {
 								n.name = $name,
 								n.type = $type,
 								n.description = CASE WHEN $description = "" THEN coalesce(n.description, "") ELSE $description END,
-								n.metadata = CASE WHEN $metadata = "" THEN coalesce(n.metadata, "") ELSE $metadata END,
 								n.updatedAt = $now
+						RETURN n
 						`,
 						{
 							...node,
 							description: compactString(node.description),
-							metadata: compactString(node.metadata),
 							now,
 						},
 					);
+					storedNodes.push(...nodeResult.records.map((record) => formatNode(record.get("n"))));
 				}
 
 				for (const relation of graphPayload.relations) {
-					await tx.run(
+					const relationResult = await tx.run(
 						`
 						MATCH (source:KnowledgeNode {id: $sourceId})
 						MATCH (target:KnowledgeNode {id: $targetId})
@@ -99,21 +145,23 @@ export class Neo4jGraphStore {
 								r.relation = $relation,
 								r.information = CASE WHEN $information = "" THEN coalesce(r.information, "") ELSE $information END,
 								r.description = CASE WHEN $description = "" THEN coalesce(r.description, "") ELSE $description END,
-								r.metadata = CASE WHEN $metadata = "" THEN coalesce(r.metadata, "") ELSE $metadata END,
 								r.updatedAt = $now
+						RETURN r, source.id AS sourceId, target.id AS targetId
 						`,
 						{
 							...relation,
 							information: compactString(relation.information),
 							description: compactString(relation.description),
-							metadata: compactString(relation.metadata),
 							now,
 						},
 					);
+					storedRelations.push(...relationResult.records.map((record) => (
+						formatRelationshipWithEndpoints(record.get("r"), record.get("sourceId"), record.get("targetId"))
+					)));
 				}
 			});
 
-			return graphPayload;
+			return { nodes: storedNodes, relations: storedRelations };
 		} finally {
 			await session.close();
 		}
@@ -365,6 +413,7 @@ export class Neo4jGraphStore {
 	}
 
 	async upsertNode(node) {
+		await this.ensureConstraints();
 		const session = this.driver.session(this.sessionOptions);
 		const now = new Date().toISOString();
 
@@ -378,7 +427,6 @@ export class Neo4jGraphStore {
 							n.name = $name,
 							n.type = $type,
 							n.description = $description,
-							n.metadata = $metadata,
 							n.updatedAt = $now
 					RETURN n
 					`,
@@ -388,7 +436,6 @@ export class Neo4jGraphStore {
 						name: compactString(node.name),
 						type: compactString(node.type),
 						description: compactString(node.description),
-						metadata: compactString(node.metadata),
 						now,
 					},
 				),
@@ -427,6 +474,7 @@ export class Neo4jGraphStore {
 	}
 
 	async upsertRelation(relation) {
+		await this.ensureConstraints();
 		const session = this.driver.session(this.sessionOptions);
 		const now = new Date().toISOString();
 
@@ -446,7 +494,6 @@ export class Neo4jGraphStore {
 						relation: $relation,
 						information: $information,
 						description: $description,
-						metadata: $metadata,
 						createdAt: createdAt,
 						updatedAt: $now
 					}]->(target)
@@ -459,7 +506,6 @@ export class Neo4jGraphStore {
 						relation: compactString(relation.relation),
 						information: compactString(relation.information),
 						description: compactString(relation.description),
-						metadata: compactString(relation.metadata),
 						now,
 					},
 				),

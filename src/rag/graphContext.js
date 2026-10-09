@@ -3,7 +3,7 @@ export function formatGraphContext(graph, prompts = {}) {
 	const relations = graph?.relations ?? [];
 	const nodeById = new Map(nodes.map((node) => [node.id, node]));
 	const nodeLines = nodes.map((node) =>
-		`- ${node.label || node.name || node.id} (${node.id}) | name: ${node.name} | type: ${node.type} | description: ${node.description || ""} | metadata: ${node.metadata || ""}`,
+		`- ${node.label || node.name || node.id} (${node.id}) | name: ${node.name} | type: ${node.type} | description: ${node.description || ""}`,
 	);
 	const relationLines = relations.map((relation) => {
 		const source = nodeById.get(relation.sourceId);
@@ -11,7 +11,7 @@ export function formatGraphContext(graph, prompts = {}) {
 		const sourceLabel = source?.label || source?.name || relation.sourceId;
 		const targetLabel = target?.label || target?.name || relation.targetId;
 
-		return `- ${relation.id} | ${sourceLabel} (${relation.sourceId}) -[${relation.relation}]-> ${targetLabel} (${relation.targetId}) | information: ${relation.information || ""} | description: ${relation.description || ""} | metadata: ${relation.metadata || ""}`;
+		return `- ${relation.id} | ${sourceLabel} (${relation.sourceId}) -[${relation.relation}]-> ${targetLabel} (${relation.targetId}) | information: ${relation.information || ""} | description: ${relation.description || ""}`;
 	});
 
 	return [

@@ -17,8 +17,9 @@ function scopeEnabled(scopes, name) {
 	return scopes.length === 0 || scopes.includes(name) || scopes.includes("*");
 }
 
-export function createDebugLogger({ enabled = false, directory, scopes = [], name = "debug" } = {}) {
-	if (!enabled || !scopeEnabled(scopes, name)) {
+// `name` sets the log file prefix; `scope` (defaults to name) is matched against `logging.scopes`.
+export function createDebugLogger({ enabled = false, directory, scopes = [], name = "debug", scope = name } = {}) {
+	if (!enabled || !scopeEnabled(scopes, scope)) {
 		return {
 			enabled: false,
 			path: null,
