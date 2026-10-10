@@ -1,78 +1,46 @@
 # MindMesh Core Context
 
-## Project Purpose
+Compressed briefing for coding agents. Behavior details live in `README.md`; code locations live in `codeMap.md`. Do not restate either here.
 
-MindMesh is a **HITL-gated, schema-governed institutional knowledge lifecycle system** — not a generic RAG pipeline. Its defining contract: LLMs suggest, humans approve, schema enforces. It manages the full lifecycle of structured knowledge: ingestion, validation, graph mutation, semantic search, scheduled maintenance (synthesis, decay detection, nugget extraction), and human memory refresh. Every write to the knowledge graph passes through either explicit human approval (HITL mode) or schema-validated auto-commit — there are no silent mutations.
+## Purpose
 
-Core capabilities: hybrid vector + graph RAG, governed mutable schema, background CRON-driven knowledge jobs, and a conversational query layer over a Neo4j + ChromaDB dual store.
+MindMesh is a HITL-gated, schema-governed knowledge graph for institutional knowledge, not a generic RAG pipeline. Contract: **LLMs suggest, humans approve, schema enforces.** Extracted facts become HITL proposals that a reviewer approves, edits, or regenerates with notes before they reach the graph; `auto` mode applies only schema-valid extractions.
 
-## Architecture Summary
+Implemented: hybrid vector + graph RAG (Ask), retrieval-augmented extraction (Ingest), HITL review with reviewer notes and LLM regeneration, an editable schema, an MCP server for external coding agents, and two on-demand graph jobs (scanner, nugget).
 
-Ingestion:
+Not implemented (do not assume they exist): scheduled/CRON jobs, knowledge synthesis, decay detection.
 
-```text
-User text
-  -> CLI or Web API
-  -> IngestionService
-  -> approved graph context lookup plus pending HITL context lookup
-  -> LLM graph extraction
-  -> graph payload normalization and schema validation
-  -> pending HITL proposal when HITL mode or schema violations apply
-  -> otherwise Neo4j graph mutation and Chroma vector sync
-```
+## Flows At A Glance
 
-Question answering:
+- Ingest: text -> graph + pending HITL context -> LLM extraction -> normalize -> HITL proposal (or apply in `auto` mode).
+- Ask: question -> Chroma entry nodes -> Neo4j expansion -> graph context -> LLM answer.
+- HITL: pending proposal -> edit / reviewer notes + regenerate -> approve (merge schema types, apply graph, index vectors) or reject.
+- MCP: the agent does the reasoning; MindMesh returns context and prompts and stores the results through the same proposal/apply path.
+- Web UI: Express APIs + Preact frontend on `/`, `/hitl`, `/schema`, `/jobs`.
 
-```text
-Question
-  -> CLI or Web API
-  -> HybridRagService
-  -> optional browser-session memory for follow-up resolution
-  -> Chroma vector entry-point search
-  -> Neo4j graph expansion
-  -> optional unverified HITL context
-  -> graph context formatting
-  -> LLM final answer
-```
+Stack: Node.js ES modules, Express, Preact (NeoVis and Sigma graph renderers), Neo4j (3.5 through 2025.x+), ChromaDB, pluggable LLM and embedding providers, MCP over stdio.
 
-Web UI:
+## Hard Rules
 
-```text
-Browser
-  -> Express server APIs
-  -> shared ingestion/RAG/job services
-  -> graph, chat, schema, jobs, and HITL review workspaces
-  -> Preact + Graphology + Sigma frontend
-```
+- Every graph write goes through HITL approval, a direct reviewer edit, or schema-valid `auto` mode. No silent mutations.
+- Neo4j is the source of truth. Chroma node/relation vectors are derived and rebuildable (`npm run kg:reindex-vectors`); HITL proposals live only in Chroma and are not rebuildable.
+- Keep graph writes and vector indexing in sync; index what Neo4j stored, not what was sent.
+- Ids are canonical and shared by Neo4j and Chroma: `node:<name>`, `rel:<hash of source:relation:target>`, unique in Neo4j. Never rename an existing node's `name`; recompute a relation's id when its type or endpoints change.
+- Record `metadata` holds HITL review signals (`AMBIGUITY:` / `CONTRADICTION:`) and exists only in proposals. Never persist it to the graph.
+- Approved types live only in the schema's `nodeTypes`/`relationshipTypes`. Type suggestions stay in proposals and are merged on approval; never auto-promote them.
+- The MCP server never creates an LLM provider.
+- Config comes from `config.json` with `{{KEY}}` placeholders resolved from `config.replacements.json`; no env-var settings except the web port. Never commit real secrets.
+- Prompt behavior is part of the contract. Update the prompt files and README together.
 
-## Runtime Stack
+## Design Reasons Worth Keeping
 
-- Node.js ES modules.
-- Express server for JSON APIs and static frontend assets.
-- Preact frontend bundled with esbuild.
-- Neo4j via `neo4j-driver`.
-- ChromaDB via `chromadb`.
-- Gemini, Ollama, custom HTTP, and hub chat LLM providers.
-- Gemini embeddings by default, with hub embeddings and Chroma default embedding support also available.
-- Graph UI uses Graphology, Graphology force layout, and Sigma.
-- PDF/DOCX/DOC upload text extraction uses `pdf-parse`, `mammoth`, and `word-extractor`.
+- Extraction prompt order follows recency bias: rules, field guidance, schema, and context come first; `{{USER_INPUT}}` and then `{{REVIEWER_REVISION}}` come last, because the end of the prompt gets the most attention.
+- Field guidance has its own `{{FIELD_GUIDANCE}}` placeholder, separate from the type catalog in `{{GRAPH_SCHEMA}}`, so field semantics sit next to the output syntax. `graphSchema.json` is the single source of truth for field meaning.
+- When one extraction contains the same node twice, the newer description wins, so later text can correct a bad one. Duplicate relations keep the longer text because they are additive.
+- A JSON config with a replacements file replaced env-var precedence because it was simpler to reason about.
 
-## Key Project Rules
+## Working Conventions
 
-- Prefer existing service boundaries over new abstractions.
-- Keep graph persistence and vector indexing behavior in sync.
-- Treat HITL as a first-class pathway. `ingestion.mode` controls whether schema-valid ingestion applies directly (`auto`) or stores proposals for review (`hitl`).
-- Keep schema behavior centralized around `schema/graphSchema.json` and `src/schema/graphSchema.js`.
-- Preserve HITL behavior for unknown or invalid schema terms.
-- Main-workspace manual graph mutations create HITL proposals; reviewer mutations in the HITL workspace can apply directly when schema-valid.
-- Do not commit real secrets. Prefer placeholders in `config.json` with local values supplied through private `config.replacements.json` or another caller-provided replacement source.
-- Keep frontend changes consistent with the existing Preact/Sigma UI rather than introducing a new UI stack.
-- For small tasks, avoid broad refactors and update only the relevant pathway.
-
-## Canonical Docs
-
-- `README.md` is the full canonical architecture/setup reference.
-- This file is the compressed always-useful agent briefing.
-- `MEMORY_BANK/codeMap.md` explains important code pathways.
-- `MEMORY_BANK/decisions.md` tracks durable architectural decisions.
-- `MEMORY_BANK/activeContext.md` is rewritten per task.
+- Prefer existing service boundaries over new abstractions; for small tasks, change only the relevant pathway.
+- Frontend: keep the existing Preact UI; one component per file under `src/server/public/components`; rebuild `app.bundle.js` (tracked) after UI changes.
+- Keep docs single-sourced: behavior -> `README.md`, code locations -> `codeMap.md`, rules -> this file, current task -> `activeContext.md`.

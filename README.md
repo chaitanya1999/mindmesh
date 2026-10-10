@@ -2,6 +2,8 @@
 
 Prototype personal knowledge management system that extracts graph facts from text/documents, stores approved facts in Neo4j, indexes approved graph records and pending HITL proposals in ChromaDB, and answers questions with a hybrid vector + graph RAG flow.
 
+Its working rule is "LLMs suggest, humans approve, schema enforces": extracted facts become HITL proposals that a reviewer approves, edits, or regenerates with notes before they reach the graph (or are applied directly in `auto` mode when schema-valid). The same pipeline is available three ways: the web UI, the CLIs, and an MCP server that lets any MCP-capable coding agent do the LLM reasoning without MindMesh needing its own LLM key.
+
 This README is written for humans and AI agents that need to understand or extend the codebase quickly.
 
 ## High-Level Architecture
@@ -35,6 +37,17 @@ Web UI
   -> same IngestionService and HybridRagService used by the CLIs
   -> graph, schema, jobs, and HITL review workspaces
   -> graph preview from Neo4jGraphStore plus pending HITL overlays
+
+HITL review
+  -> pending proposal (Chroma HITL collection)
+  -> reviewer edits / reviewer notes + regenerate (IngestionService.regenerateHitlProposal)
+  -> approve: schema types merged, IngestionService.applyGraphPayload()
+  -> Neo4jGraphStore.upsertGraph() + ChromaVectorStore.upsertGraphIndex(), note deleted
+
+MCP agent (no MindMesh LLM)
+  -> src/mcp/server.js (stdio)
+  -> ask / ingest-context / regenerate-context return context + prompts
+  -> the agent reasons, then apply-ingestion / apply-regeneration write proposals
 ```
 
 ## Runtime Stack
@@ -45,11 +58,12 @@ Web UI
   - Ollama via local HTTP API, default model `mistral`.
   - Custom HTTP endpoint via Gemini-style or OpenAI-compatible subproviders.
   - Hackathon hub chat-completions proxy, default model `gpt-4.1-nano`.
-- Graph database: Neo4j using the official `neo4j-driver`.
+- Graph database: Neo4j using the official `neo4j-driver`. Used with Neo4j 3.5 (portable install) and current versions (5.x / 2025.x+); the store adapts constraint syntax to the version.
 - Vector database: ChromaDB using `chromadb`.
 - Embeddings: Gemini `gemini-embedding-001` by default; hub embeddings and Chroma's default embedder are also supported.
 - Web server: Express serving JSON APIs and the bundled Preact/CSS frontend.
-- Graph UI: Preact for UI state, Graphology for the browser graph model, Graphology force layout for positioning, and Sigma for canvas rendering.
+- Graph UI: Preact for UI state; two graph renderers: NeoVis (`neovis.js`, default) and Graphology + Graphology force layout + Sigma.
+- MCP server: `@modelcontextprotocol/sdk` over stdio.
 - Document ingestion uploads: PDF via `pdf-parse`, DOCX via `mammoth`, and DOC via `word-extractor`.
 - Prompt files live under `/prompts`.
 
@@ -74,8 +88,16 @@ Web UI
 - `src/rag/hybridRagService.js`: vector entry-point retrieval, Neo4j expansion, context formatting, and final answer generation.
 - `src/jobs/kgJobsService.js`: graph job runner for scanner and nugget prompts.
 - `src/llm/geminiProvider.js`, `src/llm/ollamaProvider.js`, `src/llm/customHttpProvider.js`, and `src/llm/hubChatProvider.js`: LLM provider adapters with the same small interface.
-- `src/server/server.js`: Express web entry point for ask, ingest, graph, schema, jobs, upload, and HITL APIs.
-- `src/server/public`: Preact graph, chat, schema, jobs, and HITL review UI.
+- `src/server/server.js`: Express web entry point for ask, ingest, graph, schema, jobs, upload, and HITL APIs (including approve, reviewer notes, and regenerate).
+- `src/server/public`: Preact UI. `app.js` (App state/handlers and routes), `components/` (one component per file: `common`, `graph`, `chat`, `entity`, `hitl`, `schema`, `jobs`), `lib/` (shared helpers, including the client-side HITL proposal parser `lib/hitlProposal.js`), `styles.css`, and the built `app.bundle.js`.
+- `src/mcp/server.js`: MCP server (ask, ingest, and HITL regeneration tools); `src/mcp/smokeTest.js` is its smoke test.
+- `src/prompts/promptRegistry.js`: loads prompt files and renders the extraction prompt placeholders, including the HITL reviewer revision section.
+- `src/rag/graphContext.js`: formats graph context for Ask (`formatGraphContext`) and for extraction (`formatExtractionGraphContext`).
+- `src/logging/debugLogger.js`: opt-in, scope-filtered debug log files.
+- `src/*/providerFactory.js` (`llm`, `embedding`, `graph`, `vector`): pick the configured provider implementation.
+- `src/cli/reindexVectors.js`: rebuilds Chroma node/relation vectors from Neo4j; `src/cli/clearChroma.js`: deletes Chroma collections.
+- `prompts/`: extraction, answer, context-format, and job prompt templates.
+- `MEMORY_BANK/`: compressed context for coding agents: `core.md` (purpose and hard rules), `codeMap.md` (where each pathway lives in the code), `activeContext.md` (the current task). `CLAUDE.md` tells Claude Code how to use them. This README stays the single source for behavior.
 
 ## Setup
 
@@ -89,15 +111,20 @@ Run Neo4j and ChromaDB locally. Defaults are:
 
 ```text
 Neo4j bolt: bolt://localhost:7687
-Neo4j database: neo4j
+Neo4j database: neo4j   (set graph.neo4j.database for a named database)
 Chroma: http://localhost:8000
 ```
 
-Create a local POC config if needed:
+`npm run chroma:start` starts a local Chroma server with data in `./chroma_data` (requires the Python `chroma` CLI).
+
+Create a local POC config and graph schema if needed (`schema/graphSchema.json` is gitignored, so a fresh clone only has the example):
 
 ```powershell
 Copy-Item .\config.example.json .\config.json
+Copy-Item .\schema\graphSchema.example.json .\schema\graphSchema.json
 ```
+
+Without `schema/graphSchema.json`, ingestion and the server fail with `Graph schema file not found`.
 
 Use placeholders in `config.json` for secrets or machine-specific values, then put the local replacement values in `config.replacements.json`:
 
@@ -127,7 +154,7 @@ Use placeholders in `config.json` for secrets or machine-specific values, then p
 
 ## Configuration
 
-`getConfig()` reads `config.json` from the repository root, applies optional replacements, and parses the result as JSON. The config loader does not read application settings from environment variables and does not supply hardcoded fallback defaults; required defaults should live in `config.json` or `config.example.json`.
+`getConfig()` reads `config.json` from the repository root, applies optional replacements, and parses the result as JSON. The config loader does not read application settings from environment variables and does not supply hardcoded fallback defaults; required defaults should live in `config.json` or `config.example.json`. The only environment variables used anywhere are `KG_WEB_PORT` / `PORT` for the web server port.
 
 Replacement model:
 
@@ -267,7 +294,7 @@ Each ask run writes a timestamped `ask-*.log` file containing:
 - raw LLM answer response
 - exception details when the ask flow fails
 
-## MCP Server (Ask & Ingest)
+## MCP Server (Ask, Ingest & HITL Regeneration)
 
 MindMesh exposes an MCP (Model Context Protocol) server over stdio so that any LLM or coding agent can perform the ask and ingest features without invoking MindMesh's own LLM providers. The calling agent performs all reasoning; the MCP server only retrieves context, formats prompts, and applies/stores graph mutations.
 
@@ -425,14 +452,20 @@ Use a provider override for a single CLI run:
 npm run kg:ask -- --provider ollama "What does the EKYC screen use?"
 ```
 
-Use the custom HTTP provider:
+Use the custom HTTP (bridge) provider. It is meant for networks where the LLM API must be reached through a local relay: MindMesh POSTs to `endpoint`, and the relay forwards the call to `bridgedEndpoint`. `subProvider` selects the request/response format (`gemini` or `openai`):
 
 ```json
 {
   "llm": {
     "provider": "custom",
     "custom": {
-      "endpoint": "http://localhost:3001/llm"
+      "subProvider": "openai",
+      "openai": {
+        "endpoint": "http://localhost:3001/llm",
+        "bridgedEndpoint": "https://api.example.com/v1/chat/completions",
+        "apiKey": "{{CUSTOM_LLM_API_KEY}}",
+        "model": "model-name"
+      }
     }
   }
 }
@@ -442,7 +475,7 @@ Use the custom HTTP provider:
 npm run kg:test-llm -- --provider custom
 ```
 
-The custom endpoint receives a JSON body with a single `text` field containing the full prompt and should return the model output as a plain string.
+The relay receives `{ endpoint, method, headers, body }`: `endpoint` is `bridgedEndpoint`, the headers carry the API key (`Authorization: Bearer` for `openai`, `X-goog-api-key` for `gemini`), and `body` is an OpenAI chat-completions request (`model`, system + user messages) or a Gemini `contents` request (system prompt and prompt joined into one text part). The relay returns the provider's JSON response; MindMesh reads `choices[0].message.content` (`openai`) or the first non-thought text part of `candidates[0]` (`gemini`). A plain-string response is also accepted. Note: `config.example.json` still shows an older flat `custom.endpoint` shape, which the provider does not accept.
 
 Use the hackathon hub provider:
 
@@ -531,7 +564,7 @@ Priority order:
 
 The ingestion pipeline now uses a single, custom line-oriented extraction format. Extraction prompt files are templates. Ingestion renders `{{GRAPH_SCHEMA}}`, `{{FIELD_GUIDANCE}}`, `{{EXISTING_GRAPH_CONTEXT}}`, `{{USER_INPUT}}`, and `{{REVIEWER_REVISION}}` into the custom extraction prompt before calling the LLM. `{{REVIEWER_REVISION}}` is empty for normal ingestion; when a HITL proposal is regenerated it holds the reviewer notes and the previous proposal (see HITL Regeneration). Existing graph context is retrieved from Chroma and expanded through Neo4j; pending HITL context is also retrieved from the Chroma HITL collection. Both context sources are intended for identity resolution, node-name reuse, disambiguation, and avoiding duplicate facts. New graph facts should still come from `{{USER_INPUT}}`.
 
-Records are one-per-line using `|` as an unescaped field separator. To include special characters inside a field you must use backslash escapes: `\\n` for newline, `\\r` for carriage return, `\\t` for tab, `\\|` for a literal pipe, and `\\\\` for a literal backslash. The parser decodes these escapes into their runtime characters.
+Records are one-per-line using `|` as an unescaped field separator. To include special characters inside a field you must use backslash escapes: `\n` for newline, `\r` for carriage return, `\t` for tab, `\|` for a literal pipe, and `\\` for a literal backslash. The parser decodes these escapes into their runtime characters.
 
 The custom extraction prompt asks the model to wrap records in explicit demarcators. The parser consumes only the text inside the first delimited block when present, so extra model commentary outside the block is ignored:
 
@@ -755,14 +788,14 @@ Routes:
 
 Layout and behavior:
 
-- Desktop: graph preview uses roughly two thirds of the screen; simulated chat uses one third.
-- Mobile: graph preview stacks above the chat panel.
+- Desktop: the graph preview and the side panel are split by a draggable divider (keyboard-resizable, snaps closed near the edges, double-click resets). The side panel starts at 25% of the width on `/` and 40% on `/hitl`, `/jobs`, and `/schema`.
+- Mobile: graph preview stacks above the side panel.
 - The graph preview has two renderers, toggled in the graph header: NeoVis (default) and Graphology + Sigma with force-layout positioning. Both support pan/zoom, hover focus, click-to-select focus, and compact relationship labels.
 - The graph panel includes instant client-side search over the loaded preview and full Neo4j search on submit. Search results focus a loaded node or fetch its neighborhood.
-- The main workspace has tabs for chat, details, manage, and related task surfaces.
-- The details tab edits or deletes the selected node/relation. The Name field is read-only for nodes that already exist in the graph, because the name is part of the node id; change the label instead.
-- The manage tab manually creates nodes and relationships.
-- Main-workspace manual node and relationship mutations create HITL proposals.
+- The main workspace side panel has **Ask** and **Ingest** tabs.
+- Clicking a node or relation opens a details modal to edit or delete it. The Name field is read-only for nodes that already exist in the graph, because the name is part of the node id; change the label instead.
+- Graph action buttons open modals to create nodes and relationships manually.
+- On `/`, manual node and relationship mutations create HITL proposals. On `/hitl`, reviewer mutations apply directly when schema-valid, or update the open proposal draft when one is selected.
 - The HITL workspace previews pending proposals over the approved graph, allows reviewer edits, and applies approved graph/schema mutations.
   - Submission cards show per-operation counts, e.g. `12N (8C 3U 1D) 5R (5C) 2NT 1RT` (N nodes, R relations, NT/RT node/relation type suggestions; C/U/D create/update/delete, zero counts omitted). They are parsed client-side with the same parser as the detail view. Cards also show the short `#ref` and Regenerated/Notes tags.
   - The proposal detail is a collapsible tree: Nodes and Relations each split into Create, Update, and Delete; Schema suggestions split into Node types and Relation types; then Review signals.
@@ -825,6 +858,7 @@ LLM providers should implement:
 - `generateText({ systemPrompt, prompt })`
 - `extractGraph({ text, systemPrompt })`
 - `generateAnswer({ systemPrompt, context, query })`
+- optionally `extractGraphWithRawResponse({ text, systemPrompt, prompt, debugLogger })`, returning `{ graph, rawResponse }`. All current providers implement it; ingestion and regeneration use it so the stored HITL proposal is the model's exact output.
 
 Graph stores should implement the methods currently used by CLIs and services:
 
@@ -860,7 +894,10 @@ Vector stores should implement:
 - `getHitlNote(id)`
 - `deleteHitlNotes(ids)`
 - `queryHitlNotes(query, topK)`
+- `clearGraphIndex()` (drops only the node and relation collections; used by `kg:reindex-vectors`)
 - `smokeTest()`
+
+The Neo4j store also enforces id uniqueness itself (`ensureConstraints()`, called before writes); another graph store must guarantee unique node and relation ids in its own way.
 
 To add a provider, create the adapter and update the relevant `providerFactory.js`.
 
@@ -869,7 +906,7 @@ To add a provider, create the adapter and update the relevant `providerFactory.j
 - This is a POC, not a hardened service. There is no migration system, no delete/update reconciliation for removed facts, and no automated unit test framework beyond smoke-test scripts.
 - `config.json` may contain local placeholders or local secrets. Inspect `config.example.json` for shape, and keep real replacement values in local-only `config.replacements.json` or another private source.
 - Prompt behavior is part of the application contract. Update prompt files and README together when changing extraction or answer semantics.
-- Chroma retrieval depends on its configured embedding implementation. If you switch embedding providers or dimensions, clear/recreate Chroma collections before ingesting again.
-- Neo4j relationship type is always `RELATES_TO`; the semantic relation is stored in the `relation` property.
+- Chroma retrieval depends on its configured embedding implementation. If you switch embedding providers or dimensions, run `npm run kg:reindex-vectors` to rebuild the node and relation collections. HITL proposals are embedded too and cannot be rebuilt from Neo4j, so approve or reject pending proposals first, then recreate the HITL collection (`kg:clear-chroma` deletes it).
+- `rag.memory.rewriteQueryEnabled` is currently ignored: LLM query rewriting is disabled in `HybridRagService`, and retrieval uses the question plus recent chat memory.- Neo4j relationship type is always `RELATES_TO`; the semantic relation is stored in the `relation` property.
 - `source` is passed into `upsertGraph()` today but is not persisted by `Neo4jGraphStore`.
 - The fallback ingestion text in `src/cli/ingest.js` is intentionally large and domain-specific. It is sample data, not a schema definition.
