@@ -12,7 +12,18 @@
 			"temperature": null
 		},
 		"custom": {
-			"endpoint": "http://localhost:3001/llm"
+			"subProvider": "openai",
+			"openai": {
+				"endpoint": "http://localhost:3001/llm",
+				"bridgedEndpoint": "https://api.openai.com/v1/chat/completions",
+				"apiKey": "{{CUSTOM_LLM_API_KEY}}",
+				"model": "gpt-4.1-mini"
+			},
+			"gemini": {
+				"endpoint": "http://localhost:3001/llm",
+				"bridgedEndpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+				"apiKey": "{{CUSTOM_LLM_API_KEY}}"
+			}
 		},
 		"hub": {
 			"baseUrl": "https://hub-proxy-service.thankfulfield-16b4d5d6.eastus.azurecontainerapps.io",
@@ -66,8 +77,7 @@
 		"memory": {
 			"enabled": true,
 			"maxMessages": 12,
-			"maxMessageChars": 2000,
-			"rewriteQueryEnabled": true
+			"maxMessageChars": 2000
 		}
 	},
 	"ingestion": {

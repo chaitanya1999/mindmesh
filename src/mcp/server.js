@@ -43,7 +43,6 @@ const ragService = new HybridRagService({
 	memoryEnabled: config.rag.memory.enabled,
 	memoryMaxMessages: config.rag.memory.maxMessages,
 	memoryMaxMessageChars: config.rag.memory.maxMessageChars,
-	rewriteQueryWithMemory: config.rag.memory.rewriteQueryEnabled,
 });
 
 function textContent(value) {

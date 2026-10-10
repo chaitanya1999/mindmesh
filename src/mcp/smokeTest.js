@@ -2,8 +2,15 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { getConfig } from "../config.js";
+import { createGraphStore } from "../graph/providerFactory.js";
+import { createVectorStore } from "../vector/providerFactory.js";
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverPath = path.join(__dirname, "server.js");
+const SMOKE_SOURCE_NAME = "mcp_smoke_test_node";
+const SMOKE_TARGET_NAME = "mcp_smoke_test_target";
+let createdHitlNoteId = null;
 
 const child = spawn(process.execPath, [serverPath], {
 	stdio: ["pipe", "pipe", "pipe"],
@@ -108,17 +115,19 @@ async function main() {
 		const schemaResult = await send("resources/read", { uri: "mindmesh://schema" });
 		console.log("resources/read schema OK: text length =", schemaResult.contents?.[0]?.text?.length ?? 0);
 		
-		// Test apply-ingestion with a schema-valid record (auto mode should apply directly).
+		// apply-ingestion uses throwaway nodes only; cleanUp() removes whatever it created
+		// (graph data in auto mode, a pending HITL proposal in hitl mode).
 		const applyResult = await send("tools/call", {
 			name: "apply-ingestion",
 			arguments: {
 				graphRecords: [
 					"<start#$#$>",
-					"NODE_CREATE|mcp_smoke_test_node|MCP Smoke Test Node|screen|A node created by the MCP smoke test.|",
-					"RELATION_CREATE|mcp_smoke_test_node|ckyc_search_screen|uses|created for smoke test|",
+					`NODE_CREATE|${SMOKE_SOURCE_NAME}|MCP Smoke Test Node|screen|A node created by the MCP smoke test.|`,
+					`NODE_CREATE|${SMOKE_TARGET_NAME}|MCP Smoke Test Target|screen|A node created by the MCP smoke test.|`,
+					`RELATION_CREATE|${SMOKE_SOURCE_NAME}|${SMOKE_TARGET_NAME}|uses|created for smoke test|`,
 					"</end#$#$>",
 				].join("\n"),
-				text: "MCP smoke test node uses the CKYC search screen.",
+				text: "MCP smoke test node uses the MCP smoke test target.",
 				userName: "mcp-smoke-test",
 				source: "mcp-smoke-test",
 			},
@@ -127,20 +136,56 @@ async function main() {
 			throw new Error(`apply-ingestion returned error: ${applyResult.content?.[0]?.text ?? "no message"}`);
 		}
 		const applyParsed = JSON.parse(applyResult.content?.[0]?.text ?? "{}");
+		createdHitlNoteId = applyParsed.hitlNoteId ?? null;
 		console.log("apply-ingestion OK: status =", applyParsed.status, "applied =", applyParsed.applied);
 		console.log("apply-ingestion OK: nodes =", applyParsed.nodes?.length ?? 0, "relations =", applyParsed.relations?.length ?? 0);
-		
-		// Test the templated node resource using a node that should exist.
-		const nodeResult = await send("resources/read", { uri: "mindmesh://nodes/node:ckyc_search_screen" });
-		console.log("resources/read node OK: text length =", nodeResult.contents?.[0]?.text?.length ?? 0);
-		
+
+		if (applyParsed.applied) {
+			const nodeResult = await send("resources/read", { uri: `mindmesh://nodes/node:${SMOKE_SOURCE_NAME}` });
+			console.log("resources/read node OK: text length =", nodeResult.contents?.[0]?.text?.length ?? 0);
+		} else {
+			console.log("resources/read node skipped: records were stored as a HITL proposal, not applied.");
+		}
+
 		console.log("\nALL SMOKE TESTS PASSED");
 	} catch (error) {
 		console.error("\nSMOKE TEST FAILED:", error.message);
 		process.exitCode = 1;
 	} finally {
 		child.kill();
+		try {
+			await cleanUp();
+		} catch (error) {
+			console.error("Smoke test cleanup failed:", error.message);
+			process.exitCode = 1;
+		}
 		setTimeout(() => process.exit(process.exitCode ?? 0), 200);
+	}
+}
+
+async function cleanUp() {
+	const config = getConfig();
+	const graphStore = createGraphStore(config);
+	const vectorStore = createVectorStore(config);
+
+	try {
+		if (createdHitlNoteId) {
+			await vectorStore.deleteHitlNotes([createdHitlNoteId]);
+		}
+
+		const nodeIds = [`node:${SMOKE_SOURCE_NAME}`, `node:${SMOKE_TARGET_NAME}`];
+		const relationIds = [];
+		for (const nodeId of nodeIds) {
+			const result = await graphStore.deleteNode(nodeId);
+			relationIds.push(...(result.relationIds ?? []));
+		}
+		await vectorStore.deleteNodes(nodeIds);
+		if (relationIds.length > 0) {
+			await vectorStore.deleteRelations(relationIds);
+		}
+		console.log(`cleanup OK: removed smoke test nodes${createdHitlNoteId ? " and HITL proposal" : ""}.`);
+	} finally {
+		await graphStore.close();
 	}
 }
 

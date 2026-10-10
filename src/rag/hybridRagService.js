@@ -16,42 +16,6 @@ function buildRetrievalQuery({ query, memoryMessages }) {
 	return `Conversation so far:\n${conversation}\n\nCurrent question:\n${query}`;
 }
 
-// Query rewriting is not required for the current POC. Keep this reference here
-// in case we want to re-enable standalone follow-up rewriting later.
-// function buildQueryRewritePrompt({ conversation, query }) {
-//   return [
-//     "Rewrite the current question into a standalone question for knowledge graph retrieval.",
-//     "Use the conversation only to resolve references like it, they, this, that, he, she, or the previous topic.",
-//     "Do not answer the question.",
-//     "Return only the rewritten question. If no rewrite is needed, return the original question.",
-//     "",
-//     `Conversation so far:\n${conversation}`,
-//     "",
-//     `Current question: ${query}`,
-//     "",
-//     "Standalone question:",
-//   ].join("\n");
-// }
-//
-// function cleanRewrittenQuery(value, fallback) {
-//   const text = String(value ?? "").trim();
-//   if (!text) {
-//     return fallback;
-//   }
-//
-//   const firstLine = text
-//     .split(/\r?\n/)
-//     .map((line) => line.trim())
-//     .find(Boolean);
-//
-//   return String(firstLine ?? fallback)
-//     .replace(/^standalone question:\s*/i, "")
-//     .replace(/^rewritten question:\s*/i, "")
-//     .replace(/^question:\s*/i, "")
-//     .replace(/^["']|["']$/g, "")
-//     .trim() || fallback;
-// }
-
 function normalizeMemoryMessages(messages, { maxMessages = 12, maxMessageChars = 2000 } = {}) {
 	if (!Array.isArray(messages)) {
 		return [];
@@ -162,7 +126,6 @@ export class HybridRagService {
 		memoryEnabled = true,
 		memoryMaxMessages = 12,
 		memoryMaxMessageChars = 2000,
-		rewriteQueryWithMemory = true,
 	}) {
 		this.llmProvider = llmProvider;
 		this.graphStore = graphStore;
@@ -174,42 +137,15 @@ export class HybridRagService {
 		this.memoryEnabled = memoryEnabled;
 		this.memoryMaxMessages = memoryMaxMessages;
 		this.memoryMaxMessageChars = memoryMaxMessageChars;
-		this.rewriteQueryWithMemory = rewriteQueryWithMemory;
 	}
-	
+
+	// Retrieval uses the question plus recent chat memory directly; there is no LLM query rewriting.
 	async buildStandaloneRetrievalQuery({ query, conversation, memoryMessages, debugLogger }) {
 		const retrievalQuery = buildRetrievalQuery({ query, memoryMessages });
 		if (conversation && retrievalQuery !== query) {
-			logAsk(debugLogger, "[ask] Query rewrite disabled for POC; using current chat session context directly for retrieval.");
+			logAsk(debugLogger, "[ask] Using current chat session context directly for retrieval.");
 		}
 		return retrievalQuery;
-		
-		/*
-		if (!this.rewriteQueryWithMemory || !conversation) {
-		return buildRetrievalQuery({ query, memoryMessages });
-		}
-		
-		const rewritePrompt = buildQueryRewritePrompt({ conversation, query });
-		debugLogger.section("Query Rewrite Prompt", rewritePrompt);
-		logAsk(debugLogger, "[ask] Rewriting question with current chat session context for retrieval...");
-		
-		try {
-		const rewrittenQuery = await this.llmProvider.generateAnswer({
-		systemPrompt: "You rewrite follow-up questions into standalone retrieval questions.",
-		query,
-		prompt: rewritePrompt,
-		debugLogger,
-		});
-		const rewrittenRetrievalQuery = cleanRewrittenQuery(rewrittenQuery, query);
-		logAsk(debugLogger, `[ask] Retrieval query: ${previewText(rewrittenRetrievalQuery)}`);
-		debugLogger.section("Rewritten Retrieval Query", rewrittenRetrievalQuery);
-		return rewrittenRetrievalQuery;
-		} catch (error) {
-		logAsk(debugLogger, `[ask] Query rewrite failed; using conversation-augmented retrieval query. ${error?.message ?? String(error)}`);
-		debugLogger.json("Query Rewrite Exception", errorDetails(error));
-		return buildRetrievalQuery({ query, memoryMessages });
-		}
-		*/
 	}
 	
 	async retrieveContext({

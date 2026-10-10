@@ -43,4 +43,4 @@ Stack: Node.js ES modules, Express, Preact (NeoVis and Sigma graph renderers), N
 
 - Prefer existing service boundaries over new abstractions; for small tasks, change only the relevant pathway.
 - Frontend: keep the existing Preact UI; one component per file under `src/server/public/components`; rebuild `app.bundle.js` (tracked) after UI changes.
-- Keep docs single-sourced: behavior -> `README.md`, code locations -> `codeMap.md`, rules -> this file, current task -> `activeContext.md`.
+- Keep docs single-sourced: behavior -> `README.md`, code locations -> `codeMap.md`, rules -> this file, current task -> `activeContext.md`, planned work -> `roadmap.md`.

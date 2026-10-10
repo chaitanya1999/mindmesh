@@ -75,7 +75,6 @@ export function describeRuntime(config) {
 		ingestContextDepth: config.ingestion?.contextDepth,
 		ragMemoryEnabled: config.rag?.memory?.enabled,
 		ragMemoryMaxMessages: config.rag?.memory?.maxMessages,
-		ragMemoryRewriteQueryEnabled: config.rag?.memory?.rewriteQueryEnabled,
 		schemaPath: config.schema?.path,
 		debugLog: config.logging?.enabled,
 		debugLogDir: config.logging?.directory,

@@ -97,7 +97,7 @@ MCP agent (no MindMesh LLM)
 - `src/*/providerFactory.js` (`llm`, `embedding`, `graph`, `vector`): pick the configured provider implementation.
 - `src/cli/reindexVectors.js`: rebuilds Chroma node/relation vectors from Neo4j; `src/cli/clearChroma.js`: deletes Chroma collections.
 - `prompts/`: extraction, answer, context-format, and job prompt templates.
-- `MEMORY_BANK/`: compressed context for coding agents: `core.md` (purpose and hard rules), `codeMap.md` (where each pathway lives in the code), `activeContext.md` (the current task). `CLAUDE.md` tells Claude Code how to use them. This README stays the single source for behavior.
+- `MEMORY_BANK/`: compressed context for coding agents: `core.md` (purpose and hard rules), `codeMap.md` (where each pathway lives in the code), `activeContext.md` (the current task), `roadmap.md` (planned work). `CLAUDE.md` tells Claude Code how to use them. This README stays the single source for behavior.
 
 ## Setup
 
@@ -334,7 +334,7 @@ The user names a pending HITL proposal by its full id or the short ref shown in 
 2. Produce the complete revised graph records following the returned `extractionSystemPrompt`.
 3. Call `apply-regeneration` with the same proposal reference, the records, and the notes. The proposal stays pending for approval in the HITL UI.
 
-The MCP server reuses the existing `HybridRagService`, `IngestionService`, graph/vector stores, prompt registry, and schema modules. It never creates an LLM provider. A smoke test is available at `src/mcp/smokeTest.js` (requires Neo4j and ChromaDB running). Note that it calls `apply-ingestion`, so in `hitl` mode it leaves a pending proposal in the queue.
+The MCP server reuses the existing `HybridRagService`, `IngestionService`, graph/vector stores, prompt registry, and schema modules. It never creates an LLM provider. A smoke test is available at `src/mcp/smokeTest.js` (requires Neo4j and ChromaDB running). Its `apply-ingestion` call uses two throwaway nodes, and it removes whatever it created afterwards (the pending proposal in `hitl` mode, the nodes and their vectors in `auto` mode).
 
 ## Commands
 
@@ -475,7 +475,7 @@ Use the custom HTTP (bridge) provider. It is meant for networks where the LLM AP
 npm run kg:test-llm -- --provider custom
 ```
 
-The relay receives `{ endpoint, method, headers, body }`: `endpoint` is `bridgedEndpoint`, the headers carry the API key (`Authorization: Bearer` for `openai`, `X-goog-api-key` for `gemini`), and `body` is an OpenAI chat-completions request (`model`, system + user messages) or a Gemini `contents` request (system prompt and prompt joined into one text part). The relay returns the provider's JSON response; MindMesh reads `choices[0].message.content` (`openai`) or the first non-thought text part of `candidates[0]` (`gemini`). A plain-string response is also accepted. Note: `config.example.json` still shows an older flat `custom.endpoint` shape, which the provider does not accept.
+The relay receives `{ endpoint, method, headers, body }`: `endpoint` is `bridgedEndpoint`, the headers carry the API key (`Authorization: Bearer` for `openai`, `X-goog-api-key` for `gemini`), and `body` is an OpenAI chat-completions request (`model`, system + user messages) or a Gemini `contents` request (system prompt and prompt joined into one text part). The relay returns the provider's JSON response; MindMesh reads `choices[0].message.content` (`openai`) or the first non-thought text part of `candidates[0]` (`gemini`). A plain-string response is also accepted. `config.example.json` contains ready-to-edit `openai` and `gemini` blocks.
 
 Use the hackathon hub provider:
 
@@ -756,7 +756,7 @@ If ingestion context config is omitted, `contextTopK` and `contextDepth` fall ba
 `HybridRagService.answer({ query, source })` performs:
 
 1. Normalize optional browser-session memory messages.
-2. Build a retrieval query from the current question plus recent memory. Standalone LLM query rewriting is currently disabled.
+2. Build a retrieval query from the current question plus recent memory. There is no LLM query rewriting (it would need an extra LLM call, which the MCP path cannot make).
 3. Query Chroma node collection with `topK` from config.
 4. Use returned node IDs as entry points.
 5. Expand Neo4j graph from those entry points to configured `depth`.
@@ -907,6 +907,6 @@ To add a provider, create the adapter and update the relevant `providerFactory.j
 - `config.json` may contain local placeholders or local secrets. Inspect `config.example.json` for shape, and keep real replacement values in local-only `config.replacements.json` or another private source.
 - Prompt behavior is part of the application contract. Update prompt files and README together when changing extraction or answer semantics.
 - Chroma retrieval depends on its configured embedding implementation. If you switch embedding providers or dimensions, run `npm run kg:reindex-vectors` to rebuild the node and relation collections. HITL proposals are embedded too and cannot be rebuilt from Neo4j, so approve or reject pending proposals first, then recreate the HITL collection (`kg:clear-chroma` deletes it).
-- `rag.memory.rewriteQueryEnabled` is currently ignored: LLM query rewriting is disabled in `HybridRagService`, and retrieval uses the question plus recent chat memory.- Neo4j relationship type is always `RELATES_TO`; the semantic relation is stored in the `relation` property.
+- Neo4j relationship type is always `RELATES_TO`; the semantic relation is stored in the `relation` property.
 - `source` is passed into `upsertGraph()` today but is not persisted by `Neo4jGraphStore`.
 - The fallback ingestion text in `src/cli/ingest.js` is intentionally large and domain-specific. It is sample data, not a schema definition.

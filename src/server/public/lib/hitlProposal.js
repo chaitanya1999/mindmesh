@@ -1,5 +1,3 @@
-export const HITL_CHIP_DENSITY_KEY = "mindmesh.hitlChipDensity";
-
 const START_MARKERS = new Set(["<start#$#$>", "start#$#$"]);
 const END_MARKERS = new Set(["</end#$#$>", "<end#$#$>", "end#$#$"]);
 
@@ -526,16 +524,4 @@ export function proposalOperationCounts(proposal) {
 // Null when the note list came from a server that does not send llmResponse.
 export function noteOperationCounts(note) {
 	return note?.llmResponse ? proposalOperationCounts(parseHitlProposal(note.llmResponse)) : null;
-}
-
-export function strongNoteChips(note) {
-	const signals = hitlSignalCounts(note);
-	return [
-		{ kind: "neutral", label: "Nodes", value: Number(note?.nodeCount ?? 0) },
-		{ kind: "neutral", label: "Relations", value: Number(note?.relationCount ?? 0) },
-		{ kind: "delete", label: "Delete", value: deleteCount(note) },
-		{ kind: "schema", label: "Schema", value: Number(note?.schemaSuggestionCount ?? 0) },
-		{ kind: "contradiction", label: "Contradiction", value: signals.contradictionCount },
-		{ kind: "ambiguity", label: "Ambiguity", value: signals.ambiguityCount },
-	].filter((chip) => chip.value > 0);
 }

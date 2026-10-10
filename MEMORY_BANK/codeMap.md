@@ -128,7 +128,7 @@ README: Web UI.
 README: MCP Server.
 
 - `src/mcp/server.js`: tools `ask`, `ingest-context`, `apply-ingestion`, `regenerate-context`, `apply-regeneration`; resources `mindmesh://schema`, `mindmesh://graph`, `mindmesh://hitl/notes`, `mindmesh://nodes/{nodeId}`, `mindmesh://relations/{relationId}`. Reuses `IngestionService`, `HybridRagService`, the stores, and the prompt registry; reads the same `config.json`.
-- Smoke test: `src/mcp/smokeTest.js` (leaves a pending proposal in `hitl` mode).
+- Smoke test: `src/mcp/smokeTest.js` (throwaway nodes; `cleanUp()` removes the created proposal or nodes).
 
 ## Jobs
 

@@ -15,7 +15,7 @@ At task end, record the outcome under "Last Completed", move unfinished items to
 
 ## Current Task
 
-None.
+None. Next up: roadmap item 1, "Split `App()` into hooks and pages" (full plan in `MEMORY_BANK/roadmap.md`).
 
 ## Last Completed (2026-10-10)
 
@@ -26,10 +26,10 @@ HITL and graph-integrity work, all pushed to `master` (latest commit `342f517`, 
 - Neo4j id uniqueness constraints, rename guard, relation re-id on edit, vectors built from stored records, `kg:reindex-vectors` runs `--fresh`, review-signal `metadata` no longer persisted.
 - README, `core.md`, and `codeMap.md` re-checked against the code; `decisions.md` and `promptTemplates.md` removed (their durable reasons moved into `core.md`).
 
+Cleanup after that: fixed `config.example.json` custom provider shape, removed the unused `rag.memory.rewriteQueryEnabled` setting and its dead code, removed the HITL "Strong" chip mode (Compact counts only), and made `src/mcp/smokeTest.js` use throwaway nodes and clean up after itself.
+
 ## Open Follow-Ups
 
-- `config.example.json` shows a flat `llm.custom.endpoint`; the custom provider needs `subProvider` plus a `gemini`/`openai` block.
-- `rag.memory.rewriteQueryEnabled` is ignored (query rewriting is disabled in `HybridRagService`).
-- `HitlReviewPanel.js` imports an unused `deleteCount`.
-- `src/mcp/smokeTest.js` leaves a pending HITL proposal behind in `hitl` mode.
-- Planned direction (from the v2 planning discussion): richer MCP tools (entity search/get, dependency traversal, mode-checked proposal submission), moving HITL proposals out of Chroma into a proper proposal store, a folder restructure, and a UI revamp.
+- Verify on the work laptop (Neo4j 3.5): `npm run kg:test-db`, one ingest and one approve (constraint syntax and `neo4j-driver` v6 compatibility are untested there).
+- The `auto`-mode branch of the MCP smoke-test cleanup is untested (only `hitl` mode was run).
+- Longer-term work lives in `MEMORY_BANK/roadmap.md`.

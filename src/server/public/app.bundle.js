@@ -65142,7 +65142,6 @@ function D2(n2, t3) {
 }
 
 // src/server/public/lib/hitlProposal.js
-var HITL_CHIP_DENSITY_KEY = "mindmesh.hitlChipDensity";
 var START_MARKERS = /* @__PURE__ */ new Set(["<start#$#$>", "start#$#$"]);
 var END_MARKERS = /* @__PURE__ */ new Set(["</end#$#$>", "<end#$#$>", "end#$#$"]);
 function decodePipelineField(value) {
@@ -65577,17 +65576,6 @@ function proposalOperationCounts(proposal) {
 function noteOperationCounts(note) {
   return note?.llmResponse ? proposalOperationCounts(parseHitlProposal(note.llmResponse)) : null;
 }
-function strongNoteChips(note) {
-  const signals = hitlSignalCounts(note);
-  return [
-    { kind: "neutral", label: "Nodes", value: Number(note?.nodeCount ?? 0) },
-    { kind: "neutral", label: "Relations", value: Number(note?.relationCount ?? 0) },
-    { kind: "delete", label: "Delete", value: deleteCount(note) },
-    { kind: "schema", label: "Schema", value: Number(note?.schemaSuggestionCount ?? 0) },
-    { kind: "contradiction", label: "Contradiction", value: signals.contradictionCount },
-    { kind: "ambiguity", label: "Ambiguity", value: signals.ambiguityCount }
-  ].filter((chip) => chip.value > 0);
-}
 
 // node_modules/preact/jsx-runtime/dist/jsxRuntime.module.js
 var f3 = 0;
@@ -65969,19 +65957,6 @@ var FILTERS = [
   { id: "deletes", label: "Deletes" },
   { id: "schema", label: "Schema" }
 ];
-function readStoredDensity() {
-  try {
-    return window.localStorage.getItem(HITL_CHIP_DENSITY_KEY) === "strong" ? "strong" : "compact";
-  } catch {
-    return "compact";
-  }
-}
-function writeStoredDensity(value) {
-  try {
-    window.localStorage.setItem(HITL_CHIP_DENSITY_KEY, value);
-  } catch {
-  }
-}
 var OPERATION_CODES = [
   { key: "create", code: "C" },
   { key: "update", code: "U" },
@@ -66028,31 +66003,24 @@ function SubmissionCounts({ note }) {
     }
   );
 }
-function HitlNoteChips({ density, note }) {
+function HitlNoteChips({ note }) {
   const signals = hitlSignalCounts(note);
   const hasSignals = signals.ambiguityCount > 0 || signals.contradictionCount > 0;
-  if (density === "compact") {
-    return /* @__PURE__ */ u3(S, { children: [
-      /* @__PURE__ */ u3(SubmissionCounts, { note }),
-      hasSignals && /* @__PURE__ */ u3("span", { class: "submission-signals", "aria-label": "Review signals", children: [
-        signals.contradictionCount > 0 && /* @__PURE__ */ u3("span", { class: "review-signal-chip contradiction", children: [
-          signals.contradictionCount,
-          " contradiction",
-          signals.contradictionCount === 1 ? "" : "s"
-        ] }),
-        signals.ambiguityCount > 0 && /* @__PURE__ */ u3("span", { class: "review-signal-chip ambiguity", children: [
-          signals.ambiguityCount,
-          " ",
-          signals.ambiguityCount === 1 ? "ambiguity" : "ambiguities"
-        ] })
+  return /* @__PURE__ */ u3(S, { children: [
+    /* @__PURE__ */ u3(SubmissionCounts, { note }),
+    hasSignals && /* @__PURE__ */ u3("span", { class: "submission-signals", "aria-label": "Review signals", children: [
+      signals.contradictionCount > 0 && /* @__PURE__ */ u3("span", { class: "review-signal-chip contradiction", children: [
+        signals.contradictionCount,
+        " contradiction",
+        signals.contradictionCount === 1 ? "" : "s"
+      ] }),
+      signals.ambiguityCount > 0 && /* @__PURE__ */ u3("span", { class: "review-signal-chip ambiguity", children: [
+        signals.ambiguityCount,
+        " ",
+        signals.ambiguityCount === 1 ? "ambiguity" : "ambiguities"
       ] })
-    ] });
-  }
-  return /* @__PURE__ */ u3("span", { class: "strong-chip-list", "aria-label": "HITL counts", children: strongNoteChips(note).map((chip) => /* @__PURE__ */ u3("span", { class: `strong-chip ${chip.kind}`, children: [
-    chip.label,
-    " ",
-    chip.value
-  ] }, `${chip.kind}-${chip.label}`)) });
+    ] })
+  ] });
 }
 function ProposalStatus({ isValid, proposal }) {
   if (!proposal.lines.length) {
@@ -66093,7 +66061,6 @@ function HitlReviewPanel({
 }) {
   const [activeFilter, setActiveFilter] = d2("all");
   const [activeProposalRowKey, setActiveProposalRowKey] = d2("");
-  const [chipDensity, setChipDensity] = d2(readStoredDensity);
   const [isActing, setIsActing] = d2(false);
   const [isLoading, setIsLoading] = d2(false);
   const [notes, setNotes] = d2([]);
@@ -66129,11 +66096,6 @@ function HitlReviewPanel({
   y2(() => {
     setReviewerNotesDraft(selectedNote?.reviewerNotes ?? "");
   }, [selectedNote?.id, selectedNote?.reviewerNotes]);
-  function changeChipDensity(value) {
-    const nextDensity = value === "strong" ? "strong" : "compact";
-    setChipDensity(nextDensity);
-    writeStoredDensity(nextDensity);
-  }
   const openNote = q2(async (noteId) => {
     setIsLoading(true);
     setActiveProposalRowKey("");
@@ -66305,19 +66267,10 @@ function HitlReviewPanel({
         ] })
       ] }),
       !selectedNote ? /* @__PURE__ */ u3("section", { class: "hitl-section", children: [
-        /* @__PURE__ */ u3("div", { class: "hitl-toolbar", children: [
-          /* @__PURE__ */ u3("label", { class: "field", children: [
-            /* @__PURE__ */ u3("span", { children: "Filter" }),
-            /* @__PURE__ */ u3("select", { value: activeFilter, onChange: (event) => setActiveFilter(event.currentTarget.value), children: FILTERS.map((filter3) => /* @__PURE__ */ u3("option", { value: filter3.id, children: filter3.label }, filter3.id)) })
-          ] }),
-          /* @__PURE__ */ u3("label", { class: "field", children: [
-            /* @__PURE__ */ u3("span", { children: "Chips" }),
-            /* @__PURE__ */ u3("select", { value: chipDensity, onChange: (event) => changeChipDensity(event.currentTarget.value), children: [
-              /* @__PURE__ */ u3("option", { value: "compact", children: "Compact" }),
-              /* @__PURE__ */ u3("option", { value: "strong", children: "Strong" })
-            ] })
-          ] })
-        ] }),
+        /* @__PURE__ */ u3("div", { class: "hitl-toolbar", children: /* @__PURE__ */ u3("label", { class: "field", children: [
+          /* @__PURE__ */ u3("span", { children: "Filter" }),
+          /* @__PURE__ */ u3("select", { value: activeFilter, onChange: (event) => setActiveFilter(event.currentTarget.value), children: FILTERS.map((filter3) => /* @__PURE__ */ u3("option", { value: filter3.id, children: filter3.label }, filter3.id)) })
+        ] }) }),
         /* @__PURE__ */ u3("div", { class: "hitl-section-header", children: [
           /* @__PURE__ */ u3("h3", { children: "Pending submissions" }),
           /* @__PURE__ */ u3("span", { children: isLoading ? "Loading" : filteredNotes.length })
@@ -66344,7 +66297,7 @@ function HitlReviewPanel({
                     ] })
                   ] }),
                   /* @__PURE__ */ u3("span", { class: `status-chip ${note.status}`, children: note.status }),
-                  /* @__PURE__ */ u3(HitlNoteChips, { density: chipDensity, note })
+                  /* @__PURE__ */ u3(HitlNoteChips, { note })
                 ]
               },
               note.id

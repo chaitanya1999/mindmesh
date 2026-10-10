@@ -3,9 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "preact/hooks";
 import { HitlProposalSummary } from "./HitlProposalSummary.js";
 import { CopyButton } from "../common/CopyButton.js";
 import {
-	HITL_CHIP_DENSITY_KEY,
 	appendSchemaSuggestion,
-	deleteCount,
 	deleteSchemaSuggestion,
 	formatHitlDate,
 	hitlCountLabel,
@@ -17,7 +15,6 @@ import {
 	parseHitlProposal,
 	pipelineEditorText,
 	sortHitlNotes,
-	strongNoteChips,
 	truncateText,
 	updateSchemaSuggestion,
 } from "../../lib/hitlProposal.js";
@@ -30,22 +27,6 @@ const FILTERS = [
 	{ id: "deletes", label: "Deletes" },
 	{ id: "schema", label: "Schema" },
 ];
-
-function readStoredDensity() {
-	try {
-		return window.localStorage.getItem(HITL_CHIP_DENSITY_KEY) === "strong" ? "strong" : "compact";
-	} catch {
-		return "compact";
-	}
-}
-
-function writeStoredDensity(value) {
-	try {
-		window.localStorage.setItem(HITL_CHIP_DENSITY_KEY, value);
-	} catch {
-		// localStorage is optional for this preference.
-	}
-}
 
 const OPERATION_CODES = [
 	{ key: "create", code: "C" },
@@ -90,40 +71,28 @@ function SubmissionCounts({ note }) {
 	);
 }
 
-function HitlNoteChips({ density, note }) {
+function HitlNoteChips({ note }) {
 	const signals = hitlSignalCounts(note);
 	const hasSignals = signals.ambiguityCount > 0 || signals.contradictionCount > 0;
 
-	if (density === "compact") {
-		return (
-			<>
-				<SubmissionCounts note={note} />
-				{hasSignals && (
-					<span class="submission-signals" aria-label="Review signals">
-						{signals.contradictionCount > 0 && (
-							<span class="review-signal-chip contradiction">
-								{signals.contradictionCount} contradiction{signals.contradictionCount === 1 ? "" : "s"}
-							</span>
-						)}
-						{signals.ambiguityCount > 0 && (
-							<span class="review-signal-chip ambiguity">
-								{signals.ambiguityCount} {signals.ambiguityCount === 1 ? "ambiguity" : "ambiguities"}
-							</span>
-						)}
-					</span>
-				)}
-			</>
-		);
-	}
-
 	return (
-		<span class="strong-chip-list" aria-label="HITL counts">
-			{strongNoteChips(note).map((chip) => (
-				<span class={`strong-chip ${chip.kind}`} key={`${chip.kind}-${chip.label}`}>
-					{chip.label} {chip.value}
+		<>
+			<SubmissionCounts note={note} />
+			{hasSignals && (
+				<span class="submission-signals" aria-label="Review signals">
+					{signals.contradictionCount > 0 && (
+						<span class="review-signal-chip contradiction">
+							{signals.contradictionCount} contradiction{signals.contradictionCount === 1 ? "" : "s"}
+						</span>
+					)}
+					{signals.ambiguityCount > 0 && (
+						<span class="review-signal-chip ambiguity">
+							{signals.ambiguityCount} {signals.ambiguityCount === 1 ? "ambiguity" : "ambiguities"}
+						</span>
+					)}
 				</span>
-			))}
-		</span>
+			)}
+		</>
 	);
 }
 
@@ -159,7 +128,6 @@ export function HitlReviewPanel({
 }) {
 	const [activeFilter, setActiveFilter] = useState("all");
 	const [activeProposalRowKey, setActiveProposalRowKey] = useState("");
-	const [chipDensity, setChipDensity] = useState(readStoredDensity);
 	const [isActing, setIsActing] = useState(false);
 	const [isLoading, setIsLoading] = useState(false);
 	const [notes, setNotes] = useState([]);
@@ -201,12 +169,6 @@ export function HitlReviewPanel({
 	useEffect(() => {
 		setReviewerNotesDraft(selectedNote?.reviewerNotes ?? "");
 	}, [selectedNote?.id, selectedNote?.reviewerNotes]);
-
-	function changeChipDensity(value) {
-		const nextDensity = value === "strong" ? "strong" : "compact";
-		setChipDensity(nextDensity);
-		writeStoredDensity(nextDensity);
-	}
 
 	const openNote = useCallback(async (noteId) => {
 		setIsLoading(true);
@@ -402,13 +364,6 @@ export function HitlReviewPanel({
 									{FILTERS.map((filter) => <option value={filter.id} key={filter.id}>{filter.label}</option>)}
 								</select>
 							</label>
-							<label class="field">
-								<span>Chips</span>
-								<select value={chipDensity} onChange={(event) => changeChipDensity(event.currentTarget.value)}>
-									<option value="compact">Compact</option>
-									<option value="strong">Strong</option>
-								</select>
-							</label>
 						</div>
 						<div class="hitl-section-header">
 							<h3>Pending submissions</h3>
@@ -434,7 +389,7 @@ export function HitlReviewPanel({
 											</small>
 										</span>
 										<span class={`status-chip ${note.status}`}>{note.status}</span>
-										<HitlNoteChips density={chipDensity} note={note} />
+										<HitlNoteChips note={note} />
 									</button>
 								);
 							})}

@@ -1252,46 +1252,6 @@ button:focus-visible {
 	gap: 6px;
 }
 
-.strong-chip-list {
-	grid-column: 1 / -1;
-	display: flex;
-	flex-wrap: wrap;
-	gap: 6px;
-}
-
-.strong-chip {
-	display: inline-flex;
-	align-items: center;
-	min-height: 26px;
-	padding: 4px 8px;
-	border: 1px solid var(--line);
-	border-radius: 999px;
-	color: #cbd5e1;
-	background: rgba(148, 163, 184, 0.1);
-	font-size: 0.72rem;
-	font-weight: 900;
-	text-transform: uppercase;
-}
-
-.strong-chip.delete,
-.strong-chip.contradiction {
-	color: #fecdd3;
-	border-color: rgba(251, 113, 133, 0.58);
-	background: rgba(251, 113, 133, 0.16);
-}
-
-.strong-chip.ambiguity {
-	color: #fed7aa;
-	border-color: rgba(246, 173, 85, 0.58);
-	background: rgba(246, 173, 85, 0.14);
-}
-
-.strong-chip.schema {
-	color: #bfdbfe;
-	border-color: rgba(96, 165, 250, 0.52);
-	background: rgba(96, 165, 250, 0.12);
-}
-
 .review-signal-chip {
 	display: inline-flex;
 	align-items: center;
