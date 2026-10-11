@@ -361,6 +361,12 @@ Test the selected LLM provider:
 npm run kg:test-llm
 ```
 
+Run the test suite without external services (`node:test`; web API and MCP tools over in-memory stores and a scripted LLM, files in `test/`):
+
+```powershell
+npm test
+```
+
 Run parser and normalizer smoke tests without external services:
 
 ```powershell

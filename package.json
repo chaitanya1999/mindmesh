@@ -4,6 +4,7 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
+		"test": "node --test \"test/*.test.js\"",
 		"kg:ingest": "node src/cli/ingest.js",
 		"kg:ask": "node src/cli/ask.js",
 		"kg:web:build": "esbuild src/server/public/app.js --bundle --format=esm --jsx=automatic --jsx-import-source=preact --loader:.js=jsx --outfile=src/server/public/app.bundle.js",

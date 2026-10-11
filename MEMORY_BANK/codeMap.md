@@ -142,6 +142,7 @@ README: MCP Server.
 ## Checks
 
 ```powershell
+npm test                 # no external services: web API + MCP over in-memory stores (test/)
 npm run kg:test-parser   # no external services
 npm run kg:test-db       # Neo4j + Chroma
 npm run kg:test-llm      # configured LLM

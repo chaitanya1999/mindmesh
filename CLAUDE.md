@@ -39,7 +39,8 @@ Before finishing, check that every doc you touched still matches the code.
 
 ## Testing
 
-- `npm run kg:test-parser` needs no services; `kg:test-db` and `kg:test-llm` need Neo4j, Chroma, and the configured LLM.
+- `npm test` and `npm run kg:test-parser` need no services; `kg:test-db` and `kg:test-llm` need Neo4j, Chroma, and the configured LLM.
+- `npm test` runs `test/*.test.js` with `node:test`: the real web app (`createApp`) and MCP server (`createMcpServer`) over `test/helpers/memoryStores.js` (an in-memory graph store, and the real `ChromaVectorStore` on a fake Chroma client). New tests that need services go there instead of `testParser.js`.
 - There is no lint config in the repo. ESLint `no-undef` is the reliable way to catch missing imports in the frontend, because esbuild does not report undefined identifiers.
 - When testing against the user's real databases, use throwaway ids (for example `zztest_*`), delete them afterwards, and confirm the graph and HITL counts are unchanged. `node src/mcp/smokeTest.js` writes throwaway data and cleans it up itself.
 - The user's web server runs on port 3000. Start test servers on another port (`KG_WEB_PORT=3100`) and stop them afterwards.
