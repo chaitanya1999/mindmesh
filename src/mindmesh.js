@@ -1,5 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { GraphWriteService } from "./graph/graphWriteService.js";
 import { createGraphStore } from "./graph/providerFactory.js";
 import { IngestionService } from "./ingestion/ingestionService.js";
 import { KgJobsService } from "./jobs/kgJobsService.js";
@@ -19,11 +20,13 @@ export function createMindMesh(config, overrides = {}) {
 		: (withLlm ? createLlmProvider(config, llmProviderName) : null);
 	const graphStore = overrides.graphStore ?? createGraphStore(config);
 	const vectorStore = overrides.vectorStore ?? createVectorStore(config);
+	const graphWriteService = new GraphWriteService({ graphStore, vectorStore });
 
 	const ingestionService = new IngestionService({
 		llmProvider,
 		graphStore,
 		vectorStore,
+		graphWriter: graphWriteService,
 		prompts,
 		logging: config.logging,
 		ingestion: config.ingestion,
@@ -52,6 +55,7 @@ export function createMindMesh(config, overrides = {}) {
 		llmProvider,
 		graphStore,
 		vectorStore,
+		graphWriteService,
 		ingestionService,
 		ragService,
 		jobsService,

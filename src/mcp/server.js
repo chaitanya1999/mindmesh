@@ -22,6 +22,7 @@ let config;
 let prompts;
 let graphStore;
 let vectorStore;
+let graphWriteService;
 let ingestionService;
 let ragService;
 
@@ -118,7 +119,7 @@ const REGENERATE_INSTRUCTIONS = [
 // Builds the MCP server with its tools and resources, without connecting a transport, so tests can use
 // an in-memory transport.
 export function createMcpServer(services) {
-	({ config, prompts, graphStore, vectorStore, ingestionService, ragService } = services);
+	({ config, prompts, graphStore, vectorStore, graphWriteService, ingestionService, ragService } = services);
 
 	const server = new McpServer(
 		{
@@ -293,10 +294,7 @@ export function createMcpServer(services) {
 					status = pending.status ?? "pending_hitl";
 					applied = false;
 				} else {
-					const appliedResult = await ingestionService.applyGraphPayload(graphPayload, {
-						source: resolvedSource,
-						debugLogger,
-					});
+					const appliedResult = await graphWriteService.applyPayload(graphPayload, { debugLogger });
 					result = appliedResult;
 					status = "applied";
 					applied = true;

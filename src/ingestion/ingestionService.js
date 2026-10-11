@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { formatGraphRecords, normalizeGraphPayload, parseGraphExtraction, toSnakeCase } from "./graphPayload.js";
 import { resolveGraphPayload } from "./graphResolution.js";
+import { GraphWriteService } from "../graph/graphWriteService.js";
 import { countReviewSignals, reviewReasons } from "./reviewSignals.js";
 import { createDebugLogger } from "../logging/debugLogger.js";
 import { buildExtractionPrompt } from "../prompts/promptRegistry.js";
@@ -36,20 +37,6 @@ function errorDetails(error) {
 	};
 }
 
-// The graph is committed but Chroma is behind. `expose` lets the web error handler show this message
-// instead of the generic server error, so the user knows the graph changed and how to repair the index.
-function vectorSyncError(cause) {
-	const error = new Error(
-		`Graph changes were saved, but the vector index could not be updated (${cause?.message ?? String(cause)}). `
-		+ "For a HITL approval, approve again to retry; otherwise run `npm run kg:reindex-vectors`.",
-	);
-	error.status = 503;
-	error.code = "VECTOR_SYNC_FAILED";
-	error.expose = true;
-	error.cause = cause;
-	return error;
-}
-
 function normalizeIngestionMode(value) {
 	const mode = String(value || "auto").trim().toLowerCase();
 	return mode === "hitl" ? "hitl" : "auto";
@@ -61,10 +48,6 @@ function createHitlNoteId() {
 
 function countSchemaSuggestions(schemaSuggestions = {}) {
 	return (schemaSuggestions.nodeTypes?.length ?? 0) + (schemaSuggestions.relationshipTypes?.length ?? 0);
-}
-
-function hasSchemaViolations(graphPayload) {
-	return (graphPayload.schemaViolations?.length ?? 0) > 0;
 }
 
 function compact(value) {
@@ -236,10 +219,11 @@ async function retrievePendingHitlNotes(vectorStore, text, topK, excludeNoteIds 
 }
 
 export class IngestionService {
-	constructor({ llmProvider, graphStore, vectorStore, prompts, logging = null, ingestion = {} }) {
+	constructor({ llmProvider, graphStore, vectorStore, graphWriter = null, prompts, logging = null, ingestion = {} }) {
 		this.llmProvider = llmProvider;
 		this.graphStore = graphStore;
 		this.vectorStore = vectorStore;
+		this.graphWriter = graphWriter ?? new GraphWriteService({ graphStore, vectorStore });
 		this.prompts = prompts;
 		this.logging = logging;
 		this.ingestion = {
@@ -390,46 +374,6 @@ export class IngestionService {
 		return {
 			extractedGraph,
 			rawResponse: "",
-		};
-	}
-
-	// Every graph apply (auto ingest, MCP auto mode, HITL approval) passes this check against the current
-	// graph, so a relation can never create or rewrite a node, whatever the caller checked before.
-	async applyGraphPayload(normalizedPayload, { source, debugLogger }) {
-		const { graphPayload } = await resolveGraphPayload(normalizedPayload, this.graphStore);
-		if (hasSchemaViolations(graphPayload)) {
-			const error = new Error(`Cannot apply graph payload with violations: ${graphPayload.schemaViolations.map((violation) => violation.message).join("; ")}`);
-			error.status = 400;
-			throw error;
-		}
-
-		// One Neo4j transaction for all deletes and upserts. Record metadata only carries HITL review
-		// signals; the graph store does not persist it.
-		const storedGraph = await this.graphStore.applyGraph(graphPayload);
-
-		// Chroma cannot join the Neo4j transaction, so vectors are synced after the commit. Every step is
-		// repeatable: applying the same payload again re-syncs, and relation vectors of deleted nodes are
-		// found by their stored endpoints, not by what Neo4j returned this time.
-		try {
-			if (storedGraph.deletedNodeIds.length > 0) {
-				await this.vectorStore.deleteNodes(storedGraph.deletedNodeIds);
-				await this.vectorStore.deleteRelationsForNodes(storedGraph.deletedNodeIds);
-			}
-			if (storedGraph.deletedRelationIds.length > 0) {
-				await this.vectorStore.deleteRelations(storedGraph.deletedRelationIds);
-			}
-			if (storedGraph.nodes.length > 0 || storedGraph.relations.length > 0) {
-				await this.vectorStore.upsertGraphIndex(storedGraph);
-			}
-		} catch (error) {
-			logIngest(debugLogger, `[ingest] Graph saved, but the vector index sync failed: ${error?.message ?? String(error)}`);
-			throw vectorSyncError(error);
-		}
-
-		return {
-			...storedGraph,
-			nodeDeletes: graphPayload.nodeDeletes ?? [],
-			relationDeletes: graphPayload.relationDeletes ?? [],
 		};
 	}
 
@@ -776,7 +720,7 @@ export class IngestionService {
 			}
 
 			logIngest(debugLogger, "[ingest] Applying graph mutations to graph store and vector index...");
-			const storedGraph = await this.applyGraphPayload(graphPayload, { source, debugLogger });
+			const storedGraph = await this.graphWriter.applyPayload(graphPayload, { debugLogger });
 			debugLogger.json("Applied Graph Mutations", {
 				upsertedNodes: storedGraph.nodes.length,
 				upsertedRelations: storedGraph.relations.length,

@@ -459,8 +459,8 @@ assert(autoDeleteResult.reviewReasons.some((reason) => reason.includes("node del
 assert(mutationStoredNote?.llmResponse.includes("NODE_DELETE|old_screen"), "The forced proposal should keep the delete records.");
 assert(deletedNodes.length === 0 && deletedRelations.length === 0 && mutationUpsertGraph === null, "Auto mode must not touch the graph when deletes are present.");
 
-// Delete mechanics through applyGraphPayload(), the path HITL approval uses.
-const mutationResult = await mutationService.applyGraphPayload(
+// Delete mechanics through the graph writer, the path HITL approval uses.
+const mutationResult = await mutationService.graphWriter.applyPayload(
 	normalizeGraphPayload(structuredClone(mutationExtraction), { schema: serviceGraphSchema }),
 	{ source: "test", debugLogger: { log() {} } },
 );
@@ -494,7 +494,7 @@ const syncFailureService = new IngestionService({
 });
 let syncFailure = null;
 try {
-	await syncFailureService.applyGraphPayload(
+	await syncFailureService.graphWriter.applyPayload(
 		normalizeGraphPayload(extractCustomGraph("NODE_CREATE|sync_screen|Sync Screen|screen||"), { schema }),
 		{ source: "test", debugLogger: { log() {} } },
 	);
@@ -873,11 +873,11 @@ const applyGuardService = new IngestionService({
 });
 let applyRejected = false;
 try {
-	await applyGuardService.applyGraphPayload(typoPayload, { source: "test", debugLogger: { log() {} } });
+	await applyGuardService.graphWriter.applyPayload(typoPayload, { source: "test", debugLogger: { log() {} } });
 } catch (error) {
 	applyRejected = error.status === 400 && error.message.includes("does not exist");
 }
-assert(applyRejected, "applyGraphPayload must reject a relation to a missing node.");
+assert(applyRejected, "The graph writer must reject a relation to a missing node.");
 assert(rejectedApplyTouchedGraph === false, "A rejected apply must not touch the graph.");
 
 const failingLogDir = await fs.mkdtemp(path.join(os.tmpdir(), "kg-ingest-debug-"));

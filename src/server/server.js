@@ -37,6 +37,7 @@ const wordExtractor = new WordExtractor();
 let config;
 let graphStore;
 let vectorStore;
+let graphWriteService;
 let ingestionService;
 let ragService;
 let jobsService;
@@ -727,7 +728,7 @@ function asyncRoute(handler) {
 
 // Builds the Express app without listening, so tests can start it with in-memory stores.
 export function createApp(services) {
-	({ config, graphStore, vectorStore, ingestionService, ragService, jobsService } = services);
+	({ config, graphStore, vectorStore, graphWriteService, ingestionService, ragService, jobsService } = services);
 	const app = express();
 
 	app.use(express.json({ limit: "25mb" }));
@@ -1002,8 +1003,7 @@ export function createApp(services) {
 			res.status(202).json(pendingProposal);
 			return;
 		}
-		const storedNode = await graphStore.upsertNode(node);
-		await vectorStore.upsertNode(storedNode);
+		const storedNode = await graphWriteService.writeNode(node);
 		const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
 		
 		res.json({
@@ -1029,8 +1029,7 @@ export function createApp(services) {
 			res.status(202).json(pendingProposal);
 			return;
 		}
-		const storedNode = await graphStore.upsertNode(node);
-		await vectorStore.upsertNode(storedNode);
+		const storedNode = await graphWriteService.writeNode(node);
 		const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
 		
 		res.json({
@@ -1045,10 +1044,7 @@ export function createApp(services) {
 	app.delete("/api/hitl/nodes/:id", asyncRoute(async (req, res) => {
 		requireDirectGraphCrudSupport();
 		const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
-		const result = await graphStore.deleteNode(req.params.id);
-		await vectorStore.deleteNodes([result.nodeId]);
-		await vectorStore.deleteRelations(result.relationIds ?? []);
-		await vectorStore.deleteRelationsForNodes([result.nodeId]);
+		const result = await graphWriteService.deleteNode(req.params.id);
 		const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
 		
 		res.json({
@@ -1076,8 +1072,7 @@ export function createApp(services) {
 			res.status(202).json(pendingProposal);
 			return;
 		}
-		const storedRelation = await graphStore.upsertRelation(relation);
-		await vectorStore.upsertRelation(storedRelation);
+		const storedRelation = await graphWriteService.writeRelation(relation);
 		const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
 		
 		res.json({
@@ -1106,11 +1101,7 @@ export function createApp(services) {
 			return;
 		}
 		// One transaction: if the id changed, the old relation is removed together with writing the new one.
-		const storedRelation = await graphStore.upsertRelation(relation, { replaceId: req.params.id });
-		if (relation.id !== req.params.id) {
-			await vectorStore.deleteRelations([req.params.id]);
-		}
-		await vectorStore.upsertRelation(storedRelation);
+		const storedRelation = await graphWriteService.writeRelation(relation, { replaceId: req.params.id });
 		const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
 		
 		res.json({
@@ -1125,8 +1116,7 @@ export function createApp(services) {
 	app.delete("/api/hitl/relations/:id", asyncRoute(async (req, res) => {
 		requireDirectGraphCrudSupport();
 		const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
-		const result = await graphStore.deleteRelation(req.params.id);
-		await vectorStore.deleteRelations([result.relationId]);
+		const result = await graphWriteService.deleteRelation(req.params.id);
 		const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
 		
 		res.json({
@@ -1166,10 +1156,7 @@ export function createApp(services) {
 		
 		// Step 6: Apply the graph mutations (this also checks relation endpoints against the graph), then
 		// persist the approved schema types, so a failed apply leaves the schema unchanged.
-		const storedGraph = await ingestionService.applyGraphPayload(graphPayload, {
-			source: `hitl:${note.id}`,
-			debugLogger: { log: () => {} },
-		});
+		const storedGraph = await graphWriteService.applyPayload(graphPayload);
 		persistHitlSchemaSuggestions(baseSchema, extractedGraph);
 		await vectorStore.deleteHitlNotes([note.id]);
 		const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
