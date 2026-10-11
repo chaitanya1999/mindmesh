@@ -139,7 +139,6 @@ Do it with `git mv` on a branch, with no behavior change; run the smoke tests be
 
 - **How Agentforce reaches the knowledge graph.** Agentforce for Developers in VS Code can use a local MCP server; an org-side Agentforce agent would need a hosted endpoint, which makes hosting a priority.
 - **OneNote ingestion.** The bank tenant likely blocks Microsoft Graph app consent; the fallback is periodic export plus diff.
-- **Neo4j 3.5 on the work laptop.** The constraint syntax for 3.5 and `neo4j-driver` v6 compatibility with 3.5 are untested; check with `npm run kg:test-db` and one ingest/approve.
 
 ---
 

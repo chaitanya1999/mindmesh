@@ -18,7 +18,7 @@ Not implemented (do not assume they exist): scheduled/CRON jobs, knowledge synth
 - MCP: the agent does the reasoning; MindMesh returns context and prompts and stores the results through the same proposal/apply path.
 - Web UI: Express APIs + Preact frontend on `/`, `/hitl`, `/schema`, `/jobs`.
 
-Stack: Node.js ES modules, Express, Preact (NeoVis and Sigma graph renderers), Neo4j (3.5 through 2025.x+), ChromaDB, pluggable LLM and embedding providers, MCP over stdio.
+Stack: Node.js ES modules, Express, Preact (NeoVis and Sigma graph renderers), Neo4j 5.23+ (tested on Community 5.26 and Enterprise 2026.04), ChromaDB, pluggable LLM and embedding providers, MCP over stdio.
 
 ## Hard Rules
 

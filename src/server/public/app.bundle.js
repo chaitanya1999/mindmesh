@@ -66064,6 +66064,7 @@ function HitlReviewPanel({
   const [isActing, setIsActing] = d2(false);
   const [isLoading, setIsLoading] = d2(false);
   const [notes, setNotes] = d2([]);
+  const [totalPendingNotes, setTotalPendingNotes] = d2(0);
   const [panelMessage, setPanelMessage] = d2("");
   const [isRegenerating, setIsRegenerating] = d2(false);
   const [reviewerNotesDraft, setReviewerNotesDraft] = d2("");
@@ -66083,6 +66084,7 @@ function HitlReviewPanel({
     try {
       const result = await requestJson2("/api/hitl/notes?limit=100");
       setNotes(result.notes ?? []);
+      setTotalPendingNotes(Number(result.total ?? result.notes?.length ?? 0));
       setPanelMessage("");
     } catch (error) {
       showPanelMessage(error.message);
@@ -66274,6 +66276,13 @@ function HitlReviewPanel({
         /* @__PURE__ */ u3("div", { class: "hitl-section-header", children: [
           /* @__PURE__ */ u3("h3", { children: "Pending submissions" }),
           /* @__PURE__ */ u3("span", { children: isLoading ? "Loading" : filteredNotes.length })
+        ] }),
+        !isLoading && totalPendingNotes > notes.length && /* @__PURE__ */ u3("div", { class: "status-line", children: [
+          "Showing the oldest ",
+          notes.length,
+          " of ",
+          totalPendingNotes,
+          " pending submissions. Approve or reject some to see the rest."
         ] }),
         /* @__PURE__ */ u3("div", { class: "submission-list", role: "list", children: [
           filteredNotes.map((note) => {

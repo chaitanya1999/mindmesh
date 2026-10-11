@@ -18,7 +18,9 @@ IngestionService.ingestText()                      src/ingestion/ingestionServic
   -> normalizeGraphPayload()                       src/ingestion/graphPayload.js
   -> resolveGraphPayload()                         src/ingestion/graphResolution.js (Neo4jGraphStore.getExistingNodeIds)
   -> storeHitlProposal()                           ChromaVectorStore.upsertHitlNote()
-     or applyGraphPayload()                        resolveGraphPayload() again, then Neo4jGraphStore.upsertGraph() + ChromaVectorStore.upsertGraphIndex()
+     or applyGraphPayload()                        resolveGraphPayload() again, Neo4jGraphStore.applyGraph() (one transaction),
+                                                   then vector sync (deleteNodes, deleteRelationsForNodes, deleteRelations, upsertGraphIndex);
+                                                   a sync failure is vectorSyncError() (503 VECTOR_SYNC_FAILED, expose)
 ```
 
 Also: `src/ingestion/reviewSignals.js` (signal counts; `reviewReasons()` is the auto-mode gate used by `ingestText()` and MCP `apply-ingestion`), `formatGraphRecords()` in `graphPayload.js` (payload -> stored proposal text), `src/rag/graphContext.js::formatExtractionGraphContext()`, `prompts/extraction-system-custom.md`.
@@ -32,7 +34,7 @@ README: Web UI (HITL workspace), Chroma Schema (HITL notes).
 Entry points: `/hitl` UI, `/api/hitl/*` in `src/server/server.js`.
 
 ```text
-GET /api/hitl/notes, /api/hitl/notes/:id           ChromaVectorStore.listHitlNotes() / getHitlNote(); hitlNoteSummary()
+GET /api/hitl/notes, /api/hitl/notes/:id           ChromaVectorStore.listHitlNotePage() (sorted before paging, returns total) / getHitlNote(); hitlNoteSummary()
 GET|POST /api/hitl/notes/:id/graph, /api/hitl/graph
   -> buildHitlNoteGraphPreview() / buildHitlGraphPreview()
   -> mergeHitlPayloadIntoGraph()                   adds pendingHitl, pendingOperation, approved snapshot
@@ -98,7 +100,7 @@ README: Neo4j Schema (Identity and uniqueness, Write behavior), Commands (reinde
 - Ids: built in `src/ingestion/graphPayload.js` (normalization) and `normalizeManualNode()` / `normalizeManualRelation()` in `src/server/server.js` (manual and reviewer edits).
 - Constraints: `Neo4jGraphStore.ensureConstraints()` in `src/graph/neo4jGraphStore.js`, called by `upsertGraph`, `upsertNode`, `upsertRelation`.
 - Rename guard: `normalizeManualNode()` (server) and `isNameLocked` in `components/entity/NodeForm.js`.
-- Relation re-id on edit: `PUT /api/hitl/relations/:id` in `src/server/server.js`.
+- Relation re-id on edit: `PUT /api/hitl/relations/:id` in `src/server/server.js`, using `Neo4jGraphStore.upsertRelation(relation, { replaceId })` (one transaction).
 - Vector documents: `nodeDocument()` / `relationDocument()` / `upsertGraphIndex()` in `src/vector/chromaVectorStore.js`.
 - Reindex: `src/cli/reindexVectors.js` (`--fresh` -> `ChromaVectorStore.clearGraphIndex()`); full wipe: `src/cli/clearChroma.js`.
 

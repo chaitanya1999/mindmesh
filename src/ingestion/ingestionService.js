@@ -36,8 +36,18 @@ function errorDetails(error) {
 	};
 }
 
-function isNotFoundError(error) {
-	return Number(error?.status) === 404 || /not found/i.test(String(error?.message ?? ""));
+// The graph is committed but Chroma is behind. `expose` lets the web error handler show this message
+// instead of the generic server error, so the user knows the graph changed and how to repair the index.
+function vectorSyncError(cause) {
+	const error = new Error(
+		`Graph changes were saved, but the vector index could not be updated (${cause?.message ?? String(cause)}). `
+		+ "For a HITL approval, approve again to retry; otherwise run `npm run kg:reindex-vectors`.",
+	);
+	error.status = 503;
+	error.code = "VECTOR_SYNC_FAILED";
+	error.expose = true;
+	error.cause = cause;
+	return error;
 }
 
 function normalizeIngestionMode(value) {
@@ -215,7 +225,7 @@ async function retrievePendingHitlNotes(vectorStore, text, topK, excludeNoteIds 
 
 	if (typeof vectorStore.listHitlNotes === "function") {
 		const recentLimit = Math.max(topK * 5, 20);
-		for (const note of await vectorStore.listHitlNotes({ status: "pending", limit: recentLimit })) {
+		for (const note of await vectorStore.listHitlNotes({ status: "pending", limit: recentLimit, order: "newest" })) {
 			if (note?.id && !byId.has(note.id)) {
 				byId.set(note.id, note);
 			}
@@ -393,51 +403,33 @@ export class IngestionService {
 			throw error;
 		}
 
-		const deletedNodeIds = new Set();
-		const deletedRelationIds = new Set();
+		// One Neo4j transaction for all deletes and upserts. Record metadata only carries HITL review
+		// signals; the graph store does not persist it.
+		const storedGraph = await this.graphStore.applyGraph(graphPayload);
 
-		for (const relationDelete of graphPayload.relationDeletes ?? []) {
-			try {
-				const result = await this.graphStore.deleteRelation(relationDelete.id);
-				deletedRelationIds.add(result.relationId);
-			} catch (error) {
-				if (!isNotFoundError(error)) {
-					throw error;
-				}
-
-				deletedRelationIds.add(relationDelete.id);
-				logIngest(debugLogger, `[ingest] Relation delete skipped because ${relationDelete.id} was not found.`);
+		// Chroma cannot join the Neo4j transaction, so vectors are synced after the commit. Every step is
+		// repeatable: applying the same payload again re-syncs, and relation vectors of deleted nodes are
+		// found by their stored endpoints, not by what Neo4j returned this time.
+		try {
+			if (storedGraph.deletedNodeIds.length > 0) {
+				await this.vectorStore.deleteNodes(storedGraph.deletedNodeIds);
+				await this.vectorStore.deleteRelationsForNodes(storedGraph.deletedNodeIds);
 			}
-		}
-
-		for (const nodeDelete of graphPayload.nodeDeletes ?? []) {
-			const result = await this.graphStore.deleteNode(nodeDelete.id);
-			deletedNodeIds.add(result.nodeId);
-			for (const relationId of result.relationIds ?? []) {
-				deletedRelationIds.add(relationId);
+			if (storedGraph.deletedRelationIds.length > 0) {
+				await this.vectorStore.deleteRelations(storedGraph.deletedRelationIds);
 			}
-		}
-
-		if (deletedNodeIds.size > 0) {
-			await this.vectorStore.deleteNodes([...deletedNodeIds]);
-		}
-
-		if (deletedRelationIds.size > 0) {
-			await this.vectorStore.deleteRelations([...deletedRelationIds]);
-		}
-
-		// Record metadata only carries HITL review signals; the graph store does not persist it.
-		const storedGraph = await this.graphStore.upsertGraph(graphPayload, { source });
-		if (storedGraph.nodes.length > 0 || storedGraph.relations.length > 0) {
-			await this.vectorStore.upsertGraphIndex(storedGraph);
+			if (storedGraph.nodes.length > 0 || storedGraph.relations.length > 0) {
+				await this.vectorStore.upsertGraphIndex(storedGraph);
+			}
+		} catch (error) {
+			logIngest(debugLogger, `[ingest] Graph saved, but the vector index sync failed: ${error?.message ?? String(error)}`);
+			throw vectorSyncError(error);
 		}
 
 		return {
 			...storedGraph,
 			nodeDeletes: graphPayload.nodeDeletes ?? [],
 			relationDeletes: graphPayload.relationDeletes ?? [],
-			deletedNodeIds: [...deletedNodeIds],
-			deletedRelationIds: [...deletedRelationIds],
 		};
 	}
 
@@ -522,7 +514,7 @@ export class IngestionService {
 			throw error;
 		}
 
-		const notes = await this.vectorStore.listHitlNotes({ status: "pending", limit: 500 });
+		const notes = await this.vectorStore.listHitlNotes({ status: "pending", limit: 0 });
 		const matches = notes.filter((note) => String(note.id).split(":").pop().startsWith(suffix));
 		if (matches.length !== 1) {
 			const error = new Error(matches.length === 0

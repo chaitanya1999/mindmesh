@@ -131,6 +131,7 @@ export function HitlReviewPanel({
 	const [isActing, setIsActing] = useState(false);
 	const [isLoading, setIsLoading] = useState(false);
 	const [notes, setNotes] = useState([]);
+	const [totalPendingNotes, setTotalPendingNotes] = useState(0);
 	const [panelMessage, setPanelMessage] = useState("");
 	const [isRegenerating, setIsRegenerating] = useState(false);
 	const [reviewerNotesDraft, setReviewerNotesDraft] = useState("");
@@ -154,6 +155,7 @@ export function HitlReviewPanel({
 		try {
 			const result = await requestJson("/api/hitl/notes?limit=100");
 			setNotes(result.notes ?? []);
+			setTotalPendingNotes(Number(result.total ?? result.notes?.length ?? 0));
 			setPanelMessage("");
 		} catch (error) {
 			showPanelMessage(error.message);
@@ -369,6 +371,11 @@ export function HitlReviewPanel({
 							<h3>Pending submissions</h3>
 							<span>{isLoading ? "Loading" : filteredNotes.length}</span>
 						</div>
+						{!isLoading && totalPendingNotes > notes.length && (
+							<div class="status-line">
+								Showing the oldest {notes.length} of {totalPendingNotes} pending submissions. Approve or reject some to see the rest.
+							</div>
+						)}
 						<div class="submission-list" role="list">
 							{filteredNotes.map((note) => {
 								const hasSignals = needsAttention(note);

@@ -1,5 +1,6 @@
 import { extractCustomGraph, formatGraphRecords, normalizeGraphPayload, parseGraphExtraction, validatePropertyConstraints } from "../ingestion/graphPayload.js";
 import { resolveGraphPayload } from "../ingestion/graphResolution.js";
+import { ChromaVectorStore } from "../vector/chromaVectorStore.js";
 import { formatFieldGuidance, formatSchemaCatalog } from "../schema/graphSchema.js";
 import { IngestionService } from "../ingestion/ingestionService.js";
 import { countReviewSignals } from "../ingestion/reviewSignals.js";
@@ -69,6 +70,11 @@ const serviceGraphSchema = {
 		{ name: "requested_by", description: "Source was requested by target." },
 	],
 };
+
+// Shape returned by Neo4jGraphStore.applyGraph().
+function storedFrom(graph) {
+	return { nodes: graph.nodes ?? [], relations: graph.relations ?? [], deletedNodeIds: [], deletedRelationIds: [] };
+}
 
 function assert(condition, message) {
 	if (!condition) {
@@ -280,8 +286,8 @@ const service = new IngestionService({
 				relations: [],
 			};
 		},
-		async upsertGraph(graph) {
-			return graph;
+		async applyGraph(graph) {
+			return storedFrom(graph);
 		},
 	},
 	vectorStore: {
@@ -332,8 +338,8 @@ const pendingContextService = new IngestionService({
 		async expandFromNodes() {
 			return { nodes: [], relations: [] };
 		},
-		async upsertGraph(graph) {
-			return graph;
+		async applyGraph(graph) {
+			return storedFrom(graph);
 		},
 	},
 	vectorStore: {
@@ -374,6 +380,8 @@ const deletedRelations = [];
 const deletedNodes = [];
 const deletedVectorRelations = [];
 const deletedVectorNodes = [];
+const deletedVectorRelationsForNodes = [];
+let mutationApplyCalls = 0;
 let mutationUpsertGraph = null;
 let mutationIndexedGraph = null;
 let mutationStoredNote = null;
@@ -398,17 +406,18 @@ const mutationService = new IngestionService({
 		async expandFromNodes() {
 			return { nodes: [], relations: [] };
 		},
-		async deleteRelation(relationId) {
-			deletedRelations.push(relationId);
-			return { relationId };
-		},
-		async deleteNode(nodeId) {
-			deletedNodes.push(nodeId);
-			return { nodeId, relationIds: ["rel:detached_from_node"] };
-		},
-		async upsertGraph(graph) {
+		async applyGraph(graph) {
+			mutationApplyCalls += 1;
 			mutationUpsertGraph = graph;
-			return graph;
+			deletedRelations.push(...graph.relationDeletes.map((relationDelete) => relationDelete.id));
+			deletedNodes.push(...graph.nodeDeletes.map((nodeDelete) => nodeDelete.id));
+			return {
+				nodes: graph.nodes,
+				relations: graph.relations,
+				deletedNodeIds: [...deletedNodes],
+				// A node delete also detaches that node's relations.
+				deletedRelationIds: [...deletedRelations, "rel:detached_from_node"],
+			};
 		},
 	},
 	vectorStore: {
@@ -420,6 +429,9 @@ const mutationService = new IngestionService({
 		},
 		async deleteRelations(ids) {
 			deletedVectorRelations.push(...ids);
+		},
+		async deleteRelationsForNodes(ids) {
+			deletedVectorRelationsForNodes.push(...ids);
 		},
 		async upsertGraphIndex(graph) {
 			mutationIndexedGraph = graph;
@@ -459,6 +471,63 @@ assert(deletedVectorRelations.includes("rel:detached_from_node"), "Ingestion ser
 assert(mutationUpsertGraph?.nodes?.[0]?.id === "node:new_screen", "Ingestion service should upsert mutation node records.");
 assert(mutationIndexedGraph?.relations?.length === 1, "Ingestion service should index mutation relation upserts.");
 assert(mutationResult.deletedNodeIds[0] === "node:old_screen", "Ingestion result should expose deleted node IDs.");
+assert(mutationApplyCalls === 1, "Deletes and upserts must go to the graph store in one applyGraph() call (one transaction).");
+assert(deletedVectorRelationsForNodes.includes("node:old_screen"), "Relation vectors of a deleted node should be removed by their stored endpoints.");
+
+// A vector failure after the graph commit is reported as such, so the caller knows how to repair.
+const syncFailureService = new IngestionService({
+	llmProvider: null,
+	graphStore: {
+		async getExistingNodeIds() {
+			return [];
+		},
+		async applyGraph(graph) {
+			return storedFrom(graph);
+		},
+	},
+	vectorStore: {
+		async upsertGraphIndex() {
+			throw new Error("chroma down");
+		},
+	},
+	prompts: runtimePrompts,
+});
+let syncFailure = null;
+try {
+	await syncFailureService.applyGraphPayload(
+		normalizeGraphPayload(extractCustomGraph("NODE_CREATE|sync_screen|Sync Screen|screen||"), { schema }),
+		{ source: "test", debugLogger: { log() {} } },
+	);
+} catch (error) {
+	syncFailure = error;
+}
+assert(syncFailure?.code === "VECTOR_SYNC_FAILED" && syncFailure.status === 503 && syncFailure.expose === true, "A vector failure after commit should be a VECTOR_SYNC_FAILED error shown to the user.");
+assert(syncFailure.message.includes("Graph changes were saved") && syncFailure.message.includes("chroma down") && syncFailure.message.includes("kg:reindex-vectors"), "The vector sync error should say the graph was saved, why sync failed, and how to repair.");
+
+// HITL listing sorts every pending note before cutting the page (Chroma returns records unordered).
+const fakeHitlRecords = [
+	{ id: "hitl:c", createdAt: "2026-10-03T00:00:00.000Z" },
+	{ id: "hitl:a", createdAt: "2026-10-01T00:00:00.000Z" },
+	{ id: "hitl:d", createdAt: "2026-10-04T00:00:00.000Z" },
+	{ id: "hitl:b", createdAt: "2026-10-02T00:00:00.000Z" },
+];
+const listingStore = new ChromaVectorStore({ path: "http://localhost:1", hitlCollection: "unused" });
+listingStore.getHitlCollection = async () => ({
+	async get({ ids, include } = {}) {
+		const records = ids ? fakeHitlRecords.filter((record) => ids.includes(record.id)) : fakeHitlRecords;
+		return {
+			ids: records.map((record) => record.id),
+			metadatas: records.map((record) => ({ status: "pending", createdAt: record.createdAt })),
+			documents: include ? undefined : records.map((record) => `Human input:\n${record.id}\n\nLLM proposed graph mutations:\n`),
+		};
+	},
+});
+const oldestPage = await listingStore.listHitlNotePage({ limit: 2 });
+assert(oldestPage.notes.map((note) => note.id).join(",") === "hitl:a,hitl:b", "The HITL list should show the oldest notes overall, not the first ones Chroma returns.");
+assert(oldestPage.total === 4, "The HITL list should report the total number of pending notes.");
+const newestNotes = await listingStore.listHitlNotes({ limit: 2, order: "newest" });
+assert(newestNotes.map((note) => note.id).join(",") === "hitl:d,hitl:c", "order: newest should return the most recent notes.");
+assert((await listingStore.listHitlNotes({ limit: 0 })).length === 4, "limit 0 should return every pending note.");
 
 // Auto mode applies only clean creates and updates; review signals force HITL.
 function autoModeService(extraction, existingNodeIds = []) {
@@ -476,9 +545,9 @@ function autoModeService(extraction, existingNodeIds = []) {
 			async expandFromNodes() {
 				return { nodes: [], relations: [] };
 			},
-			async upsertGraph(graph) {
+			async applyGraph(graph) {
 				calls.applied = graph;
-				return graph;
+				return storedFrom(graph);
 			},
 		},
 		vectorStore: {
@@ -554,9 +623,9 @@ const hitlService = new IngestionService({
 		async expandFromNodes() {
 			return { nodes: [], relations: [] };
 		},
-		async upsertGraph() {
+		async applyGraph() {
 			hitlGraphTouched = true;
-			return { nodes: [], relations: [] };
+			return storedFrom({ nodes: [], relations: [] });
 		},
 	},
 	vectorStore: {
@@ -607,7 +676,7 @@ const forcedHitlService = new IngestionService({
 		async expandFromNodes() {
 			return { nodes: [], relations: [] };
 		},
-		async upsertGraph() {
+		async applyGraph() {
 			forcedHitlGraphTouched = true;
 			throw new Error("Forced HITL schema test should not touch graph DB.");
 		},
@@ -672,7 +741,7 @@ const duplicatePendingHitlService = new IngestionService({
 		async expandFromNodes() {
 			return { nodes: [], relations: [] };
 		},
-		async upsertGraph() {
+		async applyGraph() {
 			throw new Error("HITL duplicate guard test should not touch graph DB.");
 		},
 	},
@@ -747,9 +816,9 @@ const applyGuardService = new IngestionService({
 	llmProvider: null,
 	graphStore: {
 		...resolverGraphStore,
-		async upsertGraph() {
+		async applyGraph() {
 			rejectedApplyTouchedGraph = true;
-			return { nodes: [], relations: [] };
+			return storedFrom({ nodes: [], relations: [] });
 		},
 	},
 	vectorStore: {},
@@ -781,8 +850,8 @@ const failingService = new IngestionService({
 		async expandFromNodes() {
 			return { nodes: [], relations: [] };
 		},
-		async upsertGraph(graph) {
-			return graph;
+		async applyGraph(graph) {
+			return storedFrom(graph);
 		},
 	},
 	vectorStore: {

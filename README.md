@@ -17,9 +17,9 @@ User text
   -> pending HITL notes are retrieved from Chroma for duplicate avoidance
   -> LLM provider extracts custom line-oriented graph records
   -> normalizeGraphPayload()
-  -> HITL proposal stored in Chroma when HITL mode or schema violations apply
-  -> otherwise Neo4jGraphStore.upsertGraph()
-  -> ChromaVectorStore.upsertGraphIndex()
+  -> HITL proposal stored in Chroma in HITL mode or when reviewReasons() finds any
+  -> otherwise Neo4jGraphStore.applyGraph() (one transaction)
+  -> ChromaVectorStore vector sync
 
 Question
   -> src/cli/ask.js
@@ -41,8 +41,9 @@ Web UI
 HITL review
   -> pending proposal (Chroma HITL collection)
   -> reviewer edits / reviewer notes + regenerate (IngestionService.regenerateHitlProposal)
-  -> approve: schema types merged, IngestionService.applyGraphPayload()
-  -> Neo4jGraphStore.upsertGraph() + ChromaVectorStore.upsertGraphIndex(), note deleted
+  -> approve: IngestionService.applyGraphPayload()
+  -> Neo4jGraphStore.applyGraph() (one transaction) + ChromaVectorStore vector sync
+  -> schema types merged, note deleted
 
 MCP agent (no MindMesh LLM)
   -> src/mcp/server.js (stdio)
@@ -58,7 +59,7 @@ MCP agent (no MindMesh LLM)
   - Ollama via local HTTP API, default model `mistral`.
   - Custom HTTP endpoint via Gemini-style or OpenAI-compatible subproviders.
   - Hackathon hub chat-completions proxy, default model `gpt-4.1-nano`.
-- Graph database: Neo4j using the official `neo4j-driver`. Used with Neo4j 3.5 (portable install) and current versions (5.x / 2025.x+); the store adapts constraint syntax to the version.
+- Graph database: Neo4j using the official `neo4j-driver`. Requires Neo4j 5.23 or later (Community or Enterprise; calendar versions such as 2025.x and 2026.x included). Tested with Community 5.26 and Enterprise 2026.04.
 - Vector database: ChromaDB using `chromadb`.
 - Embeddings: Gemini `gemini-embedding-001` by default; hub embeddings and Chroma's default embedder are also supported.
 - Web server: Express serving JSON APIs and the bundled Preact/CSS frontend.
@@ -666,15 +667,19 @@ MindMesh uses its own `id` property, never Neo4j's internal element id. The same
 
 - Node ids are `node:<name>`, derived from the snake_case name.
 - Relationship ids are `rel:<12-char-sha1>` of `sourceId:relation:targetId`.
-- Uniqueness is enforced by Neo4j constraints that the graph store creates once per process before its first write: `knowledge_node_id` (unique `KnowledgeNode.id`) and, on Neo4j 5.7 and later, `relates_to_id` (unique `RELATES_TO.id`). The syntax adapts to the Neo4j version (3.5, 4.x, or 5+/calendar versions). On older versions relationship uniqueness relies on the deterministic ids.
+- Uniqueness is enforced by Neo4j constraints that the graph store creates once per process before its first write: `knowledge_node_id` (unique `KnowledgeNode.id`) and `relates_to_id` (unique `RELATES_TO.id`). Both are created on demand (`IF NOT EXISTS`), not by `npm run kg:test-db`. On a server older than 5.23 the first write fails with a clear version error.
 - The name of a node that already exists is permanent, because it is part of the id. The web/HITL update routes reject a different name and the UI shows the Name field read-only; the label can always be changed. Nodes that exist only in a pending proposal can still be renamed.
 - Editing a relation directly in the HITL workspace recomputes its id from the new source, relation, and target; if the id changes, the old relation and its vector are deleted. Relation updates submitted as proposals become a delete of the old relation plus a create of the new one.
 
 ### Write behavior
 
-`upsertGraph()` uses `MERGE` by node `id` and relationship `id`. Re-ingesting the same normalized fact updates properties and preserves `createdAt`. In this path an empty `description` (and empty relation `information`) keeps the stored value instead of clearing it, so passing mentions do not wipe existing text. `label`, `name`, and `type` are always overwritten. Direct HITL edits (`upsertNode()`, `upsertRelation()`) set fields exactly as submitted, so clearing a description is done through the edit form.
+`applyGraph()` applies a whole payload in one Neo4j transaction, in this order: relation deletes, node deletes, node upserts, relation upserts. Either all of it is committed or none of it. Deletes of items that are already gone are no-ops, so applying the same payload again is safe. Upserts use `MERGE` by node `id` and relationship `id`. Re-ingesting the same normalized fact updates properties and preserves `createdAt`. In this path an empty `description` (and empty relation `information`) keeps the stored value instead of clearing it, so passing mentions do not wipe existing text. `label`, `name`, and `type` are always overwritten. Direct HITL edits (`upsertNode()`, `upsertRelation()`) set fields exactly as submitted, so clearing a description is done through the edit form.
 
-`upsertGraph()` returns the nodes and relationships as Neo4j stored them, and the vector index is built from that result. Ingestion and `kg:reindex-vectors` therefore produce identical vector documents. Endpoints are checked before apply; if one disappears in the meantime, `upsertGraph()` fails with status 409 and rolls back the whole transaction instead of skipping the relationship.
+`applyGraph()` returns the nodes and relationships as Neo4j stored them, plus the deleted node and relation ids, and the vector index is built from that result. Ingestion and `kg:reindex-vectors` therefore produce identical vector documents. Endpoints are checked before apply; if one disappears in the meantime, `applyGraph()` fails with status 409 and rolls back the whole transaction, including its deletes.
+
+Chroma cannot join the Neo4j transaction, so `applyGraphPayload()` syncs vectors after the commit. Relation vectors of deleted nodes are removed by their stored `sourceId`/`targetId` (`deleteRelationsForNodes()`), so a retry also cleans them. If the sync fails, the request fails with status 503 and code `VECTOR_SYNC_FAILED`, and the message (shown in the UI, not replaced by the generic server error) says the graph was saved. A HITL proposal stays pending, so approving again re-syncs; for `auto` ingest or MCP, run `npm run kg:reindex-vectors`.
+
+A direct relation edit that changes the relation id (`upsertRelation(relation, { replaceId })`) deletes the old relation and writes the new one in one transaction, keeping the earliest `createdAt`; if the write fails, the old relation is kept.
 
 Graph deletes are supported by normalized `nodeDeletes` and `relationDeletes`. Direct node/relation CRUD helpers are used by the web and HITL review flows and keep vector documents synchronized through the server layer.
 
@@ -843,7 +848,7 @@ API endpoints:
 - `POST /api/jobs/nugget`: runs the nugget job over a selected/random graph neighborhood.
 - `GET /api/schema`: returns the editable graph schema.
 - `PUT /api/schema`: saves editable graph schema JSON.
-- `GET /api/hitl/notes`: lists pending HITL notes, each with its counts, review-signal counts, reviewer notes, regeneration fields, and `llmResponse` (used for per-operation card counts).
+- `GET /api/hitl/notes`: lists pending HITL notes, each with its counts, review-signal counts, reviewer notes, regeneration fields, and `llmResponse` (used for per-operation card counts), oldest first, plus `total` (all pending notes) and `limit`. When `total` is larger than the page, the HITL list says how many are hidden.
 - `GET /api/hitl/notes/:id`: returns one HITL proposal.
 - `GET /api/hitl/notes/:id/graph`: previews one HITL proposal over graph context.
 - `POST /api/hitl/notes/:id/graph`: previews edited HITL proposal text.
@@ -881,7 +886,8 @@ LLM providers should implement:
 Graph stores should implement the methods currently used by CLIs and services:
 
 - `verifyConnectivity()`
-- `upsertGraph(graphPayload)`
+- `applyGraph(graphPayload)` (deletes and upserts in one transaction; returns stored records and deleted ids)
+- `getExistingNodeIds(nodeIds)`
 - `expandFromNodes(nodeIds, depth)`
 - `getGraphPreview(limit)`
 - `getGraphSnapshot(limit)`
@@ -893,7 +899,7 @@ Graph stores should implement the methods currently used by CLIs and services:
 - `getRelation(relationId)`
 - `upsertNode(node)`
 - `deleteNode(nodeId)`
-- `upsertRelation(relation)`
+- `upsertRelation(relation, { replaceId })`
 - `deleteRelation(relationId)`
 - `smokeTest()`
 - `close()`
@@ -906,9 +912,10 @@ Vector stores should implement:
 - `upsertRelation(relation)`
 - `deleteNodes(nodeIds)`
 - `deleteRelations(relationIds)`
+- `deleteRelationsForNodes(nodeIds)`
 - `queryNodes(query, topK)`
 - `upsertHitlNote(note)`
-- `listHitlNotes({ status, limit, offset })`
+- `listHitlNotePage({ status, limit, offset, order })` returning `{ notes, total }`, and `listHitlNotes(options)` returning the notes. Notes are sorted by `createdAt` across all matching notes before the page is cut (`order`: `oldest` default, or `newest`); `limit` 0 returns all
 - `getHitlNote(id)`
 - `deleteHitlNotes(ids)`
 - `queryHitlNotes(query, topK)`
@@ -926,5 +933,4 @@ To add a provider, create the adapter and update the relevant `providerFactory.j
 - Prompt behavior is part of the application contract. Update prompt files and README together when changing extraction or answer semantics.
 - Chroma retrieval depends on its configured embedding implementation. If you switch embedding providers or dimensions, run `npm run kg:reindex-vectors` to rebuild the node and relation collections. HITL proposals are embedded too and cannot be rebuilt from Neo4j, so approve or reject pending proposals first, then recreate the HITL collection (`kg:clear-chroma` deletes it).
 - Neo4j relationship type is always `RELATES_TO`; the semantic relation is stored in the `relation` property.
-- `source` is passed into `upsertGraph()` today but is not persisted by `Neo4jGraphStore`.
 - The fallback ingestion text in `src/cli/ingest.js` is intentionally large and domain-specific. It is sample data, not a schema definition.

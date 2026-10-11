@@ -943,11 +943,13 @@ app.put("/api/schema", asyncRoute(async (req, res) => {
 app.get("/api/hitl/notes", asyncRoute(async (req, res) => {
 	requireHitlNotesSupport();
 	const limit = parseSearchLimit(req.query.limit || 100);
-	const notes = await vectorStore.listHitlNotes({ status: "pending", limit });
-	
+	const { notes, total } = await vectorStore.listHitlNotePage({ status: "pending", limit });
+
 	res.json({
 		// llmResponse lets the review list show per-operation counts parsed exactly like the detail view.
 		notes: notes.map((note) => ({ ...hitlNoteSummary(note), llmResponse: note.llmResponse })),
+		total,
+		limit,
 	});
 }));
 
@@ -1071,6 +1073,7 @@ app.delete("/api/hitl/nodes/:id", asyncRoute(async (req, res) => {
 	const result = await graphStore.deleteNode(req.params.id);
 	await vectorStore.deleteNodes([result.nodeId]);
 	await vectorStore.deleteRelations(result.relationIds ?? []);
+	await vectorStore.deleteRelationsForNodes([result.nodeId]);
 	const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
 	
 	res.json({
@@ -1127,11 +1130,11 @@ app.put("/api/hitl/relations/:id", asyncRoute(async (req, res) => {
 		res.status(202).json(pendingProposal);
 		return;
 	}
+	// One transaction: if the id changed, the old relation is removed together with writing the new one.
+	const storedRelation = await graphStore.upsertRelation(relation, { replaceId: req.params.id });
 	if (relation.id !== req.params.id) {
-		await graphStore.deleteRelation(req.params.id);
 		await vectorStore.deleteRelations([req.params.id]);
 	}
-	const storedRelation = await graphStore.upsertRelation(relation);
 	await vectorStore.upsertRelation(storedRelation);
 	const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
 	
@@ -1274,7 +1277,9 @@ app.use((req, res) => {
 
 app.use((error, req, res, _next) => {
 	const status = Number(error.status) || (error.name === "MulterError" ? 400 : 500);
-	const message = status >= 500 ? "Server error. Check the terminal for details." : error.message;
+	// 5xx details stay in the terminal unless the error is marked `expose` (for example a vector sync
+	// failure, where the user must know the graph was saved).
+	const message = status >= 500 && !error.expose ? "Server error. Check the terminal for details." : error.message;
 	
 	if (status >= 500) {
 		console.error(error);

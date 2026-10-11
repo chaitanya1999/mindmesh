@@ -38,8 +38,8 @@ function compactString(value) {
 }
 
 function sessionOptions(config) {
-	// Omitting the database lets Neo4j 3.x / single-database deployments use
-	// their default database without triggering multi-database support checks.
+	// Omitting the database uses the server's default database (the only user
+	// database on Community Edition).
 	if (!config.database || config.database === "neo4j") {
 		return {};
 	}
@@ -59,7 +59,7 @@ export class Neo4jGraphStore {
 	}
 
 	// Uniqueness of the custom `id` is enforced by Neo4j constraints, created once per process before
-	// the first write. Syntax differs between Neo4j 3.5, 4.x and 5+/calendar versions (2025.x and later).
+	// the first write. Requires Neo4j 5.23+ (calendar versions such as 2025.x count as newer).
 	ensureConstraints() {
 		this.constraintsReady ??= this.createConstraints().catch((error) => {
 			this.constraintsReady = null;
@@ -73,46 +73,71 @@ export class Neo4jGraphStore {
 
 		try {
 			const versionResult = await session.run("CALL dbms.components() YIELD versions RETURN versions[0] AS version");
-			const [major = 0, minor = 0] = String(versionResult.records[0]?.get("version") ?? "")
-				.split(".")
-				.map((part) => Number.parseInt(part, 10) || 0);
-			const nodeConstraint = major >= 5
-				? "CREATE CONSTRAINT knowledge_node_id IF NOT EXISTS FOR (n:KnowledgeNode) REQUIRE n.id IS UNIQUE"
-				: major === 4
-					? "CREATE CONSTRAINT knowledge_node_id IF NOT EXISTS ON (n:KnowledgeNode) ASSERT n.id IS UNIQUE"
-					: "CREATE CONSTRAINT ON (n:KnowledgeNode) ASSERT n.id IS UNIQUE";
+			const version = String(versionResult.records[0]?.get("version") ?? "");
+			const [major = 0, minor = 0] = version.split(".").map((part) => Number.parseInt(part, 10) || 0);
+			// 5.23 is the oldest version with the CALL (variables) { ... } subquery syntax used by expandFromNodes().
+			if (major < 5 || (major === 5 && minor < 23)) {
+				throw new Error(`MindMesh needs Neo4j 5.23 or later; the server reports version ${version || "unknown"}.`);
+			}
 
 			try {
-				await session.run(nodeConstraint);
+				await session.run("CREATE CONSTRAINT knowledge_node_id IF NOT EXISTS FOR (n:KnowledgeNode) REQUIRE n.id IS UNIQUE");
 			} catch (error) {
-				// 3.5 has no IF NOT EXISTS; an existing equivalent constraint is fine.
-				if (!/already exists|equivalent/i.test(error?.message ?? "")) {
-					throw new Error(`Could not enforce unique KnowledgeNode ids (duplicate ids may exist): ${error.message}`);
-				}
+				throw new Error(`Could not enforce unique KnowledgeNode ids (duplicate ids may exist): ${error.message}`);
 			}
 
-			// Relationship property uniqueness needs Neo4j 5.7+. Older versions rely on deterministic relation ids.
-			if (major > 5 || (major === 5 && minor >= 7)) {
-				await session.run("CREATE CONSTRAINT relates_to_id IF NOT EXISTS FOR ()-[r:RELATES_TO]-() REQUIRE r.id IS UNIQUE");
-			}
+			await session.run("CREATE CONSTRAINT relates_to_id IF NOT EXISTS FOR ()-[r:RELATES_TO]-() REQUIRE r.id IS UNIQUE");
 		} finally {
 			await session.close();
 		}
 	}
 
-	// Returns what Neo4j actually stored, so vector documents match the graph exactly (same as a reindex).
-	async upsertGraph(graphPayload) {
+	// Applies a whole payload in ONE transaction: relation deletes, node deletes, node upserts, relation
+	// upserts. Either everything is committed or nothing is. Deletes of items that are already gone are
+	// no-ops, so applying the same payload again is safe. Returns what Neo4j actually stored, so vector
+	// documents match the graph exactly (same as a reindex).
+	async applyGraph(graphPayload) {
 		await this.ensureConstraints();
 		const session = this.driver.session(this.sessionOptions);
 		const now = new Date().toISOString();
 		const storedNodes = [];
 		const storedRelations = [];
+		const deletedNodeIds = new Set();
+		const deletedRelationIds = new Set();
 
 		try {
 			await session.executeWrite(async (tx) => {
+				// executeWrite may retry the function on transient errors, so start from empty results.
 				storedNodes.length = 0;
 				storedRelations.length = 0;
-				for (const node of graphPayload.nodes) {
+				deletedNodeIds.clear();
+				deletedRelationIds.clear();
+
+				for (const relationDelete of graphPayload.relationDeletes ?? []) {
+					await tx.run("MATCH ()-[r:RELATES_TO {id: $id}]->() DELETE r", { id: relationDelete.id });
+					deletedRelationIds.add(relationDelete.id);
+				}
+
+				for (const nodeDelete of graphPayload.nodeDeletes ?? []) {
+					const deleteResult = await tx.run(
+						`
+						MATCH (n:KnowledgeNode {id: $id})
+						OPTIONAL MATCH (n)-[r:RELATES_TO]-()
+						WITH n, collect(r.id) AS relationIds
+						DETACH DELETE n
+						RETURN relationIds
+						`,
+						{ id: nodeDelete.id },
+					);
+					deletedNodeIds.add(nodeDelete.id);
+					for (const relationId of deleteResult.records[0]?.get("relationIds") ?? []) {
+						if (relationId) {
+							deletedRelationIds.add(relationId);
+						}
+					}
+				}
+
+				for (const node of graphPayload.nodes ?? []) {
 					const nodeResult = await tx.run(
 						`
 						MERGE (n:KnowledgeNode {id: $id})
@@ -133,7 +158,7 @@ export class Neo4jGraphStore {
 					storedNodes.push(...nodeResult.records.map((record) => formatNode(record.get("n"))));
 				}
 
-				for (const relation of graphPayload.relations) {
+				for (const relation of graphPayload.relations ?? []) {
 					const relationResult = await tx.run(
 						`
 						MATCH (source:KnowledgeNode {id: $sourceId})
@@ -167,7 +192,12 @@ export class Neo4jGraphStore {
 				}
 			});
 
-			return { nodes: storedNodes, relations: storedRelations };
+			return {
+				nodes: storedNodes,
+				relations: storedRelations,
+				deletedNodeIds: [...deletedNodeIds],
+				deletedRelationIds: [...deletedRelationIds],
+			};
 		} finally {
 			await session.close();
 		}
@@ -187,8 +217,7 @@ export class Neo4jGraphStore {
 					WITH collect(DISTINCT start) + collect(DISTINCT connected) AS rawNodes, collect(path) AS paths
 					UNWIND rawNodes AS node
 					WITH collect(DISTINCT node) AS nodes, paths
-					CALL {
-						WITH paths
+					CALL (paths) {
 						UNWIND paths AS path
 						WITH path
 						WHERE path IS NOT NULL
@@ -498,10 +527,14 @@ export class Neo4jGraphStore {
 		}
 	}
 
-	async upsertRelation(relation) {
+	// Writes the relation exactly as given. With `replaceId` (a direct edit that changed the relation's id),
+	// the old relation is deleted in the same transaction, so a failed write never loses it. The earliest
+	// createdAt of the replaced relations is kept.
+	async upsertRelation(relation, { replaceId = "" } = {}) {
 		await this.ensureConstraints();
 		const session = this.driver.session(this.sessionOptions);
 		const now = new Date().toISOString();
+		const replaceIds = [...new Set([relation.id, replaceId].filter(Boolean))];
 
 		try {
 			const result = await session.executeWrite((tx) =>
@@ -509,9 +542,12 @@ export class Neo4jGraphStore {
 					`
 					MATCH (source:KnowledgeNode {id: $sourceId})
 					MATCH (target:KnowledgeNode {id: $targetId})
-					OPTIONAL MATCH ()-[old:RELATES_TO {id: $id}]->()
-					WITH source, target, old, coalesce(old.createdAt, $now) AS createdAt
-					DELETE old
+					OPTIONAL MATCH ()-[old:RELATES_TO]->()
+					WHERE old.id IN $replaceIds
+					WITH source, target, collect(old) AS olds
+					WITH source, target, olds, coalesce(reduce(earliest = null, o IN olds |
+						CASE WHEN earliest IS NULL OR o.createdAt < earliest THEN o.createdAt ELSE earliest END), $now) AS createdAt
+					FOREACH (o IN olds | DELETE o)
 					CREATE (source)-[relationship:RELATES_TO {
 						id: $id,
 						sourceId: $sourceId,
@@ -531,6 +567,7 @@ export class Neo4jGraphStore {
 						relation: compactString(relation.relation),
 						information: compactString(relation.information),
 						description: compactString(relation.description),
+						replaceIds,
 						now,
 					},
 				),

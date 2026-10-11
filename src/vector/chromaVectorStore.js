@@ -92,16 +92,15 @@ function hitlNoteFromRecord(id, document, metadata = {}) {
 	};
 }
 
-function sortHitlNotes(notes) {
-	function timestamp(note) {
-		const value = Date.parse(note.createdAt || "");
+// Oldest first; ties (or missing createdAt) fall back to the id, which starts with a base36 timestamp.
+function compareHitlEntries(left, right) {
+	function timestamp(entry) {
+		const value = Date.parse(entry.createdAt || "");
 		return Number.isFinite(value) ? value : 0;
 	}
 
-	return [...notes].sort((left, right) => (
-		timestamp(left) - timestamp(right)
-		|| String(left.id).localeCompare(String(right.id))
-	));
+	return timestamp(left) - timestamp(right)
+		|| String(left.id).localeCompare(String(right.id));
 }
 
 function uniqueById(records = []) {
@@ -230,21 +229,46 @@ export class ChromaVectorStore {
 		};
 	}
 
-	async listHitlNotes({ status = "pending", limit = 100, offset = 0 } = {}) {
+	// Chroma returns records in no fixed order, so sorting after a `limit` would show an arbitrary subset.
+	// Instead: read ids + metadata of every matching note (no documents, so this stays cheap), sort by
+	// createdAt, cut the page, then fetch full documents for that page only.
+	// `order` is "oldest" (default) or "newest"; `limit` of 0/null returns every matching note.
+	async listHitlNotePage({ status = "pending", limit = 100, offset = 0, order = "oldest" } = {}) {
 		const collection = await this.getHitlCollection();
-		const result = await collection.get({
-			where: status ? { status } : undefined,
-			limit,
-			offset,
-		});
-
-		const notes = (result.ids ?? []).map((id, index) => hitlNoteFromRecord(
+		const where = status ? { status } : undefined;
+		const index = await collection.get({ where, include: ["metadatas"] });
+		const entries = (index.ids ?? []).map((id, position) => ({
 			id,
-			result.documents?.[index] ?? "",
-			result.metadatas?.[index] ?? {},
-		));
+			createdAt: index.metadatas?.[position]?.createdAt || "",
+		}));
+		entries.sort((left, right) => compareHitlEntries(left, right));
+		if (order === "newest") {
+			entries.reverse();
+		}
 
-		return sortHitlNotes(notes);
+		const start = Math.max(0, Number(offset) || 0);
+		const pageIds = entries
+			.slice(start, limit ? start + Number(limit) : undefined)
+			.map((entry) => entry.id);
+		if (pageIds.length === 0) {
+			return { notes: [], total: entries.length };
+		}
+
+		const result = await collection.get({ ids: pageIds });
+		const noteById = new Map((result.ids ?? []).map((id, position) => [id, hitlNoteFromRecord(
+			id,
+			result.documents?.[position] ?? "",
+			result.metadatas?.[position] ?? {},
+		)]));
+
+		return {
+			notes: pageIds.map((id) => noteById.get(id)).filter(Boolean),
+			total: entries.length,
+		};
+	}
+
+	async listHitlNotes(options = {}) {
+		return (await this.listHitlNotePage(options)).notes;
 	}
 
 	async getHitlNote(id) {
@@ -372,6 +396,26 @@ export class ChromaVectorStore {
 		if (typeof collection.delete === "function") {
 			await collection.delete({ ids: safeIds });
 		}
+	}
+
+	// Removes every relation vector attached to the given nodes, found by the stored sourceId/targetId
+	// metadata. Unlike the relation ids Neo4j returns when it deletes a node, this also works on a retry,
+	// after the node is already gone from the graph.
+	async deleteRelationsForNodes(nodeIds) {
+		const safeIds = [...new Set((nodeIds ?? []).filter(Boolean))];
+		if (safeIds.length === 0) {
+			return;
+		}
+
+		const collection = await this.getRelationCollection();
+		await collection.delete({
+			where: {
+				$or: [
+					{ sourceId: { $in: safeIds } },
+					{ targetId: { $in: safeIds } },
+				],
+			},
+		});
 	}
 
 	async queryNodes(query, topK) {
