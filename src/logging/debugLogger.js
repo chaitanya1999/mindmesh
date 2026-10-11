@@ -17,6 +17,32 @@ function scopeEnabled(scopes, name) {
 	return scopes.length === 0 || scopes.includes(name) || scopes.includes("*");
 }
 
+// Prints a pipeline step to the console and, when enabled, to the debug log.
+export function logStep(debugLogger, message) {
+	console.log(message);
+	debugLogger?.log(message);
+}
+
+// Plain-object form of an error (including its cause chain) for debug logs.
+export function errorDetails(error) {
+	if (error instanceof Error) {
+		return {
+			name: error.name,
+			message: error.message,
+			stack: error.stack,
+			status: error.status,
+			code: error.code,
+			cause: error.cause ? errorDetails(error.cause) : undefined,
+		};
+	}
+
+	return {
+		name: typeof error,
+		message: String(error),
+		value: error,
+	};
+}
+
 // `name` sets the log file prefix; `scope` (defaults to name) is matched against `logging.scopes`.
 export function createDebugLogger({ enabled = false, directory, scopes = [], name = "debug", scope = name } = {}) {
 	if (!enabled || !scopeEnabled(scopes, scope)) {

@@ -42,6 +42,21 @@ describe("GET /api/hitl/notes", () => {
 		assert.equal(body.notes[1].nodeDeleteCount, 1);
 		assert.match(body.notes[0].llmResponse, /NODE_CREATE\|a_screen/);
 	});
+
+	it("returns the parsed records next to the proposal text", async () => {
+		const id = await propose("NODE_CREATE|a_screen|A|screen||", "NODE_DELETE|old_screen|");
+
+		const list = (await http.get("/api/hitl/notes")).body;
+		const detail = (await http.get(noteUrl(id))).body.note;
+
+		for (const records of [list.notes[0].records, detail.records]) {
+			assert.equal(records.nodes[0].id, "node:a_screen");
+			assert.equal(records.nodes[0].type, "screen");
+			assert.equal(records.nodeDeletes[0].id, "node:old_screen");
+			assert.deepEqual(records.schemaViolations, []);
+		}
+		assert.match(detail.llmResponse, /NODE_CREATE\|a_screen/);
+	});
 });
 
 describe("POST /api/hitl/notes/:id/approve", () => {

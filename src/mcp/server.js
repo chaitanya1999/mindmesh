@@ -6,25 +6,12 @@ import * as z from "zod/v4";
 import { getConfig } from "../config.js";
 import { createMindMesh, isMainModule } from "../mindmesh.js";
 import { buildExtractionPrompt } from "../prompts/promptRegistry.js";
-import { formatGraphRecords, parseGraphExtraction, normalizeGraphPayload } from "../ingestion/graphPayload.js";
-import { resolveGraphPayload } from "../ingestion/graphResolution.js";
-import { reviewReasons } from "../ingestion/reviewSignals.js";
-import { loadGraphSchema, readEditableGraphSchema, formatSchemaCatalog, formatFieldGuidance } from "../schema/graphSchema.js";
+import { readEditableGraphSchema, formatSchemaCatalog, formatFieldGuidance } from "../schema/graphSchema.js";
 import { createDebugLogger } from "../logging/debugLogger.js";
 
 const DEFAULT_GRAPH_LIMIT = 150;
 const DEFAULT_HITL_LIMIT = 100;
 
-// Services for the current MCP server, set by createMcpServer(). The tool handlers below read these
-// bindings; they move into HitlService (P1 step 4). There is no LLM provider: the calling agent performs
-// all reasoning, and these services are used only for retrieval, normalization, and persistence.
-let config;
-let prompts;
-let graphStore;
-let vectorStore;
-let graphWriteService;
-let ingestionService;
-let ragService;
 
 function textContent(value) {
 	return {
@@ -35,10 +22,6 @@ function textContent(value) {
 			},
 		],
 	};
-}
-
-function currentGraphSchema() {
-	return loadGraphSchema(config);
 }
 
 // Short reference shown on HITL cards, e.g. "hitl:muzxnk3c:d964dbbae577" -> "#d964db".
@@ -119,7 +102,9 @@ const REGENERATE_INSTRUCTIONS = [
 // Builds the MCP server with its tools and resources, without connecting a transport, so tests can use
 // an in-memory transport.
 export function createMcpServer(services) {
-	({ config, prompts, graphStore, vectorStore, graphWriteService, ingestionService, ragService } = services);
+	// There is no LLM provider: the calling agent performs all reasoning, and these services are used only
+	// for retrieval, normalization, and persistence.
+	const { config, prompts, graphStore, vectorStore, hitlService, ingestionService, ragService } = services;
 
 	const server = new McpServer(
 		{
@@ -217,7 +202,7 @@ export function createMcpServer(services) {
 		},
 		async ({ text }) => {
 			try {
-				const graphSchema = currentGraphSchema();
+				const graphSchema = hitlService.currentSchema();
 				const existingContext = await ingestionService.retrieveExistingContext({ text, graphSchema });
 				const extractionSystemPrompt = buildExtractionPrompt(prompts.extractionSystemTemplate, {
 					graphSchema,
@@ -270,36 +255,18 @@ export function createMcpServer(services) {
 			const resolvedSource = String(source || "mcp").trim() || "mcp";
 			
 			try {
-				const graphSchema = currentGraphSchema();
-				const extractedGraph = parseGraphExtraction(graphRecords);
-				const { graphPayload, changed } = await resolveGraphPayload(
-					normalizeGraphPayload(extractedGraph, { schema: graphSchema }),
-					graphStore,
-				);
+				// Same path as web ingest: prepared against pending proposals and the graph, then auto mode
+				// applies only clean creates and updates.
+				const result = await hitlService.submitRecords({
+					graphRecords,
+					text,
+					userName: resolvedUserName,
+					source: resolvedSource,
+					debugLogger,
+				});
+				const status = result.status ?? "applied";
+				const applied = status === "applied";
 
-				let result;
-				let status;
-				let applied;
-				// Same rule as web ingest: auto mode applies only clean creates and updates.
-				if (ingestionService.ingestion.mode === "hitl" || reviewReasons(graphPayload).length > 0) {
-					const pending = await ingestionService.storeHitlProposal({
-						text,
-						source: resolvedSource,
-						userName: resolvedUserName,
-						rawResponse: changed ? formatGraphRecords(graphPayload) : graphRecords,
-						graphPayload,
-						debugLogger,
-					});
-					result = pending;
-					status = pending.status ?? "pending_hitl";
-					applied = false;
-				} else {
-					const appliedResult = await graphWriteService.applyPayload(graphPayload, { debugLogger });
-					result = appliedResult;
-					status = "applied";
-					applied = true;
-				}
-				
 				return textContent({
 					status,
 					applied,
@@ -344,8 +311,8 @@ export function createMcpServer(services) {
 		},
 		async ({ proposal, notes }) => {
 			try {
-				const noteId = await ingestionService.resolveHitlNoteId(proposal);
-				const note = await ingestionService.getHitlNote(noteId);
+				const noteId = await hitlService.resolveRef(proposal);
+				const note = await hitlService.getProposal(noteId);
 				const { reviewerNotes, notesSource } = resolveReviewerNotes(notes, note);
 				const { existingContext, extractionPrompt } = await ingestionService.buildHitlRegenerationPrompt({
 					note,
@@ -388,10 +355,10 @@ export function createMcpServer(services) {
 		},
 		async ({ proposal, graphRecords, notes, regeneratedBy }) => {
 			try {
-				const noteId = await ingestionService.resolveHitlNoteId(proposal);
-				const note = await ingestionService.getHitlNote(noteId);
+				const noteId = await hitlService.resolveRef(proposal);
+				const note = await hitlService.getProposal(noteId);
 				const { reviewerNotes } = resolveReviewerNotes(notes, note);
-				const { note: updatedNote, graphPayload } = await ingestionService.storeHitlRegeneration({
+				const { note: updatedNote, graphPayload } = await hitlService.storeRegeneration({
 					note,
 					rawResponse: graphRecords,
 					reviewerNotes,

@@ -3,6 +3,7 @@ import { resolveGraphPayload } from "../ingestion/graphResolution.js";
 import { ChromaVectorStore } from "../vector/chromaVectorStore.js";
 import { formatFieldGuidance, formatSchemaCatalog } from "../schema/graphSchema.js";
 import { IngestionService } from "../ingestion/ingestionService.js";
+import { HitlService } from "../hitl/hitlService.js";
 import { countReviewSignals } from "../ingestion/reviewSignals.js";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -74,6 +75,16 @@ const serviceGraphSchema = {
 // Shape returned by Neo4jGraphStore.applyGraph().
 function storedFrom(graph) {
 	return { nodes: graph.nodes ?? [], relations: graph.relations ?? [], deletedNodeIds: [], deletedRelationIds: [] };
+}
+
+// HitlService around a bare IngestionService, for tests that build the ingestion service with fake stores.
+function hitlFor(ingestionService) {
+	return new HitlService({
+		ingestionService,
+		graphStore: ingestionService.graphStore,
+		vectorStore: ingestionService.vectorStore,
+		schemaConfig: { schema: ingestionService.prompts.graphSchema },
+	});
 }
 
 function assert(condition, message) {
@@ -310,7 +321,7 @@ const service = new IngestionService({
 		contextDepth: 1,
 	},
 });
-await service.ingestText({ text: "There is one more Varun.", source: "test" });
+await hitlFor(service).ingestText({ text: "There is one more Varun.", source: "test" });
 assert(capturedVectorQuery?.query === "There is one more Varun.", "Ingestion service did not query vector context with input text.");
 assert(capturedVectorQuery?.topK === 2, "Ingestion service did not use ingestion context topK.");
 assert(capturedGraphExpansion?.depth === 1, "Ingestion service did not use ingestion context depth.");
@@ -372,7 +383,7 @@ const pendingContextService = new IngestionService({
 		contextDepth: 1,
 	},
 });
-await pendingContextService.ingestText({ text: "Sales Journey Flow contains apple stage", source: "test" });
+await hitlFor(pendingContextService).ingestText({ text: "Sales Journey Flow contains apple stage", source: "test" });
 assert(pendingContextExtractionRequest?.systemPrompt.includes("Pending HITL context"), "Ingestion prompt should include pending HITL context.");
 assert(pendingContextExtractionRequest?.systemPrompt.includes("[node:sales_journey_flow] Sales Journey Flow"), "Pending HITL context should expose pending node IDs for reuse.");
 
@@ -453,14 +464,14 @@ const mutationService = new IngestionService({
 	},
 });
 // Auto mode never applies deletes; they become a HITL proposal.
-const autoDeleteResult = await mutationService.ingestText({ text: "Apply graph mutations.", source: "test" });
+const autoDeleteResult = await hitlFor(mutationService).ingestText({ text: "Apply graph mutations.", source: "test" });
 assert(autoDeleteResult.status === "pending_hitl", "Auto mode must send a payload with deletes to HITL.");
 assert(autoDeleteResult.reviewReasons.some((reason) => reason.includes("node delete")) && autoDeleteResult.reviewReasons.some((reason) => reason.includes("relation delete")), "Auto-mode review reasons should name the deletes.");
 assert(mutationStoredNote?.llmResponse.includes("NODE_DELETE|old_screen"), "The forced proposal should keep the delete records.");
 assert(deletedNodes.length === 0 && deletedRelations.length === 0 && mutationUpsertGraph === null, "Auto mode must not touch the graph when deletes are present.");
 
 // Delete mechanics through the graph writer, the path HITL approval uses.
-const mutationResult = await mutationService.graphWriter.applyPayload(
+const mutationResult = await hitlFor(mutationService).graphWriter.applyPayload(
 	normalizeGraphPayload(structuredClone(mutationExtraction), { schema: serviceGraphSchema }),
 	{ source: "test", debugLogger: { log() {} } },
 );
@@ -494,7 +505,7 @@ const syncFailureService = new IngestionService({
 });
 let syncFailure = null;
 try {
-	await syncFailureService.graphWriter.applyPayload(
+	await hitlFor(syncFailureService).graphWriter.applyPayload(
 		normalizeGraphPayload(extractCustomGraph("NODE_CREATE|sync_screen|Sync Screen|screen||"), { schema }),
 		{ source: "test", debugLogger: { log() {} } },
 	);
@@ -621,7 +632,7 @@ const ambiguousAuto = autoModeService({
 	nodes: [{ name: "rajat", label: "Rajat", type: "person", description: "", metadata: "AMBIGUITY:multiple users match" }],
 	relations: [],
 });
-const ambiguousAutoResult = await ambiguousAuto.autoService.ingestText({ text: "Rajat joined.", source: "test" });
+const ambiguousAutoResult = await hitlFor(ambiguousAuto.autoService).ingestText({ text: "Rajat joined.", source: "test" });
 assert(ambiguousAutoResult.status === "pending_hitl" && ambiguousAuto.calls.applied === null, "Auto mode must send an ambiguity to HITL.");
 assert(ambiguousAutoResult.reviewReasons.some((reason) => reason.includes("ambiguity")), "Review reasons should name the ambiguity.");
 
@@ -629,7 +640,7 @@ const contradictionAuto = autoModeService({
 	nodes: [],
 	relations: [{ sourceName: "xyz_screen", targetName: "pan_api", relation: "uses", operation: "update", metadata: "CONTRADICTION:existing graph differs" }],
 }, ["node:xyz_screen", "node:pan_api"]);
-const contradictionAutoResult = await contradictionAuto.autoService.ingestText({ text: "XYZ does not use PAN.", source: "test" });
+const contradictionAutoResult = await hitlFor(contradictionAuto.autoService).ingestText({ text: "XYZ does not use PAN.", source: "test" });
 assert(contradictionAutoResult.status === "pending_hitl" && contradictionAuto.calls.applied === null, "Auto mode must send a contradiction to HITL.");
 assert(contradictionAutoResult.reviewReasons.some((reason) => reason.includes("contradiction")), "Review reasons should name the contradiction.");
 
@@ -637,14 +648,14 @@ const convertedCreateAuto = autoModeService({
 	nodes: [{ name: "xyz_screen", label: "XYZ Screen", type: "screen", description: "Guessed description.", operation: "create" }],
 	relations: [],
 }, ["node:xyz_screen"]);
-const convertedCreateAutoResult = await convertedCreateAuto.autoService.ingestText({ text: "XYZ screen exists.", source: "test" });
+const convertedCreateAutoResult = await hitlFor(convertedCreateAuto.autoService).ingestText({ text: "XYZ screen exists.", source: "test" });
 assert(convertedCreateAutoResult.status === "pending_hitl" && convertedCreateAuto.calls.applied === null, "Auto mode must not apply a create for a node that already exists.");
 
 const cleanUpdateAuto = autoModeService({
 	nodes: [{ name: "xyz_screen", label: "XYZ Screen", type: "screen", description: "New detail.", operation: "update" }],
 	relations: [{ sourceName: "xyz_screen", targetName: "pan_api", relation: "uses", operation: "create" }],
 }, ["node:xyz_screen", "node:pan_api"]);
-const cleanUpdateAutoResult = await cleanUpdateAuto.autoService.ingestText({ text: "XYZ screen uses PAN.", source: "test" });
+const cleanUpdateAutoResult = await hitlFor(cleanUpdateAuto.autoService).ingestText({ text: "XYZ screen uses PAN.", source: "test" });
 assert(cleanUpdateAutoResult.status !== "pending_hitl" && cleanUpdateAuto.calls.stored === null, "Auto mode should apply clean creates and updates.");
 assert(cleanUpdateAuto.calls.applied?.nodes?.[0]?.id === "node:xyz_screen" && cleanUpdateAuto.calls.applied?.relations?.length === 1, "Clean auto-mode updates should reach the graph.");
 
@@ -697,7 +708,7 @@ const hitlService = new IngestionService({
 		contextDepth: 1,
 	},
 });
-const hitlResult = await hitlService.ingestText({ text: "Draft screen exists.", source: "test", userName: "Frontend User" });
+const hitlResult = await hitlFor(hitlService).ingestText({ text: "Draft screen exists.", source: "test", userName: "Frontend User" });
 assert(hitlResult.status === "pending_hitl", "HITL ingestion should return a pending status.");
 assert(hitlStoredNote?.userName === "Frontend User", "HITL ingestion should store the request user name.");
 assert(hitlStoredNote?.userInput === "Draft screen exists.", "HITL ingestion should store the human input.");
@@ -749,7 +760,7 @@ const forcedHitlService = new IngestionService({
 		contextDepth: 1,
 	},
 });
-const forcedHitlResult = await forcedHitlService.ingestText({ text: "Mystery box imagines PAN API.", source: "test" });
+const forcedHitlResult = await hitlFor(forcedHitlService).ingestText({ text: "Mystery box imagines PAN API.", source: "test" });
 assert(forcedHitlResult.status === "pending_hitl", "Schema violations should force HITL even when ingestion mode is auto.");
 assert(forcedHitlResult.schemaViolations.length >= 2, "Forced HITL result should expose schema violations.");
 assert(forcedHitlResult.schemaSuggestions.nodeTypes.some((entry) => entry.name === "hallucinated_widget"), "Unknown node type should be captured as a schema suggestion.");
@@ -824,7 +835,7 @@ const duplicatePendingHitlService = new IngestionService({
 		contextDepth: 1,
 	},
 });
-await duplicatePendingHitlService.ingestText({ text: "Sales Journey Flow contains apple stage", source: "test", userName: "Frontend User" });
+await hitlFor(duplicatePendingHitlService).ingestText({ text: "Sales Journey Flow contains apple stage", source: "test", userName: "Frontend User" });
 assert(duplicatePendingHitlStoredNote?.llmResponse.includes("NODE_UPDATE|sales_journey_flow"), "Pending duplicate node creates should be rewritten as updates.");
 assert(!duplicatePendingHitlStoredNote?.llmResponse.includes("NODE_CREATE|sales_journey_flow"), "Pending duplicate node creates should not remain in stored HITL response.");
 assert(duplicatePendingHitlStoredNote?.llmResponse.includes("NODE_CREATE|apple_stage"), "New nodes should remain creates after pending duplicate reconciliation.");
@@ -873,7 +884,7 @@ const applyGuardService = new IngestionService({
 });
 let applyRejected = false;
 try {
-	await applyGuardService.graphWriter.applyPayload(typoPayload, { source: "test", debugLogger: { log() {} } });
+	await hitlFor(applyGuardService).graphWriter.applyPayload(typoPayload, { source: "test", debugLogger: { log() {} } });
 } catch (error) {
 	applyRejected = error.status === 400 && error.message.includes("does not exist");
 }
@@ -927,7 +938,7 @@ const failingService = new IngestionService({
 });
 let failureLogged = false;
 try {
-	await failingService.ingestText({ text: "Varun exists.", source: "test" });
+	await hitlFor(failingService).ingestText({ text: "Varun exists.", source: "test" });
 } catch {
 	const [logFile] = await fs.readdir(failingLogDir);
 	const logText = await fs.readFile(path.join(failingLogDir, logFile), "utf8");

@@ -14,7 +14,7 @@ async function main() {
 	const services = createMindMesh(config, { llmProviderName: input.options.provider });
 
 	try {
-		const graph = await services.ingestionService.ingestText({
+		const graph = await services.hitlService.ingestText({
 			text: input.text,
 			source: input.source,
 			userName: config.ingestion.hitlDefaultUserName || "cli-user",

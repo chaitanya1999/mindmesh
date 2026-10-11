@@ -82,10 +82,20 @@ describe("MCP tools", () => {
 		});
 
 		assert.equal(regenerated.status, "pending_hitl");
-		const note = await services.ingestionService.getHitlNote(stored.hitlNoteId);
+		const note = await services.hitlService.getProposal(stored.hitlNoteId);
 		assert.match(note.llmResponse, /NODE_CREATE\|a_api/);
 		assert.equal(note.reviewerNotes, "A is an API.");
 		assert.equal(note.regenerationOrigin, "agent");
+	});
+
+	it("apply-ingestion reconciles with pending proposals like web ingest", async () => {
+		services.ingestionService.ingestion.mode = "hitl";
+		await callTool("apply-ingestion", { graphRecords: records("NODE_CREATE|sales_flow|Sales Flow|screen||"), text: "Sales flow exists." });
+
+		const second = await callTool("apply-ingestion", { graphRecords: records("NODE_CREATE|sales_flow|Sales Flow|screen|More detail.|"), text: "Sales flow has detail." });
+
+		const note = await services.hitlService.getProposal(second.hitlNoteId);
+		assert.match(note.llmResponse, /NODE_UPDATE\|sales_flow/, "a create for a node that is already pending becomes an update");
 	});
 
 	it("regenerate-context requires notes when none are saved", async () => {

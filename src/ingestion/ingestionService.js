@@ -1,9 +1,6 @@
-import crypto from "node:crypto";
 import { formatGraphRecords, normalizeGraphPayload, parseGraphExtraction, toSnakeCase } from "./graphPayload.js";
 import { resolveGraphPayload } from "./graphResolution.js";
-import { GraphWriteService } from "../graph/graphWriteService.js";
-import { countReviewSignals, reviewReasons } from "./reviewSignals.js";
-import { createDebugLogger } from "../logging/debugLogger.js";
+import { createDebugLogger, errorDetails, logStep } from "../logging/debugLogger.js";
 import { buildExtractionPrompt } from "../prompts/promptRegistry.js";
 import { formatExtractionGraphContext } from "../rag/graphContext.js";
 import { loadGraphSchema } from "../schema/graphSchema.js";
@@ -13,41 +10,9 @@ function previewText(value, maxLength = 180) {
 	return text.length > maxLength ? `${text.slice(0, maxLength - 3)}...` : text;
 }
 
-function logIngest(debugLogger, message) {
-	console.log(message);
-	debugLogger.log(message);
-}
-
-function errorDetails(error) {
-	if (error instanceof Error) {
-		return {
-			name: error.name,
-			message: error.message,
-			stack: error.stack,
-			status: error.status,
-			code: error.code,
-			cause: error.cause ? errorDetails(error.cause) : undefined,
-		};
-	}
-
-	return {
-		name: typeof error,
-		message: String(error),
-		value: error,
-	};
-}
-
 function normalizeIngestionMode(value) {
 	const mode = String(value || "auto").trim().toLowerCase();
 	return mode === "hitl" ? "hitl" : "auto";
-}
-
-function createHitlNoteId() {
-	return `hitl:${Date.now().toString(36)}:${crypto.randomBytes(6).toString("hex")}`;
-}
-
-function countSchemaSuggestions(schemaSuggestions = {}) {
-	return (schemaSuggestions.nodeTypes?.length ?? 0) + (schemaSuggestions.relationshipTypes?.length ?? 0);
 }
 
 function compact(value) {
@@ -219,11 +184,10 @@ async function retrievePendingHitlNotes(vectorStore, text, topK, excludeNoteIds 
 }
 
 export class IngestionService {
-	constructor({ llmProvider, graphStore, vectorStore, graphWriter = null, prompts, logging = null, ingestion = {} }) {
+	constructor({ llmProvider, graphStore, vectorStore, prompts, logging = null, ingestion = {} }) {
 		this.llmProvider = llmProvider;
 		this.graphStore = graphStore;
 		this.vectorStore = vectorStore;
-		this.graphWriter = graphWriter ?? new GraphWriteService({ graphStore, vectorStore });
 		this.prompts = prompts;
 		this.logging = logging;
 		this.ingestion = {
@@ -377,108 +341,20 @@ export class IngestionService {
 		};
 	}
 
-	async storeHitlProposal({ text, source, userName, rawResponse, graphPayload, debugLogger }) {
-		if (typeof this.vectorStore.upsertHitlNote !== "function") {
-			throw new Error("The configured vector store does not support HITL notes.");
-		}
+	// Reconciles an extraction with pending HITL proposals, normalizes it, and checks it against the graph.
+	// Used for text ingestion, regeneration, and records an agent extracted (MCP). `proposalText` is the
+	// model's exact output unless one of these steps changed the records.
+	async prepareExtraction({ extractedGraph, rawResponse, pendingHitl, graphSchema }) {
+		const reconciledGraph = reconcileExtractionWithPendingHitl(extractedGraph, pendingHitl);
+		const { graphPayload, changed } = await resolveGraphPayload(
+			normalizeGraphPayload(reconciledGraph, { schema: graphSchema }),
+			this.graphStore,
+		);
+		const proposalText = rawResponse && reconciledGraph === extractedGraph && !changed
+			? rawResponse
+			: formatGraphRecords(graphPayload);
 
-		const reviewSignals = countReviewSignals(graphPayload);
-		const hitlNote = await this.vectorStore.upsertHitlNote({
-			id: createHitlNoteId(),
-			status: "pending",
-			userName: userName || this.ingestion.hitlDefaultUserName,
-			source,
-			createdAt: new Date().toISOString(),
-			userInput: text,
-			llmResponse: rawResponse,
-			nodeCount: graphPayload.nodes.length,
-			relationCount: graphPayload.relations.length,
-			nodeDeleteCount: graphPayload.nodeDeletes.length,
-			relationDeleteCount: graphPayload.relationDeletes.length,
-			schemaSuggestionCount: countSchemaSuggestions(graphPayload.schemaSuggestions),
-			ambiguityCount: reviewSignals.ambiguityCount,
-			contradictionCount: reviewSignals.contradictionCount,
-		});
-
-		debugLogger.json("Stored HITL Proposal", {
-			id: hitlNote.id,
-			collection: hitlNote.collection,
-			metadata: hitlNote.metadata,
-			nodeCount: graphPayload.nodes.length,
-			relationCount: graphPayload.relations.length,
-			nodeDeleteCount: graphPayload.nodeDeletes.length,
-			relationDeleteCount: graphPayload.relationDeletes.length,
-			schemaSuggestionCount: countSchemaSuggestions(graphPayload.schemaSuggestions),
-			ambiguityCount: reviewSignals.ambiguityCount,
-			contradictionCount: reviewSignals.contradictionCount,
-		});
-		debugLogger.section("Stored HITL Chroma Document", hitlNote.document);
-
-		return {
-			status: "pending_hitl",
-			applied: false,
-			hitlNote,
-			nodes: graphPayload.nodes,
-			relations: graphPayload.relations,
-			nodeDeletes: graphPayload.nodeDeletes,
-			relationDeletes: graphPayload.relationDeletes,
-			deletedNodeIds: [],
-			deletedRelationIds: [],
-			schemaSuggestions: graphPayload.schemaSuggestions,
-			schemaViolations: graphPayload.schemaViolations ?? [],
-			schemaWarnings: graphPayload.schemaWarnings,
-			reviewReasons: reviewReasons(graphPayload),
-		};
-	}
-
-	async getHitlNote(noteId) {
-		const note = typeof this.vectorStore.getHitlNote === "function"
-			? await this.vectorStore.getHitlNote(noteId)
-			: null;
-		if (!note) {
-			const error = new Error(`HITL note not found: ${noteId}`);
-			error.status = 404;
-			throw error;
-		}
-
-		return note;
-	}
-
-	// Accepts a full note id ("hitl:muzxnk3c:d964dbbae577") or a short reference such as "#d964db".
-	async resolveHitlNoteId(reference) {
-		const value = String(reference ?? "").trim();
-		if (value.startsWith("hitl:")) {
-			return value;
-		}
-
-		const suffix = value.replace(/^#/, "").toLowerCase();
-		if (suffix.length < 4) {
-			const error = new Error("A HITL reference needs at least 4 characters, for example #d964db.");
-			error.status = 400;
-			throw error;
-		}
-
-		const notes = await this.vectorStore.listHitlNotes({ status: "pending", limit: 0 });
-		const matches = notes.filter((note) => String(note.id).split(":").pop().startsWith(suffix));
-		if (matches.length !== 1) {
-			const error = new Error(matches.length === 0
-				? `No pending HITL proposal matches "${value}".`
-				: `"${value}" matches ${matches.length} pending HITL proposals; use more characters or the full id.`);
-			error.status = 400;
-			throw error;
-		}
-
-		return matches[0].id;
-	}
-
-	async saveHitlReviewerNotes({ noteId, reviewerNotes }) {
-		const note = await this.getHitlNote(noteId);
-		await this.vectorStore.upsertHitlNote({
-			...note,
-			reviewerNotes: String(reviewerNotes ?? "").trim(),
-		});
-
-		return this.getHitlNote(noteId);
+		return { graphPayload, proposalText, reconciledGraph };
 	}
 
 	// Same extraction prompt as ingestion, plus the reviewer revision section; the note itself is
@@ -500,119 +376,12 @@ export class IngestionService {
 		return { graphSchema, existingContext, extractionPrompt };
 	}
 
-	// Overwrites the note's proposal. Parsing happens first, so an unparseable response leaves the note untouched.
-	async storeHitlRegeneration({
-		note,
-		rawResponse,
-		extractedGraph = null,
-		existingContext = null,
-		graphSchema = null,
-		reviewerNotes,
-		regeneratedBy,
-		origin,
-	}) {
-		const schema = graphSchema ?? loadGraphSchema({ schema: this.prompts.graphSchema });
-		const parsedGraph = extractedGraph ?? parseGraphExtraction(rawResponse);
-		// The parser returns an empty graph for unparseable text; never overwrite a proposal with nothing.
-		const recordCount = (parsedGraph.nodes?.length ?? 0)
-			+ (parsedGraph.relations?.length ?? 0)
-			+ (parsedGraph.nodeDeletes?.length ?? 0)
-			+ (parsedGraph.relationDeletes?.length ?? 0)
-			+ (parsedGraph.schemaSuggestions?.nodeTypes?.length ?? 0)
-			+ (parsedGraph.schemaSuggestions?.relationshipTypes?.length ?? 0);
-		if (recordCount === 0) {
-			const error = new Error("The regenerated response contains no graph records, so the proposal was not changed.");
-			error.status = 400;
-			throw error;
+	// Extracts graph records from text. `submit` (HitlService.submit) decides whether to apply them or store
+	// a HITL proposal; it runs inside this flow so its steps and errors land in the same debug log.
+	async ingestText({ text, source, userName, submit }) {
+		if (typeof submit !== "function") {
+			throw new Error("ingestText() needs a submit function; use HitlService.ingestText().");
 		}
-		const pendingHitl = existingContext?.pendingHitl ?? await this.retrievePendingHitlContext({
-			text: note.userInput,
-			graphSchema: schema,
-			excludeNoteIds: [note.id],
-		});
-		const reconciledGraph = reconcileExtractionWithPendingHitl(parsedGraph, pendingHitl);
-		const { graphPayload, changed } = await resolveGraphPayload(
-			normalizeGraphPayload(reconciledGraph, { schema }),
-			this.graphStore,
-		);
-		const llmResponse = rawResponse && reconciledGraph === parsedGraph && !changed
-			? rawResponse
-			: formatGraphRecords(graphPayload);
-		const reviewSignals = countReviewSignals(graphPayload);
-
-		await this.vectorStore.upsertHitlNote({
-			...note,
-			llmResponse,
-			nodeCount: graphPayload.nodes.length,
-			relationCount: graphPayload.relations.length,
-			nodeDeleteCount: graphPayload.nodeDeletes.length,
-			relationDeleteCount: graphPayload.relationDeletes.length,
-			schemaSuggestionCount: countSchemaSuggestions(graphPayload.schemaSuggestions),
-			ambiguityCount: reviewSignals.ambiguityCount,
-			contradictionCount: reviewSignals.contradictionCount,
-			reviewerNotes: String(reviewerNotes ?? "").trim(),
-			regenerated: true,
-			regeneratedBy: regeneratedBy || "unknown",
-			regeneratedAt: new Date().toISOString(),
-			regenerationOrigin: origin,
-		});
-
-		return {
-			note: await this.getHitlNote(note.id),
-			graphPayload,
-		};
-	}
-
-	async regenerateHitlProposal({ noteId, reviewerNotes, previousProposal, regeneratedBy }) {
-		const startedAt = Date.now();
-		const debugLogger = createDebugLogger({
-			...this.logging,
-			name: "ingest-regenerate",
-			scope: "ingest",
-		});
-
-		try {
-			const note = await this.getHitlNote(noteId);
-			const notes = String(reviewerNotes ?? note.reviewerNotes ?? "").trim();
-			const baseline = String(previousProposal || note.llmResponse || "").trim();
-			logIngest(debugLogger, `[regenerate] Regenerating HITL proposal ${note.id} for ${regeneratedBy || "unknown"}.`);
-
-			const { graphSchema, existingContext, extractionPrompt } = await this.buildHitlRegenerationPrompt({
-				note,
-				reviewerNotes: notes,
-				previousProposal: baseline,
-			});
-			debugLogger.section("Reviewer Notes", notes);
-			debugLogger.section("Rendered Regeneration Prompt", extractionPrompt);
-
-			logIngest(debugLogger, "[regenerate] Sending regeneration prompt to LLM...");
-			const { extractedGraph, rawResponse } = await this.extractGraphWithRawResponse({
-				text: note.userInput,
-				extractionPrompt,
-				debugLogger,
-			});
-			debugLogger.section("Raw Regeneration Response", rawResponse);
-
-			const result = await this.storeHitlRegeneration({
-				note,
-				rawResponse,
-				extractedGraph,
-				existingContext,
-				graphSchema,
-				reviewerNotes: notes,
-				regeneratedBy,
-				origin: "ui",
-			});
-			logIngest(debugLogger, `[regenerate] Overwrote HITL proposal ${note.id} in ${Date.now() - startedAt} ms.`);
-			return result;
-		} catch (error) {
-			logIngest(debugLogger, `[regenerate] Failed after ${Date.now() - startedAt} ms: ${error?.message ?? String(error)}`);
-			debugLogger.json("Regeneration Error", errorDetails(error));
-			throw error;
-		}
-	}
-
-	async ingestText({ text, source, userName }) {
 		const startedAt = Date.now();
 		const debugLogger = createDebugLogger({
 			...this.logging,
@@ -620,27 +389,27 @@ export class IngestionService {
 		});
 
 		try {
-			logIngest(debugLogger, `[ingest] Started ingestion flow${source ? ` from ${source}` : ""}.`);
-			logIngest(debugLogger, `[ingest] Input preview: ${previewText(text)}`);
-			logIngest(
+			logStep(debugLogger, `[ingest] Started ingestion flow${source ? ` from ${source}` : ""}.`);
+			logStep(debugLogger, `[ingest] Input preview: ${previewText(text)}`);
+			logStep(
 				debugLogger,
 				`[ingest] Context settings: enabled=${this.ingestion.contextEnabled}, topK=${this.ingestion.contextTopK}, depth=${this.ingestion.contextDepth}`,
 			);
 
-			logIngest(debugLogger, "[ingest] Loading graph schema...");
+			logStep(debugLogger, "[ingest] Loading graph schema...");
 			const graphSchema = loadGraphSchema({ schema: this.prompts.graphSchema });
-			logIngest(debugLogger, `[ingest] Graph schema loaded from ${graphSchema.path}.`);
+			logStep(debugLogger, `[ingest] Graph schema loaded from ${graphSchema.path}.`);
 
-			logIngest(debugLogger, this.ingestion.contextEnabled
+			logStep(debugLogger, this.ingestion.contextEnabled
 				? "[ingest] Retrieving existing graph context..."
 				: "[ingest] Existing graph context retrieval is disabled.");
 			const existingContext = await this.retrieveExistingContext({ text, graphSchema });
-			logIngest(
+			logStep(
 				debugLogger,
 				`[ingest] Retrieved ${existingContext.entryNodes.length} context entry node(s); expanded graph has ${existingContext.graph.nodes.length} node(s) and ${existingContext.graph.relations.length} relation(s); pending HITL context has ${existingContext.pendingHitl.graph.nodes.length} node(s) and ${existingContext.pendingHitl.graph.relations.length} relation(s).`,
 			);
 
-			logIngest(debugLogger, "[ingest] Rendering extraction prompt...");
+			logStep(debugLogger, "[ingest] Rendering extraction prompt...");
 			const extractionPrompt = buildExtractionPrompt(this.prompts.extractionSystemTemplate, {
 				graphSchema,
 				existingGraphContext: existingContext.context,
@@ -670,81 +439,54 @@ export class IngestionService {
 			debugLogger.section("Existing Graph Context", existingContext.context);
 			debugLogger.section("Rendered Extraction Prompt", extractionPrompt);
 
-			logIngest(debugLogger, "[ingest] Sending extraction prompt to LLM...");
+			logStep(debugLogger, "[ingest] Sending extraction prompt to LLM...");
 			const { extractedGraph: rawExtractedGraph, rawResponse } = await this.extractGraphWithRawResponse({
 				text,
 				debugLogger,
 				extractionPrompt,
 			});
-			const extractedGraph = reconcileExtractionWithPendingHitl(rawExtractedGraph, existingContext.pendingHitl);
+			logStep(debugLogger, "[ingest] Normalizing graph payload...");
+			const { graphPayload, proposalText, reconciledGraph: extractedGraph } = await this.prepareExtraction({
+				extractedGraph: rawExtractedGraph,
+				rawResponse,
+				pendingHitl: existingContext.pendingHitl,
+				graphSchema,
+			});
 			debugLogger.json("Parsed Extraction Payload", extractedGraph);
-			logIngest(
+			logStep(
 				debugLogger,
 				`[ingest] LLM extraction parsed ${extractedGraph.nodes?.length ?? 0} node upsert record(s), ${extractedGraph.relations?.length ?? 0} relation upsert record(s), ${extractedGraph.nodeDeletes?.length ?? 0} node delete record(s), and ${extractedGraph.relationDeletes?.length ?? 0} relation delete record(s).`,
 			);
 
-			logIngest(debugLogger, "[ingest] Normalizing graph payload...");
-			const { graphPayload, changed: resolutionChanged } = await resolveGraphPayload(
-				normalizeGraphPayload(extractedGraph, { schema: graphSchema }),
-				this.graphStore,
-			);
 			debugLogger.json("Normalized Graph Payload", graphPayload);
-			logIngest(
+			logStep(
 				debugLogger,
 				`[ingest] Normalized payload has ${graphPayload.nodes.length} node upsert(s), ${graphPayload.relations.length} relation upsert(s), ${graphPayload.nodeDeletes.length} node delete(s), ${graphPayload.relationDeletes.length} relation delete(s), and ${graphPayload.schemaWarnings.length} schema warning(s).`,
 			);
 
-			const pendingReasons = reviewReasons(graphPayload);
-			if (this.ingestion.mode === "hitl" || pendingReasons.length > 0) {
-				logIngest(debugLogger, this.ingestion.mode === "hitl"
-					? "[ingest] HITL mode enabled; storing pending proposal in vector store."
-					: `[ingest] Review required (${pendingReasons.join(", ")}); forcing HITL proposal instead of applying graph mutations.`);
-				const hitlResponse = rawResponse && rawExtractedGraph === extractedGraph && !resolutionChanged
-					? rawResponse
-					: formatGraphRecords(graphPayload);
-				const pendingProposal = await this.storeHitlProposal({
-					text,
-					source,
-					userName: userName || this.ingestion.hitlDefaultUserName,
-					rawResponse: hitlResponse,
-					graphPayload,
-					debugLogger,
-				});
-				logIngest(debugLogger, `[ingest] Stored HITL proposal ${pendingProposal.hitlNote.id} in ${Date.now() - startedAt} ms. No graph mutations were applied.`);
-
-				if (debugLogger.enabled) {
-					logIngest(debugLogger, `Ingest debug log written to ${debugLogger.path}`);
-				}
-
-				return pendingProposal;
-			}
-
-			logIngest(debugLogger, "[ingest] Applying graph mutations to graph store and vector index...");
-			const storedGraph = await this.graphWriter.applyPayload(graphPayload, { debugLogger });
-			debugLogger.json("Applied Graph Mutations", {
-				upsertedNodes: storedGraph.nodes.length,
-				upsertedRelations: storedGraph.relations.length,
-				deletedNodeIds: storedGraph.deletedNodeIds,
-				deletedRelationIds: storedGraph.deletedRelationIds,
-			});
-			logIngest(
+			const result = await submit({
+				text,
+				source,
+				userName: userName || this.ingestion.hitlDefaultUserName,
+				graphPayload,
+				proposalText,
 				debugLogger,
-				`[ingest] Applied mutations in ${Date.now() - startedAt} ms: upserted ${storedGraph.nodes.length} node(s), upserted ${storedGraph.relations.length} relation(s), deleted ${storedGraph.deletedNodeIds.length} node(s), deleted ${storedGraph.deletedRelationIds.length} relation(s).`,
-			);
+				startedAt,
+			});
 
 			if (debugLogger.enabled) {
-				logIngest(debugLogger, `Ingest debug log written to ${debugLogger.path}`);
+				logStep(debugLogger, `Ingest debug log written to ${debugLogger.path}`);
 			}
 
-			return storedGraph;
+			return result;
 		} catch (error) {
-			logIngest(debugLogger, `[ingest] Failed after ${Date.now() - startedAt} ms: ${error?.message ?? String(error)}`);
+			logStep(debugLogger, `[ingest] Failed after ${Date.now() - startedAt} ms: ${error?.message ?? String(error)}`);
 			const details = errorDetails(error);
 			debugLogger.json("Ingestion Error", details);
 			debugLogger.json("Exception", details);
 
 			if (debugLogger.enabled) {
-				logIngest(debugLogger, `Ingest debug log written to ${debugLogger.path}`);
+				logStep(debugLogger, `Ingest debug log written to ${debugLogger.path}`);
 			}
 
 			throw error;

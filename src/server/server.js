@@ -1,5 +1,4 @@
 import express from "express";
-import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import mammoth from "mammoth";
@@ -7,17 +6,12 @@ import multer from "multer";
 import { PDFParse } from "pdf-parse";
 import WordExtractor from "word-extractor";
 import { getConfig, describeRuntime } from "../config.js";
-import { encodePipelineField, formatGraphRecords, normalizeGraphPayload, parseGraphExtraction, toSnakeCase } from "../ingestion/graphPayload.js";
-import { resolveGraphPayload } from "../ingestion/graphResolution.js";
-import { countReviewSignals } from "../ingestion/reviewSignals.js";
+import { buildTriplets } from "../hitl/hitlService.js";
 import { createMindMesh, isMainModule } from "../mindmesh.js";
-import {
-	loadGraphSchema,
-	readEditableGraphSchema,
-	saveEditableGraphSchema,
-	buildApprovalSchema,
-	mergeSchemaTypes
-} from "../schema/graphSchema.js";
+import { readEditableGraphSchema, saveEditableGraphSchema } from "../schema/graphSchema.js";
+
+// HTTP layer only: request parsing, file uploads, and response shapes. HITL decisions live in HitlService,
+// graph writes in GraphWriteService.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
@@ -32,16 +26,6 @@ const port = Number(process.env.KG_WEB_PORT || process.env.PORT || 3000);
 
 const wordExtractor = new WordExtractor();
 
-// Services for the current app, set by createApp(). The helpers below read these bindings; they move
-// into HitlService (P1 step 4), after which createApp() passes services explicitly.
-let config;
-let graphStore;
-let vectorStore;
-let graphWriteService;
-let ingestionService;
-let ragService;
-let jobsService;
-
 const upload = multer({
 	storage: multer.memoryStorage(),
 	limits: {
@@ -53,7 +37,7 @@ const upload = multer({
 			callback(null, true);
 			return;
 		}
-		
+
 		const error = new Error("Only PDF, DOCX, or DOC files can be uploaded.");
 		error.status = 400;
 		callback(error);
@@ -76,74 +60,6 @@ function parseJobDepth(value) {
 	return Math.max(0, Math.min(Number(value) || DEFAULT_JOB_DEPTH, 4));
 }
 
-function stableHash(value) {
-	return crypto.createHash("sha1").update(value).digest("hex").slice(0, 12);
-}
-
-function labelFromName(name) {
-	return name
-	.split("_")
-	.filter(Boolean)
-	.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-	.join(" ");
-}
-
-function requireString(value, fieldName) {
-	const text = String(value ?? "").trim();
-	if (!text) {
-		const error = new Error(`${fieldName} is required.`);
-		error.status = 400;
-		throw error;
-	}
-	
-	return text;
-}
-
-function normalizeManualNode(body, existingId = "") {
-	// A node's id is node:<name>, so the name of an existing node is fixed; only the label is free text.
-	const existingName = existingId.replace(/^node:/, "");
-	if (existingName && body?.name && toSnakeCase(body.name) !== existingName) {
-		const error = new Error(`Node names are permanent identifiers (${existingId}); renaming is not supported. Change the label instead.`);
-		error.status = 400;
-		throw error;
-	}
-	const name = existingName || toSnakeCase(body?.name || body?.label);
-	if (!name) {
-		const error = new Error("Node name or label is required.");
-		error.status = 400;
-		throw error;
-	}
-	
-	return {
-		id: existingId || body?.id || `node:${name}`,
-		label: String(body?.label || labelFromName(name)).trim(),
-		name,
-		type: requireString(toSnakeCase(body?.type), "Node type"),
-		description: String(body?.description ?? "").trim(),
-	};
-}
-
-// Accepts a node id ("node:ekyc_screen") or a bare name typed into the relation form.
-function manualNodeId(value, fieldName) {
-	const text = requireString(value, fieldName);
-	return text.startsWith("node:") ? text : `node:${toSnakeCase(text)}`;
-}
-
-function normalizeManualRelation(body, existingId = "") {
-	const sourceId = manualNodeId(body?.sourceId, "sourceId");
-	const targetId = manualNodeId(body?.targetId, "targetId");
-	const relation = requireString(toSnakeCase(body?.relation), "Relation type");
-
-	return {
-		id: existingId || body?.id || `rel:${stableHash(`${sourceId}:${relation}:${targetId}`)}`,
-		sourceId,
-		targetId,
-		relation,
-		information: String(body?.information ?? "").trim(),
-		description: String(body?.description ?? "").trim(),
-	};
-}
-
 function requireText(body) {
 	const text = String(body?.text ?? "").trim();
 	if (!text) {
@@ -151,7 +67,7 @@ function requireText(body) {
 		error.status = 400;
 		throw error;
 	}
-	
+
 	return text;
 }
 
@@ -166,20 +82,20 @@ function optionalMemoryMessages(body) {
 
 function fileExtension(file) {
 	return String(file?.originalname ?? "")
-	.split(".")
-	.pop()
-	?.toLowerCase() ?? "";
+		.split(".")
+		.pop()
+		?.toLowerCase() ?? "";
 }
 
 function uploadedFiles(req) {
 	if (Array.isArray(req.files)) {
 		return req.files;
 	}
-	
+
 	if (req.files && typeof req.files === "object") {
 		return Object.values(req.files).flat();
 	}
-	
+
 	return [];
 }
 
@@ -195,27 +111,27 @@ async function extractPdfText(file) {
 
 async function extractWordText(file) {
 	const extension = fileExtension(file);
-	
+
 	if (extension === "docx") {
 		const result = await mammoth.extractRawText({ buffer: file.buffer });
 		return result.value;
 	}
-	
+
 	const document = await wordExtractor.extract(file.buffer);
 	return document.getBody();
 }
 
 async function extractUploadedText(file) {
 	const extension = fileExtension(file);
-	
+
 	if (extension === "pdf") {
 		return extractPdfText(file);
 	}
-	
+
 	if (extension === "doc" || extension === "docx") {
 		return extractWordText(file);
 	}
-	
+
 	const error = new Error("Only PDF, DOCX, or DOC files can be uploaded.");
 	error.status = 400;
 	throw error;
@@ -224,24 +140,24 @@ async function extractUploadedText(file) {
 async function buildIngestText(req) {
 	const text = String(req.body?.text ?? "").trim();
 	const files = uploadedFiles(req);
-	
+
 	if (files.length === 0) {
 		return requireText(req.body);
 	}
-	
+
 	const extractedTexts = await Promise.all(files.map(async (file) => (
 		String(await extractUploadedText(file) ?? "").trim()
 	)));
 	const combinedText = [text, ...extractedTexts]
-	.filter(Boolean)
-	.join("\n\n");
-	
+		.filter(Boolean)
+		.join("\n\n");
+
 	if (!combinedText) {
 		const error = new Error("Uploaded files did not contain readable text.");
 		error.status = 400;
 		throw error;
 	}
-	
+
 	return combinedText;
 }
 
@@ -252,468 +168,13 @@ function requireIngestUserName(req) {
 		error.status = 400;
 		throw error;
 	}
-	
+
 	return userName;
 }
 
-function requireUserName(body, fieldName = "userName") {
-	const userName = String(body?.[fieldName] ?? "").trim();
-	if (!userName) {
-		const error = new Error("User name is required.");
-		error.status = 400;
-		throw error;
-	}
-	
-	return userName;
-}
-
-function createHitlNoteId() {
-	return `hitl:${Date.now().toString(36)}:${crypto.randomBytes(6).toString("hex")}`;
-}
-
-function graphNameFromId(id) {
-	return String(id ?? "").replace(/^node:/, "");
-}
-
-function safePipeField(value) {
-	return encodePipelineField(value);
-}
-
-function nodePipelineRecord(recordType, node) {
-	return [
-		recordType,
-		graphNameFromId(node.name || node.id),
-		node.label || labelFromName(graphNameFromId(node.name || node.id)),
-		node.type || "",
-		node.description || "",
-		node.metadata || "",
-	].map(safePipeField).join("|");
-}
-
-function nodeDeletePipelineRecord(nodeName, metadata = "") {
-	return [
-		"NODE_DELETE",
-		graphNameFromId(nodeName),
-		metadata,
-	].map(safePipeField).join("|");
-}
-
-function relationPipelineRecord(recordType, relation) {
-	return [
-		recordType,
-		graphNameFromId(relation.sourceId),
-		graphNameFromId(relation.targetId),
-		relation.relation || "",
-		relation.information || "",
-		relation.description || "",
-		relation.metadata || "",
-	].map(safePipeField).join("|");
-}
-
-function relationDeletePipelineRecord(relation, metadata = relation?.metadata ?? "") {
-	return [
-		"RELATION_DELETE",
-		graphNameFromId(relation.sourceId),
-		graphNameFromId(relation.targetId),
-		relation.relation || "",
-		metadata,
-	].map(safePipeField).join("|");
-}
-
-function pipelinePayload(lines) {
-	return [
-		"<start#$#$>",
-		...lines.filter(Boolean),
-		"</end#$#$>",
-	].join("\n");
-}
-
-function currentGraphSchema() {
-	return loadGraphSchema(config);
-}
-
-function withGraphSchema(graph) {
-	return {
-		...graph,
-		schema: currentGraphSchema(),
-	};
-}
-
-function schemaViolationMessages(graphPayload) {
-	return (graphPayload.schemaViolations ?? []).map((violation) => violation.message);
-}
-
-function hasSchemaViolations(graphPayload) {
-	return schemaViolationMessages(graphPayload).length > 0;
-}
-
-function schemaViolationError(graphPayload) {
-	const messages = schemaViolationMessages(graphPayload);
-	const error = new Error(`Schema validation failed: ${messages.join("; ")}`);
-	error.status = 400;
-	error.schemaViolations = graphPayload.schemaViolations ?? [];
-	return error;
-}
-
-async function storeManualHitlProposal({ llmResponse: requestedResponse, userInput, userName }) {
-	requireHitlNotesSupport();
-	const { graphPayload: parsedPayload } = parseHitlResponse(requestedResponse);
-	const { graphPayload, changed } = await resolveGraphPayload(parsedPayload, graphStore);
-	const llmResponse = changed ? formatGraphRecords(graphPayload) : requestedResponse;
-	const reviewSignals = countReviewSignals(graphPayload);
-	const hitlNote = await vectorStore.upsertHitlNote({
-		id: createHitlNoteId(),
-		status: "pending",
-		userName,
-		source: "manual",
-		createdAt: new Date().toISOString(),
-		userInput,
-		llmResponse,
-		nodeCount: graphPayload.nodes.length,
-		relationCount: graphPayload.relations.length,
-		nodeDeleteCount: graphPayload.nodeDeletes.length,
-		relationDeleteCount: graphPayload.relationDeletes.length,
-		schemaSuggestionCount: countSchemaSuggestions(graphPayload.schemaSuggestions),
-		ambiguityCount: reviewSignals.ambiguityCount,
-		contradictionCount: reviewSignals.contradictionCount,
-	});
-	const graph = await graphStore.getGraphPreview(DEFAULT_GRAPH_LIMIT);
-	
-	return {
-		status: "pending_hitl",
-		applied: false,
-		hitlNote,
-		nodes: graphPayload.nodes,
-		relations: graphPayload.relations,
-		nodeDeletes: graphPayload.nodeDeletes,
-		relationDeletes: graphPayload.relationDeletes,
-		deletedNodeIds: [],
-		deletedRelationIds: [],
-		triplets: buildTriplets(graphPayload),
-		schemaSuggestions: graphPayload.schemaSuggestions,
-		schemaViolations: graphPayload.schemaViolations ?? [],
-		schemaWarnings: graphPayload.schemaWarnings,
-		graph: withGraphSchema(graph),
-	};
-}
-
-function countSchemaSuggestions(schemaSuggestions = {}) {
-	return (schemaSuggestions.nodeTypes?.length ?? 0) + (schemaSuggestions.relationshipTypes?.length ?? 0);
-}
-
-function noteReviewSignals(note) {
-	const storedSignals = {
-		ambiguityCount: Number(note.ambiguityCount ?? note.metadata?.ambiguityCount ?? 0),
-		contradictionCount: Number(note.contradictionCount ?? note.metadata?.contradictionCount ?? 0),
-	};
-	
-	if (!note.llmResponse) {
-		return storedSignals;
-	}
-	
-	try {
-		const { graphPayload } = parseHitlResponse(note.llmResponse);
-		return countReviewSignals(graphPayload);
-	} catch {
-		return storedSignals;
-	}
-}
-
-function buildTriplets(graph) {
-	const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
-	
-	return graph.relations.map((relation) => {
-		const source = nodeById.get(relation.sourceId);
-		const target = nodeById.get(relation.targetId);
-		
-		return {
-			sourceId: relation.sourceId,
-			sourceLabel: source?.label ?? relation.sourceId,
-			relation: relation.relation,
-			targetId: relation.targetId,
-			targetLabel: target?.label ?? relation.targetId,
-			information: relation.information ?? "",
-		};
-	});
-}
-
-function requireHitlNotesSupport() {
-	if (
-		typeof vectorStore.listHitlNotes !== "function"
-		|| typeof vectorStore.getHitlNote !== "function"
-		|| typeof vectorStore.deleteHitlNotes !== "function"
-	) {
-		const error = new Error("The configured vector store does not support HITL notes.");
-		error.status = 501;
-		throw error;
-	}
-}
-
-function requireDirectGraphCrudSupport() {
-	if (
-		typeof graphStore.upsertNode !== "function"
-		|| typeof graphStore.deleteNode !== "function"
-		|| typeof graphStore.upsertRelation !== "function"
-		|| typeof graphStore.deleteRelation !== "function"
-	) {
-		const error = new Error("The configured graph store does not support direct HITL CRUD.");
-		error.status = 501;
-		throw error;
-	}
-}
-
-// A relation implies both nodes exist; a typo in the relation form must not create a node.
-async function requireExistingEndpoints(relation) {
-	const endpointIds = [...new Set([relation.sourceId, relation.targetId])];
-	const existingIds = new Set(await graphStore.getExistingNodeIds(endpointIds));
-	const missingIds = endpointIds.filter((id) => !existingIds.has(id));
-	if (missingIds.length > 0) {
-		const error = new Error(`Relation endpoints must be existing nodes. Not found: ${missingIds.join(", ")}.`);
-		error.status = 400;
-		throw error;
-	}
-}
-
-function hitlNoteSummary(note) {
-	const reviewSignals = noteReviewSignals(note);
-	return {
-		id: note.id,
-		status: note.status,
-		userName: note.userName,
-		ingestedBy: note.userName,
-		source: note.source,
-		createdAt: note.createdAt,
-		inputPreview: note.inputPreview,
-		llmPreview: note.llmPreview,
-		nodeCount: note.nodeCount,
-		relationCount: note.relationCount,
-		nodeDeleteCount: note.nodeDeleteCount,
-		relationDeleteCount: note.relationDeleteCount,
-		schemaSuggestionCount: note.schemaSuggestionCount,
-		ambiguityCount: reviewSignals.ambiguityCount,
-		contradictionCount: reviewSignals.contradictionCount,
-		reviewerNotes: note.reviewerNotes ?? "",
-		regenerated: Boolean(note.regenerated),
-		regeneratedBy: note.regeneratedBy ?? "",
-		regeneratedAt: note.regeneratedAt ?? "",
-		regenerationOrigin: note.regenerationOrigin ?? "",
-	};
-}
-
-function hitlNoteDetail(note) {
-	return {
-		...hitlNoteSummary(note),
-		userInput: note.userInput,
-		prompt: note.userInput,
-		llmResponse: note.llmResponse,
-	};
-}
-
-async function requireHitlNote(id) {
-	requireHitlNotesSupport();
-	const note = await vectorStore.getHitlNote(id);
-	if (!note) {
-		const error = new Error("HITL note was not found.");
-		error.status = 404;
-		throw error;
-	}
-	
-	return note;
-}
-
-function parseHitlResponse(llmResponse) {
-	try {
-		const graphSchema = currentGraphSchema();
-		const extractedGraph = parseGraphExtraction(llmResponse);
-		const graphPayload = normalizeGraphPayload(extractedGraph, {
-			schema: graphSchema,
-		});
-		
-		return { graphSchema, graphPayload };
-	} catch (error) {
-		error.status = 400;
-		throw error;
-	}
-}
-
-async function pendingProposalForSchemaViolation({ llmResponse, reviewedBy, userInput }) {
-	const { graphPayload } = parseHitlResponse(llmResponse);
-	if (!hasSchemaViolations(graphPayload)) {
-		return null;
-	}
-	
-	return storeManualHitlProposal({
-		userName: reviewedBy,
-		userInput,
-		llmResponse,
-	});
-}
-
-function persistHitlSchemaSuggestions(graphSchema, graphPayload) {
-	return mergeSchemaTypes(graphSchema, graphPayload.schemaSuggestions);
-}
-
-function pendingMarker(note, operation) {
-	return {
-		pendingHitl: true,
-		pendingOperation: operation || "upsert",
-		hitlNoteId: note.id,
-		ingestedBy: note.userName,
-	};
-}
-
-// The approved DB version of a graph item, kept so reviewers can compare it with the pending proposal.
-function approvedSnapshot(existing) {
-	if (!existing) {
-		return undefined;
-	}
-
-	return existing.pendingHitl ? existing.approved : existing;
-}
-
-function mergePendingNode(nodeMap, node, note, operation) {
-	const existing = nodeMap.get(node.id);
-	nodeMap.set(node.id, {
-		...(existing ?? {}),
-		...node,
-		...pendingMarker(note, operation || node.operation),
-		approved: approvedSnapshot(existing),
-	});
-}
-
-function mergePendingRelation(relationMap, relation, note, operation) {
-	const existing = relationMap.get(relation.id);
-	relationMap.set(relation.id, {
-		...(existing ?? {}),
-		...relation,
-		...pendingMarker(note, operation || relation.operation),
-		approved: approvedSnapshot(existing),
-	});
-}
-
-function ensurePendingEndpointNode(nodeMap, nodeId, note) {
-	if (!nodeId || nodeMap.has(nodeId)) {
-		return;
-	}
-	
-	const name = String(nodeId).replace(/^node:/, "");
-	nodeMap.set(nodeId, {
-		id: nodeId,
-		name,
-		label: labelFromName(name),
-		type: "",
-		description: "",
-		...pendingMarker(note, "placeholder"),
-	});
-}
-
-function mergeHitlPayloadIntoGraph(baseGraph, note, graphPayload) {
-	const nodeMap = new Map(baseGraph.nodes.map((node) => [node.id, node]));
-	const relationMap = new Map(baseGraph.relations.map((relation) => [relation.id, relation]));
-	
-	for (const node of graphPayload.nodes) {
-		mergePendingNode(nodeMap, node, note, node.operation);
-	}
-	
-	for (const nodeDelete of graphPayload.nodeDeletes) {
-		const existingNode = nodeMap.get(nodeDelete.id);
-		mergePendingNode(nodeMap, existingNode ? {
-			...existingNode,
-			metadata: nodeDelete.metadata || existingNode.metadata || "",
-		} : {
-			id: nodeDelete.id,
-			name: nodeDelete.name,
-			label: labelFromName(nodeDelete.name),
-			type: "",
-			description: "",
-			metadata: nodeDelete.metadata || "",
-		}, note, "delete");
-	}
-	
-	for (const relation of graphPayload.relations) {
-		ensurePendingEndpointNode(nodeMap, relation.sourceId, note);
-		ensurePendingEndpointNode(nodeMap, relation.targetId, note);
-		mergePendingRelation(relationMap, relation, note, relation.operation);
-	}
-	
-	for (const relationDelete of graphPayload.relationDeletes) {
-		ensurePendingEndpointNode(nodeMap, relationDelete.sourceId, note);
-		ensurePendingEndpointNode(nodeMap, relationDelete.targetId, note);
-		const existingRelation = relationMap.get(relationDelete.id);
-		mergePendingRelation(relationMap, existingRelation ? {
-			...existingRelation,
-			...relationDelete,
-			metadata: relationDelete.metadata || existingRelation.metadata || "",
-		} : relationDelete, note, "delete");
-	}
-	
-	return {
-		nodes: [...nodeMap.values()],
-		relations: [...relationMap.values()],
-	};
-}
-
-async function buildHitlGraphPreview(limit) {
-	requireHitlNotesSupport();
-	const approvedGraph = await graphStore.getGraphPreview(limit);
-	const notes = await vectorStore.listHitlNotes({ status: "pending", limit: 500 });
-	let previewGraph = {
-		nodes: approvedGraph.nodes ?? [],
-		relations: approvedGraph.relations ?? [],
-	};
-	const warnings = [];
-	
-	for (const note of notes) {
-		try {
-			const { graphPayload } = parseHitlResponse(note.llmResponse);
-			previewGraph = mergeHitlPayloadIntoGraph(previewGraph, note, graphPayload);
-		} catch (error) {
-			warnings.push({
-				id: note.id,
-				message: error.message,
-			});
-		}
-	}
-	
-	return {
-		...previewGraph,
-		limit,
-		pendingNotes: notes.map(hitlNoteSummary),
-		warnings,
-		schema: currentGraphSchema(),
-	};
-}
-
-async function buildHitlNoteGraphPreview(note, { depth = 2, llmResponse = note.llmResponse } = {}) {
-	const { graphPayload } = parseHitlResponse(llmResponse);
-	const pendingNodeIds = new Set();
-	
-	for (const node of graphPayload.nodes) {
-		pendingNodeIds.add(node.id);
-	}
-	for (const nodeDelete of graphPayload.nodeDeletes) {
-		pendingNodeIds.add(nodeDelete.id);
-	}
-	for (const relation of graphPayload.relations) {
-		pendingNodeIds.add(relation.sourceId);
-		pendingNodeIds.add(relation.targetId);
-	}
-	for (const relationDelete of graphPayload.relationDeletes) {
-		pendingNodeIds.add(relationDelete.sourceId);
-		pendingNodeIds.add(relationDelete.targetId);
-	}
-	
-	const approvedContext = pendingNodeIds.size > 0
-	? await graphStore.expandFromNodes([...pendingNodeIds], depth)
-	: { nodes: [], relations: [] };
-	const previewGraph = mergeHitlPayloadIntoGraph(approvedContext, note, graphPayload);
-	
-	return {
-		...previewGraph,
-		depth,
-		note: hitlNoteSummary(note),
-		schema: currentGraphSchema(),
-	};
+// HitlService validates the reviewer name; responses echo it trimmed.
+function reviewerName(body) {
+	return String(body?.reviewedBy ?? "").trim();
 }
 
 function asyncRoute(handler) {
@@ -728,8 +189,27 @@ function asyncRoute(handler) {
 
 // Builds the Express app without listening, so tests can start it with in-memory stores.
 export function createApp(services) {
-	({ config, graphStore, vectorStore, graphWriteService, ingestionService, ragService, jobsService } = services);
+	const { config, graphStore, hitlService, ragService, jobsService } = services;
 	const app = express();
+
+	function withGraphSchema(graph) {
+		return {
+			...graph,
+			schema: hitlService.currentSchema(),
+		};
+	}
+
+	// A proposal response also carries the refreshed approved graph for the UI.
+	async function withApprovedGraph(proposal) {
+		return {
+			...proposal,
+			graph: withGraphSchema(await graphStore.getGraphPreview(DEFAULT_GRAPH_LIMIT)),
+		};
+	}
+
+	async function hitlGraph() {
+		return withGraphSchema(await hitlService.previewAll(DEFAULT_GRAPH_LIMIT));
+	}
 
 	app.use(express.json({ limit: "25mb" }));
 	app.use(express.static(publicDir));
@@ -737,7 +217,7 @@ export function createApp(services) {
 	app.get("/api/graph", asyncRoute(async (req, res) => {
 		const limit = parseLimit(req.query.limit);
 		const graph = await graphStore.getGraphPreview(limit);
-		
+
 		res.json({
 			...withGraphSchema(graph),
 			limit,
@@ -748,112 +228,53 @@ export function createApp(services) {
 		const query = String(req.query.q ?? "").trim();
 		const limit = parseSearchLimit(req.query.limit);
 		const nodes = await graphStore.searchNodes(query, limit);
-		
+
 		res.json({ nodes, query, limit });
 	}));
 
 	app.get("/api/nodes/:id/neighborhood", asyncRoute(async (req, res) => {
 		const depth = parseDepth(req.query.depth);
 		const graph = await graphStore.getNodeNeighborhood(req.params.id, depth);
-		
+
 		res.json({ ...withGraphSchema(graph), depth });
 	}));
 
 	app.get("/api/nodes/:id/relations", asyncRoute(async (req, res) => {
 		const relations = await graphStore.getRelationsForNode(req.params.id);
-		
+
 		res.json({ relations });
 	}));
 
+	// Main-page edits are always proposals.
+
 	app.post("/api/nodes", asyncRoute(async (req, res) => {
-		const node = normalizeManualNode(req.body);
-		const userName = requireUserName(req.body);
-		const result = await storeManualHitlProposal({
-			userName,
-			userInput: `${userName} requested node creation for ${node.label}.`,
-			llmResponse: pipelinePayload([nodePipelineRecord("NODE_CREATE", node)]),
-		});
-		
-		res.status(202).json(result);
+		const proposal = await hitlService.proposeNode({ body: req.body, userName: req.body?.userName });
+		res.status(202).json(await withApprovedGraph(proposal));
 	}));
 
 	app.put("/api/nodes/:id", asyncRoute(async (req, res) => {
-		const node = normalizeManualNode(req.body, req.params.id);
-		const userName = requireUserName(req.body);
-		const result = await storeManualHitlProposal({
-			userName,
-			userInput: `${userName} requested node update for ${node.label}.`,
-			llmResponse: pipelinePayload([nodePipelineRecord("NODE_UPDATE", node)]),
-		});
-		
-		res.status(202).json(result);
+		const proposal = await hitlService.proposeNode({ body: req.body, nodeId: req.params.id, userName: req.body?.userName });
+		res.status(202).json(await withApprovedGraph(proposal));
 	}));
 
 	app.delete("/api/nodes/:id", asyncRoute(async (req, res) => {
-		const userName = requireUserName(req.body);
-		const existingNode = await graphStore.getNode(req.params.id);
-		const nodeName = graphNameFromId(req.params.id);
-		const result = await storeManualHitlProposal({
-			userName,
-			userInput: `${userName} requested node deletion for ${existingNode?.label || nodeName}.`,
-			llmResponse: pipelinePayload([nodeDeletePipelineRecord(nodeName)]),
-		});
-		
-		res.status(202).json(result);
+		const proposal = await hitlService.proposeNodeDelete({ nodeId: req.params.id, userName: req.body?.userName });
+		res.status(202).json(await withApprovedGraph(proposal));
 	}));
 
 	app.post("/api/relations", asyncRoute(async (req, res) => {
-		const relation = normalizeManualRelation(req.body);
-		const userName = requireUserName(req.body);
-		await requireExistingEndpoints(relation);
-		const result = await storeManualHitlProposal({
-			userName,
-			userInput: `${userName} requested relation creation for ${relation.relation}.`,
-			llmResponse: pipelinePayload([relationPipelineRecord("RELATION_CREATE", relation)]),
-		});
-		
-		res.status(202).json(result);
+		const proposal = await hitlService.proposeRelation({ body: req.body, userName: req.body?.userName });
+		res.status(202).json(await withApprovedGraph(proposal));
 	}));
 
 	app.put("/api/relations/:id", asyncRoute(async (req, res) => {
-		const relation = normalizeManualRelation(req.body, req.params.id);
-		const userName = requireUserName(req.body);
-		await requireExistingEndpoints(relation);
-		const existingRelation = typeof graphStore.getRelation === "function"
-		? await graphStore.getRelation(req.params.id)
-		: null;
-		const lines = existingRelation
-		? [
-			relationDeletePipelineRecord(existingRelation),
-			relationPipelineRecord("RELATION_CREATE", relation),
-		]
-		: [relationPipelineRecord("RELATION_UPDATE", relation)];
-		const result = await storeManualHitlProposal({
-			userName,
-			userInput: `${userName} requested relation update for ${relation.relation}.`,
-			llmResponse: pipelinePayload(lines),
-		});
-		
-		res.status(202).json(result);
+		const proposal = await hitlService.proposeRelation({ body: req.body, relationId: req.params.id, userName: req.body?.userName });
+		res.status(202).json(await withApprovedGraph(proposal));
 	}));
 
 	app.delete("/api/relations/:id", asyncRoute(async (req, res) => {
-		const userName = requireUserName(req.body);
-		const relation = typeof graphStore.getRelation === "function"
-		? await graphStore.getRelation(req.params.id)
-		: null;
-		if (!relation) {
-			const error = new Error("Relation was not found.");
-			error.status = 404;
-			throw error;
-		}
-		const result = await storeManualHitlProposal({
-			userName,
-			userInput: `${userName} requested relation deletion for ${relation.relation}.`,
-			llmResponse: pipelinePayload([relationDeletePipelineRecord(relation)]),
-		});
-		
-		res.status(202).json(result);
+		const proposal = await hitlService.proposeRelationDelete({ relationId: req.params.id, userName: req.body?.userName });
+		res.status(202).json(await withApprovedGraph(proposal));
 	}));
 
 	app.post("/api/ask", asyncRoute(async (req, res) => {
@@ -865,7 +286,7 @@ export function createApp(services) {
 			memoryMessages: optionalMemoryMessages(req.body),
 			includeUnverifiedKnowledge: Boolean(req.body?.includeUnverifiedKnowledge),
 		});
-		
+
 		res.json({
 			answer: result.answer,
 			entryNodes: result.entryNodes,
@@ -881,7 +302,7 @@ export function createApp(services) {
 			depth: parseJobDepth(req.body?.depth),
 			nodeId: req.body?.nodeId,
 		});
-		
+
 		res.json(result);
 	}));
 
@@ -891,7 +312,7 @@ export function createApp(services) {
 			depth: parseJobDepth(req.body?.depth),
 			nodeId: req.body?.nodeId,
 		});
-		
+
 		res.json(result);
 	}));
 
@@ -905,7 +326,7 @@ export function createApp(services) {
 				rawJson: req.body?.rawJson,
 				schema: req.body?.schema,
 			});
-			
+
 			res.json({
 				...result,
 				status: "saved",
@@ -916,255 +337,66 @@ export function createApp(services) {
 		}
 	}));
 
-	app.get("/api/hitl/notes", asyncRoute(async (req, res) => {
-		requireHitlNotesSupport();
-		const limit = parseSearchLimit(req.query.limit || 100);
-		const { notes, total } = await vectorStore.listHitlNotePage({ status: "pending", limit });
+	// HITL proposals.
 
-		res.json({
-			// llmResponse lets the review list show per-operation counts parsed exactly like the detail view.
-			notes: notes.map((note) => ({ ...hitlNoteSummary(note), llmResponse: note.llmResponse })),
-			total,
-			limit,
-		});
+	app.get("/api/hitl/notes", asyncRoute(async (req, res) => {
+		const limit = parseSearchLimit(req.query.limit || 100);
+		const { notes, total } = await hitlService.listProposals({ limit });
+
+		res.json({ notes, total, limit });
 	}));
 
 	app.get("/api/hitl/notes/:id", asyncRoute(async (req, res) => {
-		const note = await requireHitlNote(req.params.id);
-		
-		res.json({
-			note: hitlNoteDetail(note),
-		});
+		const note = await hitlService.getProposal(req.params.id);
+
+		res.json({ note: hitlService.noteDetail(note) });
 	}));
 
 	app.put("/api/hitl/notes/:id/reviewer-notes", asyncRoute(async (req, res) => {
-		const note = await requireHitlNote(req.params.id);
-		const updatedNote = await ingestionService.saveHitlReviewerNotes({
-			noteId: note.id,
-			reviewerNotes: req.body?.reviewerNotes,
-		});
+		const note = await hitlService.saveReviewerNotes({ noteId: req.params.id, reviewerNotes: req.body?.reviewerNotes });
 
-		res.json({
-			note: hitlNoteDetail(updatedNote),
-		});
+		res.json({ note: hitlService.noteDetail(note) });
 	}));
 
 	// Overwrites the proposal with a fresh extraction guided by the reviewer notes; the note is untouched if it fails.
 	app.post("/api/hitl/notes/:id/regenerate", asyncRoute(async (req, res) => {
-		const note = await requireHitlNote(req.params.id);
-		const regeneratedBy = requireString(req.body?.reviewedBy, "reviewedBy");
-		const result = await ingestionService.regenerateHitlProposal({
-			noteId: note.id,
+		const result = await hitlService.regenerate({
+			noteId: req.params.id,
 			reviewerNotes: req.body?.reviewerNotes,
 			previousProposal: req.body?.llmResponse,
-			regeneratedBy,
+			regeneratedBy: req.body?.reviewedBy,
 		});
 
-		res.json({
-			note: hitlNoteDetail(result.note),
-		});
+		res.json({ note: hitlService.noteDetail(result.note) });
 	}));
 
 	app.get("/api/hitl/notes/:id/graph", asyncRoute(async (req, res) => {
-		const note = await requireHitlNote(req.params.id);
-		const depth = parseDepth(req.query.depth ?? 2);
-		const graph = await buildHitlNoteGraphPreview(note, { depth });
-		
-		res.json(graph);
+		res.json(await hitlService.previewProposal({ noteId: req.params.id, depth: parseDepth(req.query.depth ?? 2) }));
 	}));
 
 	app.post("/api/hitl/notes/:id/graph", asyncRoute(async (req, res) => {
-		const note = await requireHitlNote(req.params.id);
-		const depth = parseDepth(req.body?.depth ?? 2);
-		const llmResponse = requireString(req.body?.llmResponse ?? note.llmResponse, "llmResponse");
-		const graph = await buildHitlNoteGraphPreview(note, { depth, llmResponse });
-		
-		res.json(graph);
+		res.json(await hitlService.previewProposal({
+			noteId: req.params.id,
+			depth: parseDepth(req.body?.depth ?? 2),
+			llmResponse: req.body?.llmResponse,
+		}));
 	}));
 
 	app.get("/api/hitl/graph", asyncRoute(async (req, res) => {
-		const limit = parseLimit(req.query.limit);
-		const graph = await buildHitlGraphPreview(limit);
-		
-		res.json(graph);
-	}));
-
-	app.post("/api/hitl/nodes", asyncRoute(async (req, res) => {
-		requireDirectGraphCrudSupport();
-		const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
-		const node = normalizeManualNode(req.body);
-		const llmResponse = pipelinePayload([nodePipelineRecord("NODE_CREATE", node)]);
-		const pendingProposal = await pendingProposalForSchemaViolation({
-			reviewedBy,
-			userInput: `${reviewedBy} requested node creation for ${node.label}.`,
-			llmResponse,
-		});
-		if (pendingProposal) {
-			res.status(202).json(pendingProposal);
-			return;
-		}
-		const storedNode = await graphWriteService.writeNode(node);
-		const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
-		
-		res.json({
-			status: "applied",
-			applied: true,
-			reviewedBy,
-			node: storedNode,
-			graph: withGraphSchema(graph),
-		});
-	}));
-
-	app.put("/api/hitl/nodes/:id", asyncRoute(async (req, res) => {
-		requireDirectGraphCrudSupport();
-		const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
-		const node = normalizeManualNode(req.body, req.params.id);
-		const llmResponse = pipelinePayload([nodePipelineRecord("NODE_UPDATE", node)]);
-		const pendingProposal = await pendingProposalForSchemaViolation({
-			reviewedBy,
-			userInput: `${reviewedBy} requested node update for ${node.label}.`,
-			llmResponse,
-		});
-		if (pendingProposal) {
-			res.status(202).json(pendingProposal);
-			return;
-		}
-		const storedNode = await graphWriteService.writeNode(node);
-		const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
-		
-		res.json({
-			status: "applied",
-			applied: true,
-			reviewedBy,
-			node: storedNode,
-			graph: withGraphSchema(graph),
-		});
-	}));
-
-	app.delete("/api/hitl/nodes/:id", asyncRoute(async (req, res) => {
-		requireDirectGraphCrudSupport();
-		const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
-		const result = await graphWriteService.deleteNode(req.params.id);
-		const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
-		
-		res.json({
-			status: "applied",
-			applied: true,
-			reviewedBy,
-			deletedNodeId: result.nodeId,
-			deletedRelationIds: result.relationIds ?? [],
-			graph: withGraphSchema(graph),
-		});
-	}));
-
-	app.post("/api/hitl/relations", asyncRoute(async (req, res) => {
-		requireDirectGraphCrudSupport();
-		const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
-		const relation = normalizeManualRelation(req.body);
-		await requireExistingEndpoints(relation);
-		const llmResponse = pipelinePayload([relationPipelineRecord("RELATION_CREATE", relation)]);
-		const pendingProposal = await pendingProposalForSchemaViolation({
-			reviewedBy,
-			userInput: `${reviewedBy} requested relation creation for ${relation.relation}.`,
-			llmResponse,
-		});
-		if (pendingProposal) {
-			res.status(202).json(pendingProposal);
-			return;
-		}
-		const storedRelation = await graphWriteService.writeRelation(relation);
-		const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
-		
-		res.json({
-			status: "applied",
-			applied: true,
-			reviewedBy,
-			relation: storedRelation,
-			graph: withGraphSchema(graph),
-		});
-	}));
-
-	app.put("/api/hitl/relations/:id", asyncRoute(async (req, res) => {
-		requireDirectGraphCrudSupport();
-		const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
-		// The id is recomputed from source, relation and target, so a changed relation or endpoint gets its canonical id.
-		const relation = normalizeManualRelation(req.body);
-		await requireExistingEndpoints(relation);
-		const llmResponse = pipelinePayload([relationPipelineRecord("RELATION_UPDATE", relation)]);
-		const pendingProposal = await pendingProposalForSchemaViolation({
-			reviewedBy,
-			userInput: `${reviewedBy} requested relation update for ${relation.relation}.`,
-			llmResponse,
-		});
-		if (pendingProposal) {
-			res.status(202).json(pendingProposal);
-			return;
-		}
-		// One transaction: if the id changed, the old relation is removed together with writing the new one.
-		const storedRelation = await graphWriteService.writeRelation(relation, { replaceId: req.params.id });
-		const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
-		
-		res.json({
-			status: "applied",
-			applied: true,
-			reviewedBy,
-			relation: storedRelation,
-			graph: withGraphSchema(graph),
-		});
-	}));
-
-	app.delete("/api/hitl/relations/:id", asyncRoute(async (req, res) => {
-		requireDirectGraphCrudSupport();
-		const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
-		const result = await graphWriteService.deleteRelation(req.params.id);
-		const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
-		
-		res.json({
-			status: "applied",
-			applied: true,
-			reviewedBy,
-			deletedRelationId: result.relationId,
-			graph: withGraphSchema(graph),
-		});
+		res.json(await hitlService.previewAll(parseLimit(req.query.limit)));
 	}));
 
 	app.post("/api/hitl/notes/:id/approve", asyncRoute(async (req, res) => {
-		const note = await requireHitlNote(req.params.id);
-		const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
-		const llmResponse = requireString(req.body?.llmResponse ?? req.body?.editedResponse ?? note.llmResponse, "llmResponse");
-		
-		// Step 1: Parse and normalize (first pass to get schema suggestions)
-		const extractedGraph = parseGraphExtraction(llmResponse);
-		const baseSchema = currentGraphSchema();
-		
-		// Step 2: Normalize to extract schema suggestions
-		const explicitSuggestions = extractedGraph.schemaSuggestions;
-
-		
-		// Step 3: Build merged schema with proposed types — in memory only
-		const approvalSchema = buildApprovalSchema(baseSchema, explicitSuggestions);
-		
-		// Step 4: Re-normalize against the merged schema
-		const graphPayload = normalizeGraphPayload(extractedGraph, {
-			schema: approvalSchema,
+		const { storedGraph, graphPayload } = await hitlService.approve({
+			noteId: req.params.id,
+			reviewedBy: req.body?.reviewedBy,
+			llmResponse: req.body?.llmResponse ?? req.body?.editedResponse,
 		});
-		
-		// Step 5: Validate — should now pass since merged schema includes the new types
-		if (hasSchemaViolations(graphPayload)) {
-			throw schemaViolationError(graphPayload);
-		}
-		
-		// Step 6: Apply the graph mutations (this also checks relation endpoints against the graph), then
-		// persist the approved schema types, so a failed apply leaves the schema unchanged.
-		const storedGraph = await graphWriteService.applyPayload(graphPayload);
-		persistHitlSchemaSuggestions(baseSchema, extractedGraph);
-		await vectorStore.deleteHitlNotes([note.id]);
-		const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
-		
+
 		res.json({
 			status: "approved",
 			applied: true,
-			reviewedBy,
+			reviewedBy: reviewerName(req.body),
 			nodes: storedGraph.nodes,
 			relations: storedGraph.relations,
 			nodeDeletes: storedGraph.nodeDeletes,
@@ -1175,18 +407,79 @@ export function createApp(services) {
 			schemaSuggestions: graphPayload.schemaSuggestions,
 			schemaViolations: graphPayload.schemaViolations ?? [],
 			schemaWarnings: graphPayload.schemaWarnings,
-			graph: withGraphSchema(graph),
+			graph: await hitlGraph(),
 		});
 	}));
 
 	app.delete("/api/hitl/notes/:id", asyncRoute(async (req, res) => {
-		const note = await requireHitlNote(req.params.id);
-		await vectorStore.deleteHitlNotes([note.id]);
-		
+		const note = await hitlService.reject({ noteId: req.params.id });
+
 		res.json({
 			status: "rejected",
 			deleted: true,
 			id: note.id,
+		});
+	}));
+
+	// Direct reviewer edits: applied at once when schema-valid, otherwise stored as a proposal (202).
+
+	async function sendReviewerEdit(req, res, result, field) {
+		if (result.pending) {
+			res.status(202).json(await withApprovedGraph(result.pending));
+			return;
+		}
+
+		res.json({
+			status: "applied",
+			applied: true,
+			reviewedBy: reviewerName(req.body),
+			[field]: result[field],
+			graph: await hitlGraph(),
+		});
+	}
+
+	app.post("/api/hitl/nodes", asyncRoute(async (req, res) => {
+		const result = await hitlService.editNode({ body: req.body, reviewedBy: req.body?.reviewedBy });
+		await sendReviewerEdit(req, res, result, "node");
+	}));
+
+	app.put("/api/hitl/nodes/:id", asyncRoute(async (req, res) => {
+		const result = await hitlService.editNode({ body: req.body, nodeId: req.params.id, reviewedBy: req.body?.reviewedBy });
+		await sendReviewerEdit(req, res, result, "node");
+	}));
+
+	app.delete("/api/hitl/nodes/:id", asyncRoute(async (req, res) => {
+		const result = await hitlService.deleteNode({ nodeId: req.params.id, reviewedBy: req.body?.reviewedBy });
+
+		res.json({
+			status: "applied",
+			applied: true,
+			reviewedBy: reviewerName(req.body),
+			deletedNodeId: result.nodeId,
+			deletedRelationIds: result.relationIds ?? [],
+			graph: await hitlGraph(),
+		});
+	}));
+
+	app.post("/api/hitl/relations", asyncRoute(async (req, res) => {
+		const result = await hitlService.editRelation({ body: req.body, reviewedBy: req.body?.reviewedBy });
+		await sendReviewerEdit(req, res, result, "relation");
+	}));
+
+	app.put("/api/hitl/relations/:id", asyncRoute(async (req, res) => {
+		const result = await hitlService.editRelation({ body: req.body, relationId: req.params.id, reviewedBy: req.body?.reviewedBy });
+		await sendReviewerEdit(req, res, result, "relation");
+	}));
+
+	app.delete("/api/hitl/relations/:id", asyncRoute(async (req, res) => {
+		const result = await hitlService.deleteRelation({ relationId: req.params.id, reviewedBy: req.body?.reviewedBy });
+
+		res.json({
+			status: "applied",
+			applied: true,
+			reviewedBy: reviewerName(req.body),
+			deletedRelationId: result.relationId,
+			graph: await hitlGraph(),
 		});
 	}));
 
@@ -1195,13 +488,13 @@ export function createApp(services) {
 		{ name: "file", maxCount: MAX_INGEST_FILES },
 	]), asyncRoute(async (req, res) => {
 		const text = await buildIngestText(req);
-		const storedGraph = await ingestionService.ingestText({
+		const storedGraph = await hitlService.ingestText({
 			text,
 			source: "web",
 			userName: requireIngestUserName(req),
 		});
 		const graph = await graphStore.getGraphPreview(DEFAULT_GRAPH_LIMIT);
-		
+
 		res.json({
 			status: storedGraph.status || "applied",
 			applied: storedGraph.applied ?? true,
@@ -1242,11 +535,11 @@ export function createApp(services) {
 		// 5xx details stay in the terminal unless the error is marked `expose` (for example a vector sync
 		// failure, where the user must know the graph was saved).
 		const message = status >= 500 && !error.expose ? "Server error. Check the terminal for details." : error.message;
-		
+
 		if (status >= 500) {
 			console.error(error);
 		}
-		
+
 		res.status(status).json({ error: message });
 	});
 

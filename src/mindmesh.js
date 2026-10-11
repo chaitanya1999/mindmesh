@@ -2,6 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { GraphWriteService } from "./graph/graphWriteService.js";
 import { createGraphStore } from "./graph/providerFactory.js";
+import { HitlService } from "./hitl/hitlService.js";
 import { IngestionService } from "./ingestion/ingestionService.js";
 import { KgJobsService } from "./jobs/kgJobsService.js";
 import { createLlmProvider } from "./llm/providerFactory.js";
@@ -26,10 +27,17 @@ export function createMindMesh(config, overrides = {}) {
 		llmProvider,
 		graphStore,
 		vectorStore,
-		graphWriter: graphWriteService,
 		prompts,
 		logging: config.logging,
 		ingestion: config.ingestion,
+	});
+	const hitlService = new HitlService({
+		ingestionService,
+		graphStore,
+		vectorStore,
+		graphWriter: graphWriteService,
+		schemaConfig: config,
+		logging: config.logging,
 	});
 	const ragService = new HybridRagService({
 		llmProvider,
@@ -57,6 +65,7 @@ export function createMindMesh(config, overrides = {}) {
 		vectorStore,
 		graphWriteService,
 		ingestionService,
+		hitlService,
 		ragService,
 		jobsService,
 		async close() {
