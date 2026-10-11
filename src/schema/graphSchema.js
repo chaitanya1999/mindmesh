@@ -73,7 +73,6 @@ export function normalizeEditableGraphSchema(schema) {
 	};
 
 	delete normalized.path;
-	delete normalized.fallbacks;
 	delete normalized.suggestions;
 	return normalized;
 }
@@ -117,10 +116,6 @@ export function loadGraphSchema(config) {
 	return {
 		...raw,
 		path: schemaPathFromConfig(config),
-		fallbacks: {
-			nodeType: toSnakeCase(raw.fallbacks?.nodeType || "concept") || "concept",
-			relationshipType: toSnakeCase(raw.fallbacks?.relationshipType || "relates_to") || "relates_to",
-		},
 		nodeTypes: (raw.nodeTypes ?? []).map(normalizeEntry).filter((entry) => entry.name),
 		relationshipTypes: (raw.relationshipTypes ?? []).map(normalizeEntry).filter((entry) => entry.name),
 	};

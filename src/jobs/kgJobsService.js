@@ -15,7 +15,7 @@ function graphStats(graph) {
 }
 
 function relationPhrase(relation) {
-	return String(relation ?? "relates_to").replaceAll("_", " ");
+	return String(relation ?? "").replaceAll("_", " ");
 }
 
 function sentence(value) {
@@ -33,7 +33,7 @@ function formatJobGraphContext(graph) {
 	const nodeById = new Map(nodes.map((node) => [node.id, node]));
 	const nodeLines = nodes.map((node) => [
 		`- ${node.id}: ${node.label || node.name || node.id}`,
-		`type=${node.type || "concept"}`,
+		`type=${node.type || ""}`,
 		`name=${node.name || ""}`,
 		node.description ? `description=${sentence(node.description)}` : "",
 		node.metadata ? `metadata=${node.metadata}` : "",

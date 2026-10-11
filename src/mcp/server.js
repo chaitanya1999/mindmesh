@@ -9,7 +9,9 @@ import { createVectorStore } from "../vector/providerFactory.js";
 import { loadPrompts, buildExtractionPrompt } from "../prompts/promptRegistry.js";
 import { IngestionService } from "../ingestion/ingestionService.js";
 import { HybridRagService } from "../rag/hybridRagService.js";
-import { parseGraphExtraction, normalizeGraphPayload } from "../ingestion/graphPayload.js";
+import { formatGraphRecords, parseGraphExtraction, normalizeGraphPayload } from "../ingestion/graphPayload.js";
+import { resolveGraphPayload } from "../ingestion/graphResolution.js";
+import { reviewReasons } from "../ingestion/reviewSignals.js";
 import { loadGraphSchema, readEditableGraphSchema, formatSchemaCatalog, formatFieldGuidance } from "../schema/graphSchema.js";
 import { createDebugLogger } from "../logging/debugLogger.js";
 
@@ -58,10 +60,6 @@ function textContent(value) {
 
 function currentGraphSchema() {
 	return loadGraphSchema(config);
-}
-
-function hasSchemaViolations(graphPayload) {
-	return (graphPayload.schemaViolations?.length ?? 0) > 0;
 }
 
 // Short reference shown on HITL cards, e.g. "hitl:muzxnk3c:d964dbbae577" -> "#d964db".
@@ -273,7 +271,7 @@ server.registerTool(
 		description: [
 			"Parse, normalize, and apply extracted graph records to the knowledge graph. ",
 			"Accepts the pipe-delimited graph records block an agent produced (including <start#$#$> and </end#$#$> markers). ",
-			"Applies mutations directly when ingestion mode is 'auto' and no schema violations exist; otherwise stores a pending HITL proposal for human review.",
+			"In 'auto' ingestion mode, applies the records directly only when they are clean creates and updates (no schema violations, no AMBIGUITY or CONTRADICTION metadata, no deletes); otherwise stores a pending HITL proposal for human review and returns the reasons in `reviewReasons`.",
 		].join(""),
 		inputSchema: {
 			graphRecords: z.string().describe("The pipe-delimited graph records block output by the extraction agent, enclosed between <start#$#$> and </end#$#$> markers."),
@@ -290,17 +288,21 @@ server.registerTool(
 		try {
 			const graphSchema = currentGraphSchema();
 			const extractedGraph = parseGraphExtraction(graphRecords);
-			const graphPayload = normalizeGraphPayload(extractedGraph, { schema: graphSchema });
-			
+			const { graphPayload, changed } = await resolveGraphPayload(
+				normalizeGraphPayload(extractedGraph, { schema: graphSchema }),
+				graphStore,
+			);
+
 			let result;
 			let status;
 			let applied;
-			if (ingestionService.ingestion.mode === "hitl" || hasSchemaViolations(graphPayload)) {
+			// Same rule as web ingest: auto mode applies only clean creates and updates.
+			if (ingestionService.ingestion.mode === "hitl" || reviewReasons(graphPayload).length > 0) {
 				const pending = await ingestionService.storeHitlProposal({
 					text,
 					source: resolvedSource,
 					userName: resolvedUserName,
-					rawResponse: graphRecords,
+					rawResponse: changed ? formatGraphRecords(graphPayload) : graphRecords,
 					graphPayload,
 					debugLogger,
 				});
@@ -333,6 +335,7 @@ server.registerTool(
 				hitlNoteId: result.hitlNote?.id ?? null,
 				hitlNoteRef: hitlShortRef(result.hitlNote?.id),
 				hitlNoteStatus: result.hitlNote?.status ?? null,
+				reviewReasons: result.reviewReasons ?? [],
 			});
 		} catch (error) {
 			const message = `apply-ingestion failed: ${error?.message ?? String(error)}`;
@@ -451,7 +454,7 @@ server.registerResource(
 	"mindmesh://schema",
 	{
 		title: "Graph Schema",
-		description: "Editable MindMesh graph schema (approved node types, relationship types, property descriptors, fallbacks).",
+		description: "Editable MindMesh graph schema (approved node types, relationship types, property descriptors).",
 		mimeType: "application/json",
 	},
 	async (uri) => {

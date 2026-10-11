@@ -50,13 +50,11 @@ function addImplicitSuggestionsFromPayload(payload, schema, schemaSuggestions) {
 	const approvedRelationshipTypes = new Set((schema?.relationshipTypes ?? []).map((entry) => toSnakeCase(entry.name)).filter(Boolean));
 	const suggestedNodeTypes = new Set(schemaSuggestions.nodeTypes.map((entry) => entry.name));
 	const suggestedRelationshipTypes = new Set(schemaSuggestions.relationshipTypes.map((entry) => entry.name));
-	const fallbackNodeType = toSnakeCase(schema?.fallbacks?.nodeType || "concept") || "concept";
-	const fallbackRelationshipType = toSnakeCase(schema?.fallbacks?.relationshipType || "relates_to") || "relates_to";
 
 	for (const rawNode of payload.nodes ?? []) {
 		const type = toSnakeCase(rawNode.type);
 
-		if (!type || type === fallbackNodeType || approvedNodeTypes.has(type) || suggestedNodeTypes.has(type)) {
+		if (!type || approvedNodeTypes.has(type) || suggestedNodeTypes.has(type)) {
 			continue;
 		}
 
@@ -71,7 +69,7 @@ function addImplicitSuggestionsFromPayload(payload, schema, schemaSuggestions) {
 	for (const rawRelation of payload.relations ?? []) {
 		const relation = toSnakeCase(rawRelation.relation);
 
-		if (!relation || relation === fallbackRelationshipType || approvedRelationshipTypes.has(relation) || suggestedRelationshipTypes.has(relation)) {
+		if (!relation || approvedRelationshipTypes.has(relation) || suggestedRelationshipTypes.has(relation)) {
 			continue;
 		}
 
@@ -84,30 +82,17 @@ function addImplicitSuggestionsFromPayload(payload, schema, schemaSuggestions) {
 	}
 }
 
+// There are no fallback types: a blank or unknown type is a schema violation, so it always reaches review.
 function buildSchemaRules(schema) {
-	const fallbackNodeType = toSnakeCase(schema?.fallbacks?.nodeType || "concept") || "concept";
-	const fallbackRelationshipType = toSnakeCase(schema?.fallbacks?.relationshipType || "relates_to") || "relates_to";
 	const enforceSchema = Boolean(schema);
 	const allowedNodeTypes = new Set((schema?.nodeTypes ?? []).map((entry) => toSnakeCase(entry.name)).filter(Boolean));
 	const allowedRelationshipTypes = new Set((schema?.relationshipTypes ?? []).map((entry) => toSnakeCase(entry.name)).filter(Boolean));
 
 	return {
 		enforceSchema,
-		fallbackNodeType,
-		fallbackRelationshipType,
 		allowedNodeTypes,
 		allowedRelationshipTypes,
 	};
-}
-
-function normalizeNodeType(rawType, schemaRules) {
-	const type = toSnakeCase(rawType || schemaRules.fallbackNodeType) || schemaRules.fallbackNodeType;
-	return type;
-}
-
-function normalizeRelationshipType(rawRelation, schemaRules) {
-	const relation = toSnakeCase(rawRelation || schemaRules.fallbackRelationshipType) || schemaRules.fallbackRelationshipType;
-	return relation;
 }
 
 function schemaViolation(kind, value, message, record = {}) {
@@ -147,19 +132,15 @@ function mergeRelation(existingRelation, nextRelation) {
 	};
 }
 
-function mergeNode(existingNode, nextNode, schemaRules) {
+function mergeNode(existingNode, nextNode) {
 	if (!existingNode) {
 		return nextNode;
 	}
 
-	const shouldUpgradeFallbackType = existingNode.type === schemaRules.fallbackNodeType
-		&& nextNode.type
-		&& nextNode.type !== schemaRules.fallbackNodeType;
-
 	return {
 		...existingNode,
 		label: existingNode.label || nextNode.label,
-		type: shouldUpgradeFallbackType ? nextNode.type : existingNode.type,
+		type: existingNode.type || nextNode.type,
 		description: nextNode.description
 			? nextNode.description
 			: existingNode.description,
@@ -185,9 +166,11 @@ export function normalizeGraphPayload(payload, { schema = null } = {}) {
 			continue;
 		}
 
-		const nodeType = normalizeNodeType(rawNode.type, schemaRules);
+		const nodeType = toSnakeCase(rawNode.type);
 		if (schemaRules.enforceSchema && !schemaRules.allowedNodeTypes.has(nodeType)) {
-			const message = `Node "${name}" uses unknown node type "${nodeType}".`;
+			const message = nodeType
+				? `Node "${name}" uses unknown node type "${nodeType}".`
+				: `Node "${name}" has no node type.`;
 			warnings.push(message);
 			schemaViolations.push(schemaViolation("nodeType", nodeType, message, { name, label: rawNode.label || labelFromName(name) }));
 		}
@@ -201,7 +184,7 @@ export function normalizeGraphPayload(payload, { schema = null } = {}) {
 			metadata: rawNode.metadata || "",
 			operation: rawNode.operation || "upsert",
 		};
-		nodeMap.set(name, mergeNode(nodeMap.get(name), normalizedNode, schemaRules));
+		nodeMap.set(name, mergeNode(nodeMap.get(name), normalizedNode));
 	}
 
 	const relationMap = new Map();
@@ -209,52 +192,24 @@ export function normalizeGraphPayload(payload, { schema = null } = {}) {
 	for (const rawRelation of payload.relations ?? []) {
 		const sourceName = normalizeNodeName(rawRelation.sourceName || rawRelation.source || rawRelation.sourceId);
 		const targetName = normalizeNodeName(rawRelation.targetName || rawRelation.target || rawRelation.targetId);
-		const relation = normalizeRelationshipType(rawRelation.relation, schemaRules);
+		const relation = toSnakeCase(rawRelation.relation);
 
 		if (!sourceName || !targetName) {
 			continue;
 		}
 
 		if (schemaRules.enforceSchema && !schemaRules.allowedRelationshipTypes.has(relation)) {
-			const message = `Relation "${sourceName}" -> "${targetName}" uses unknown relationship type "${relation}".`;
+			const message = relation
+				? `Relation "${sourceName}" -> "${targetName}" uses unknown relationship type "${relation}".`
+				: `Relation "${sourceName}" -> "${targetName}" has no relationship type.`;
 			warnings.push(message);
 			schemaViolations.push(schemaViolation("relationshipType", relation, message, { sourceName, targetName, relation }));
 		}
 
-		if (!nodeMap.has(sourceName)) {
-			if (schemaRules.enforceSchema) {
-				const message = `Relation endpoint "${sourceName}" is missing a node record with an approved type.`;
-				warnings.push(message);
-			}
-			nodeMap.set(sourceName, {
-				id: `node:${sourceName}`,
-				label: labelFromName(sourceName),
-				name: sourceName,
-				type: schemaRules.fallbackNodeType,
-				description: "",
-				metadata: "",
-				operation: "upsert",
-			});
-		}
-
-		if (!nodeMap.has(targetName)) {
-			if (schemaRules.enforceSchema) {
-				const message = `Relation endpoint "${targetName}" is missing a node record with an approved type.`;
-				warnings.push(message);
-			}
-			nodeMap.set(targetName, {
-				id: `node:${targetName}`,
-				label: labelFromName(targetName),
-				name: targetName,
-				type: schemaRules.fallbackNodeType,
-				description: "",
-				metadata: "",
-				operation: "upsert",
-			});
-		}
-
-		const sourceId = nodeMap.get(sourceName).id;
-		const targetId = nodeMap.get(targetName).id;
+		// Relations never create nodes. An endpoint without a node record here is a reference to an
+		// existing node; resolveGraphPayload() in graphResolution.js checks that it exists.
+		const sourceId = nodeMap.get(sourceName)?.id ?? `node:${sourceName}`;
+		const targetId = nodeMap.get(targetName)?.id ?? `node:${targetName}`;
 		const relationId = rawRelation.id || relationIdFor(sourceId, relation, targetId);
 
 		const normalizedRelation = {
@@ -461,7 +416,7 @@ export function extractCustomGraph(text) {
 		const recordType = parts[0]?.toUpperCase();
 
 		if (recordType === "NODE" || recordType === "NODE_CREATE" || recordType === "NODE_UPDATE") {
-			const [, name, label, type = "concept", description = "", metadata = ""] = parts;
+			const [, name, label, type = "", description = "", metadata = ""] = parts;
 
 			if (!name || !label) {
 				skippedLines.push(index + 1);
@@ -492,7 +447,7 @@ export function extractCustomGraph(text) {
 		}
 
 		if (recordType === "RELATION" || recordType === "EDGE" || recordType === "RELATION_CREATE" || recordType === "RELATION_UPDATE") {
-			const [, sourceName, targetName, relation = "relates_to", information = "", description = "", metadata = ""] = parts;
+			const [, sourceName, targetName, relation = "", information = "", description = "", metadata = ""] = parts;
 
 			if (!sourceName || !targetName) {
 				skippedLines.push(index + 1);
@@ -574,6 +529,72 @@ export function extractCustomGraph(text) {
 
 export function parseGraphExtraction(text) {
 	return extractCustomGraph(text);
+}
+
+function graphNameFromId(value) {
+	return String(value ?? "").replace(/^node:/i, "");
+}
+
+function graphRecordLine(recordType, fields) {
+	return [recordType, ...fields].map(encodePipelineField).join("|");
+}
+
+// Renders a normalized payload back into the pipe-delimited record block stored on HITL proposals.
+export function formatGraphRecords(graphPayload) {
+	const lines = [];
+	for (const node of graphPayload.nodes ?? []) {
+		lines.push(graphRecordLine(node.operation === "update" ? "NODE_UPDATE" : "NODE_CREATE", [
+			node.name || graphNameFromId(node.id),
+			node.label || node.name || graphNameFromId(node.id),
+			node.type || "",
+			node.description || "",
+			node.metadata || "",
+		]));
+	}
+	for (const nodeDelete of graphPayload.nodeDeletes ?? []) {
+		lines.push(graphRecordLine("NODE_DELETE", [
+			nodeDelete.name || graphNameFromId(nodeDelete.id),
+			nodeDelete.metadata || "",
+		]));
+	}
+	for (const relation of graphPayload.relations ?? []) {
+		lines.push(graphRecordLine(relation.operation === "update" ? "RELATION_UPDATE" : "RELATION_CREATE", [
+			graphNameFromId(relation.sourceId),
+			graphNameFromId(relation.targetId),
+			relation.relation || "",
+			relation.information || "",
+			relation.description || "",
+			relation.metadata || "",
+		]));
+	}
+	for (const relationDelete of graphPayload.relationDeletes ?? []) {
+		lines.push(graphRecordLine("RELATION_DELETE", [
+			graphNameFromId(relationDelete.sourceId),
+			graphNameFromId(relationDelete.targetId),
+			relationDelete.relation || "",
+			relationDelete.metadata || "",
+		]));
+	}
+	for (const suggestion of graphPayload.schemaSuggestions?.nodeTypes ?? []) {
+		lines.push(graphRecordLine("NODE_TYPE_SUGGESTION", [
+			suggestion.name,
+			suggestion.description,
+			suggestion.reason,
+		]));
+	}
+	for (const suggestion of graphPayload.schemaSuggestions?.relationshipTypes ?? []) {
+		lines.push(graphRecordLine("RELATION_TYPE_SUGGESTION", [
+			suggestion.name,
+			suggestion.description,
+			suggestion.reason,
+		]));
+	}
+
+	return [
+		"<start#$#$>",
+		...lines,
+		"</end#$#$>",
+	].join("\n");
 }
 
 /**

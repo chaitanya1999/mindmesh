@@ -65191,7 +65191,7 @@ function toSnakeCase(value) {
   return String(value ?? "").trim().replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
 }
 function relationLabel(relation) {
-  return String(relation ?? "relates_to").replaceAll("_", " ");
+  return String(relation ?? "").replaceAll("_", " ");
 }
 function graphNameFromId(id2) {
   return String(id2 ?? "").replace(/^node:/i, "");
@@ -65292,7 +65292,7 @@ function parseNodeRecord(parts, line, index2, errors) {
     name,
     id: nodeIdFromName(name),
     label: parts[2] || displayNameFromIdentifier(name),
-    type: toSnakeCase(parts[3] || "concept") || "concept",
+    type: toSnakeCase(parts[3]),
     description: parts[4] || "",
     metadata: parts[5] || "",
     line,
@@ -65326,7 +65326,7 @@ function parseRelationRecord(parts, line, index2, errors) {
   const recordType = parts[0].toUpperCase();
   const sourceName = toSnakeCase(parts[1]);
   const targetName = toSnakeCase(parts[2]);
-  const relation = toSnakeCase(parts[3] || "relates_to") || "relates_to";
+  const relation = toSnakeCase(parts[3]);
   if (!sourceName || !targetName) {
     errors.push(`Line ${index2 + 1}: ${recordType} requires source and target node names.`);
   }
@@ -65354,7 +65354,7 @@ function parseRelationDeleteRecord(parts, line, index2, errors) {
   const recordType = parts[0].toUpperCase();
   const sourceName = toSnakeCase(parts[1]);
   const targetName = toSnakeCase(parts[2]);
-  const relation = toSnakeCase(parts[3] || "relates_to") || "relates_to";
+  const relation = toSnakeCase(parts[3]);
   if (!sourceName || !targetName) {
     errors.push(`Line ${index2 + 1}: RELATION_DELETE requires source and target node names.`);
   }
@@ -66705,7 +66705,7 @@ function toSnakeCase2(value) {
   return String(value ?? "").trim().replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
 }
 function relationLabel2(relation) {
-  return String(relation ?? "relates_to").replaceAll("_", " ");
+  return String(relation ?? "").replaceAll("_", " ");
 }
 function decodePipelineField2(value) {
   if (value === void 0 || value === null) {
@@ -67305,7 +67305,7 @@ function createNodeDraft(node) {
   return {
     label: node?.label ?? "",
     name: node?.name ?? "",
-    type: node?.type ?? "concept",
+    type: node?.type ?? "",
     description: displayText(node?.description)
   };
 }
@@ -67344,14 +67344,14 @@ function NodeForm({
       {
         value: draft.name,
         onInput: (event) => updateField("name", event.currentTarget.value),
-        placeholder: "auto_from_label",
+        placeholder: toSnakeCase2(draft.label) || "derived_from_label",
         readOnly: isNameLocked,
         title: isNameLocked ? "The name is this node's permanent id. Change the label instead." : void 0
       }
     ) }),
     /* @__PURE__ */ u3(Field, { label: "Type", children: [
       /* @__PURE__ */ u3("datalist", { id: "node-type-options", children: nodeTypes.map((type) => /* @__PURE__ */ u3("option", { value: type, children: type }, type)) }),
-      /* @__PURE__ */ u3("input", { list: "node-type-options", value: draft.type, onInput: (event) => updateField("type", event.currentTarget.value), required: true })
+      /* @__PURE__ */ u3("input", { list: "node-type-options", value: draft.type, onInput: (event) => updateField("type", event.currentTarget.value), placeholder: "Choose a schema type", required: true })
     ] }),
     /* @__PURE__ */ u3(Field, { label: "Description", children: /* @__PURE__ */ u3("textarea", { rows: "4", value: draft.description, onInput: (event) => updateField("description", event.currentTarget.value) }) }),
     /* @__PURE__ */ u3("div", { class: "form-actions", children: [
@@ -67403,7 +67403,7 @@ function createRelationDraft(relation) {
   return {
     sourceId: relation?.sourceId ?? "",
     targetId: relation?.targetId ?? "",
-    relation: relation?.relation ?? "relates_to",
+    relation: relation?.relation ?? "",
     information: displayText(relation?.information),
     description: displayText(relation?.description)
   };
@@ -67434,7 +67434,7 @@ function RelationForm({
   }
   function handleSubmit(event) {
     event.preventDefault();
-    onSave({ ...draft, relation: toSnakeCase2(draft.relation) || "relates_to" });
+    onSave({ ...draft, relation: toSnakeCase2(draft.relation) });
   }
   return /* @__PURE__ */ u3("form", { class: "edit-form", onSubmit: handleSubmit, children: [
     /* @__PURE__ */ u3("datalist", { id: "node-id-options", children: graph.nodes.map((node) => /* @__PURE__ */ u3("option", { value: node.id, children: node.label }, node.id)) }),
@@ -67442,7 +67442,7 @@ function RelationForm({
     /* @__PURE__ */ u3(Field, { label: "Target node", children: /* @__PURE__ */ u3("input", { list: "node-id-options", value: draft.targetId, onInput: (event) => updateField("targetId", event.currentTarget.value), required: true }) }),
     /* @__PURE__ */ u3(Field, { label: "Relation", children: [
       /* @__PURE__ */ u3("datalist", { id: "relation-type-options", children: relationshipTypes.map((type) => /* @__PURE__ */ u3("option", { value: type, children: type }, type)) }),
-      /* @__PURE__ */ u3("input", { list: "relation-type-options", value: draft.relation, onInput: (event) => updateField("relation", event.currentTarget.value), required: true })
+      /* @__PURE__ */ u3("input", { list: "relation-type-options", value: draft.relation, onInput: (event) => updateField("relation", event.currentTarget.value), placeholder: "Choose a schema relation", required: true })
     ] }),
     /* @__PURE__ */ u3(Field, { label: "Information", children: /* @__PURE__ */ u3("textarea", { rows: "3", value: draft.information, onInput: (event) => updateField("information", event.currentTarget.value) }) }),
     /* @__PURE__ */ u3(Field, { label: "Description", children: /* @__PURE__ */ u3("textarea", { rows: "4", value: draft.description, onInput: (event) => updateField("description", event.currentTarget.value) }) }),
@@ -79006,7 +79006,6 @@ function normalizeSchemaDraft(schema) {
     relationshipTypes: normalizeSchemaEntries(schema?.relationshipTypes)
   };
   delete nextSchema.path;
-  delete nextSchema.fallbacks;
   delete nextSchema.suggestions;
   return nextSchema;
 }
@@ -79232,7 +79231,7 @@ function pipelineNodeLine(recordType, node) {
   return pipelineRecordLine2(recordType, [
     name,
     node.label || displayNameFromIdentifier2(name),
-    node.type || "concept",
+    node.type || "",
     node.description || "",
     node.metadata || ""
   ]);
@@ -79247,7 +79246,7 @@ function pipelineRelationLine(recordType, relation) {
   return pipelineRecordLine2(recordType, [
     graphNameFromId2(relation.sourceId),
     graphNameFromId2(relation.targetId),
-    relation.relation || "relates_to",
+    relation.relation || "",
     relation.information || "",
     relation.description || "",
     relation.metadata || ""
@@ -79257,7 +79256,7 @@ function pipelineRelationDeleteLine(relation) {
   return pipelineRecordLine2("RELATION_DELETE", [
     graphNameFromId2(relation.sourceId),
     graphNameFromId2(relation.targetId),
-    relation.relation || "relates_to",
+    relation.relation || "",
     relation.metadata || ""
   ]);
 }
@@ -79391,7 +79390,7 @@ function updatePipelineRelation(text, relation, draft) {
   const nextRelation = {
     ...relation,
     ...draft,
-    relation: toSnakeCase2(draft.relation) || "relates_to"
+    relation: toSnakeCase2(draft.relation)
   };
   const lines = pipelineLines2(text);
   let found = false;
@@ -80327,7 +80326,7 @@ function App() {
     try {
       const nextRelation = {
         ...draft,
-        relation: toSnakeCase2(draft.relation) || "relates_to"
+        relation: toSnakeCase2(draft.relation)
       };
       if (hitlSelectedNoteRef.current) {
         changeHitlEditedResponse(createPipelineRelation(hitlEditedResponseRef.current, nextRelation));

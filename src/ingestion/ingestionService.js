@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
-import { normalizeGraphPayload, parseGraphExtraction, toSnakeCase, encodePipelineField } from "./graphPayload.js";
-import { countReviewSignals } from "./reviewSignals.js";
+import { formatGraphRecords, normalizeGraphPayload, parseGraphExtraction, toSnakeCase } from "./graphPayload.js";
+import { resolveGraphPayload } from "./graphResolution.js";
+import { countReviewSignals, reviewReasons } from "./reviewSignals.js";
 import { createDebugLogger } from "../logging/debugLogger.js";
 import { buildExtractionPrompt } from "../prompts/promptRegistry.js";
 import { formatExtractionGraphContext } from "../rag/graphContext.js";
@@ -61,7 +62,7 @@ function compact(value) {
 }
 
 function relationPhrase(relation) {
-	return String(relation ?? "relates_to").replaceAll("_", " ");
+	return String(relation ?? "").replaceAll("_", " ");
 }
 
 function graphNameFromId(value) {
@@ -75,7 +76,7 @@ function normalizeGraphName(value) {
 function pendingRelationKey(sourceName, relation, targetName) {
 	return [
 		normalizeGraphName(sourceName),
-		toSnakeCase(relation || "relates_to") || "relates_to",
+		toSnakeCase(relation),
 		normalizeGraphName(targetName),
 	].join("|");
 }
@@ -119,7 +120,7 @@ function formatPendingHitlContext({ notes = [], graph = { nodes: [], relations: 
 		const note = noteById.get(node.hitlNoteId);
 		const details = [
 			`name: ${node.name || node.id}`,
-			`type: ${node.type || "concept"}`,
+			node.type ? `type: ${node.type}` : "",
 			`pending: ${node.operation || "upsert"}`,
 			note?.userName ? `ingested by: ${note.userName}` : "",
 		].filter(Boolean);
@@ -199,69 +200,6 @@ function reconcileExtractionWithPendingHitl(extractedGraph, pendingHitl) {
 			return relation;
 		}),
 	};
-}
-
-function safePipeField(value) {
-	return encodePipelineField(value);
-}
-
-function graphRecordLine(recordType, fields) {
-	return [recordType, ...fields].map(safePipeField).join("|");
-}
-
-function customGraphResponseFromPayload(graphPayload) {
-	const lines = [];
-	for (const node of graphPayload.nodes ?? []) {
-		lines.push(graphRecordLine(node.operation === "update" ? "NODE_UPDATE" : "NODE_CREATE", [
-			node.name || graphNameFromId(node.id),
-			node.label || node.name || graphNameFromId(node.id),
-			node.type || "concept",
-			node.description || "",
-			node.metadata || "",
-		]));
-	}
-	for (const nodeDelete of graphPayload.nodeDeletes ?? []) {
-		lines.push(graphRecordLine("NODE_DELETE", [
-			nodeDelete.name || graphNameFromId(nodeDelete.id),
-		]));
-	}
-	for (const relation of graphPayload.relations ?? []) {
-		lines.push(graphRecordLine(relation.operation === "update" ? "RELATION_UPDATE" : "RELATION_CREATE", [
-			graphNameFromId(relation.sourceId),
-			graphNameFromId(relation.targetId),
-			relation.relation || "relates_to",
-			relation.information || "",
-			relation.description || "",
-			relation.metadata || "",
-		]));
-	}
-	for (const relationDelete of graphPayload.relationDeletes ?? []) {
-		lines.push(graphRecordLine("RELATION_DELETE", [
-			graphNameFromId(relationDelete.sourceId),
-			graphNameFromId(relationDelete.targetId),
-			relationDelete.relation || "relates_to",
-		]));
-	}
-	for (const suggestion of graphPayload.schemaSuggestions?.nodeTypes ?? []) {
-		lines.push(graphRecordLine("NODE_TYPE_SUGGESTION", [
-			suggestion.name,
-			suggestion.description,
-			suggestion.reason,
-		]));
-	}
-	for (const suggestion of graphPayload.schemaSuggestions?.relationshipTypes ?? []) {
-		lines.push(graphRecordLine("RELATION_TYPE_SUGGESTION", [
-			suggestion.name,
-			suggestion.description,
-			suggestion.reason,
-		]));
-	}
-
-	return [
-		"<start#$#$>",
-		...lines,
-		"</end#$#$>",
-	].join("\n");
 }
 
 async function retrievePendingHitlNotes(vectorStore, text, topK, excludeNoteIds = []) {
@@ -445,9 +383,12 @@ export class IngestionService {
 		};
 	}
 
-	async applyGraphPayload(graphPayload, { source, debugLogger }) {
+	// Every graph apply (auto ingest, MCP auto mode, HITL approval) passes this check against the current
+	// graph, so a relation can never create or rewrite a node, whatever the caller checked before.
+	async applyGraphPayload(normalizedPayload, { source, debugLogger }) {
+		const { graphPayload } = await resolveGraphPayload(normalizedPayload, this.graphStore);
 		if (hasSchemaViolations(graphPayload)) {
-			const error = new Error(`Cannot apply graph payload with schema violations: ${graphPayload.schemaViolations.map((violation) => violation.message).join("; ")}`);
+			const error = new Error(`Cannot apply graph payload with violations: ${graphPayload.schemaViolations.map((violation) => violation.message).join("; ")}`);
 			error.status = 400;
 			throw error;
 		}
@@ -550,6 +491,7 @@ export class IngestionService {
 			schemaSuggestions: graphPayload.schemaSuggestions,
 			schemaViolations: graphPayload.schemaViolations ?? [],
 			schemaWarnings: graphPayload.schemaWarnings,
+			reviewReasons: reviewReasons(graphPayload),
 		};
 	}
 
@@ -653,10 +595,13 @@ export class IngestionService {
 			excludeNoteIds: [note.id],
 		});
 		const reconciledGraph = reconcileExtractionWithPendingHitl(parsedGraph, pendingHitl);
-		const graphPayload = normalizeGraphPayload(reconciledGraph, { schema });
-		const llmResponse = rawResponse && reconciledGraph === parsedGraph
+		const { graphPayload, changed } = await resolveGraphPayload(
+			normalizeGraphPayload(reconciledGraph, { schema }),
+			this.graphStore,
+		);
+		const llmResponse = rawResponse && reconciledGraph === parsedGraph && !changed
 			? rawResponse
-			: customGraphResponseFromPayload(graphPayload);
+			: formatGraphRecords(graphPayload);
 		const reviewSignals = countReviewSignals(graphPayload);
 
 		await this.vectorStore.upsertHitlNote({
@@ -803,22 +748,24 @@ export class IngestionService {
 			);
 
 			logIngest(debugLogger, "[ingest] Normalizing graph payload...");
-			const graphPayload = normalizeGraphPayload(extractedGraph, {
-				schema: graphSchema,
-			});
+			const { graphPayload, changed: resolutionChanged } = await resolveGraphPayload(
+				normalizeGraphPayload(extractedGraph, { schema: graphSchema }),
+				this.graphStore,
+			);
 			debugLogger.json("Normalized Graph Payload", graphPayload);
 			logIngest(
 				debugLogger,
 				`[ingest] Normalized payload has ${graphPayload.nodes.length} node upsert(s), ${graphPayload.relations.length} relation upsert(s), ${graphPayload.nodeDeletes.length} node delete(s), ${graphPayload.relationDeletes.length} relation delete(s), and ${graphPayload.schemaWarnings.length} schema warning(s).`,
 			);
 
-			if (this.ingestion.mode === "hitl" || hasSchemaViolations(graphPayload)) {
-				logIngest(debugLogger, hasSchemaViolations(graphPayload)
-					? "[ingest] Schema violation detected; forcing HITL proposal instead of applying graph mutations."
-					: "[ingest] HITL mode enabled; storing pending proposal in vector store.");
-				const hitlResponse = rawResponse && rawExtractedGraph === extractedGraph
+			const pendingReasons = reviewReasons(graphPayload);
+			if (this.ingestion.mode === "hitl" || pendingReasons.length > 0) {
+				logIngest(debugLogger, this.ingestion.mode === "hitl"
+					? "[ingest] HITL mode enabled; storing pending proposal in vector store."
+					: `[ingest] Review required (${pendingReasons.join(", ")}); forcing HITL proposal instead of applying graph mutations.`);
+				const hitlResponse = rawResponse && rawExtractedGraph === extractedGraph && !resolutionChanged
 					? rawResponse
-					: customGraphResponseFromPayload(graphPayload);
+					: formatGraphRecords(graphPayload);
 				const pendingProposal = await this.storeHitlProposal({
 					text,
 					source,

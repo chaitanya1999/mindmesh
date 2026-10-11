@@ -6,7 +6,7 @@ export function createRelationDraft(relation) {
 	return {
 		sourceId: relation?.sourceId ?? "",
 		targetId: relation?.targetId ?? "",
-		relation: relation?.relation ?? "relates_to",
+		relation: relation?.relation ?? "",
 		information: displayText(relation?.information),
 		description: displayText(relation?.description),
 	};
@@ -41,7 +41,7 @@ export function RelationForm({
 
 	function handleSubmit(event) {
 		event.preventDefault();
-		onSave({ ...draft, relation: toSnakeCase(draft.relation) || "relates_to" });
+		onSave({ ...draft, relation: toSnakeCase(draft.relation) });
 	}
 
 	return (
@@ -63,7 +63,7 @@ export function RelationForm({
 						</option>
 					))}
 				</datalist>
-				<input list="relation-type-options" value={draft.relation} onInput={(event) => updateField("relation", event.currentTarget.value)} required />
+				<input list="relation-type-options" value={draft.relation} onInput={(event) => updateField("relation", event.currentTarget.value)} placeholder="Choose a schema relation" required />
 			</Field>
 			<Field label="Information">
 				<textarea rows="3" value={draft.information} onInput={(event) => updateField("information", event.currentTarget.value)} />

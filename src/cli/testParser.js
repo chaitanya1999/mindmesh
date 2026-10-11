@@ -1,4 +1,5 @@
-import { extractCustomGraph, normalizeGraphPayload, parseGraphExtraction, validatePropertyConstraints } from "../ingestion/graphPayload.js";
+import { extractCustomGraph, formatGraphRecords, normalizeGraphPayload, parseGraphExtraction, validatePropertyConstraints } from "../ingestion/graphPayload.js";
+import { resolveGraphPayload } from "../ingestion/graphResolution.js";
 import { formatFieldGuidance, formatSchemaCatalog } from "../schema/graphSchema.js";
 import { IngestionService } from "../ingestion/ingestionService.js";
 import { countReviewSignals } from "../ingestion/reviewSignals.js";
@@ -24,13 +25,13 @@ const customGraphWithSuggestion = [
 ].join("\n");
 const customGraphWithDelimitedNoise = [
 	"Thought process: I should identify nodes and relations before answering.",
-	"NODE|outside_node|Outside Node|concept|This line must be ignored.",
+	"NODE|outside_node|Outside Node|screen|This line must be ignored.",
 	"<start#$#$>",
 	"NODE|ekyc_screen|EKYC Screen|screen|Screen that captures identity details.",
 	"NODE|pan_api|PAN API|api|API that verifies PAN details.",
 	"RELATION|ekyc_screen|pan_api|uses|EKYC Screen uses PAN API.|Used during verification.",
 	"</end#$#$>",
-	"NODE|after_node|After Node|concept|This line must also be ignored.",
+	"NODE|after_node|After Node|screen|This line must also be ignored.",
 ].join("\n");
 const customGraphWithMutations = [
 	"<start#$#$>",
@@ -46,17 +47,11 @@ const customGraphWithMutations = [
 
 const schema = {
 	path: "",
-	fallbacks: {
-		nodeType: "concept",
-		relationshipType: "relates_to",
-	},
 	nodeTypes: [
-		{ name: "concept", description: "Fallback." },
 		{ name: "screen", description: "UI screen." },
 		{ name: "api", description: "API." },
 	],
 	relationshipTypes: [
-		{ name: "relates_to", description: "Fallback." },
 		{ name: "uses", description: "Uses target." },
 	],
 };
@@ -192,6 +187,23 @@ assert(pendingSuggestionPayload.nodes[0].type === "journey_step", "Implicit node
 assert(pendingSuggestionPayload.schemaSuggestions.nodeTypes[0].name === "journey_step", "Implicit node suggestion was not captured.");
 assert(pendingSuggestionPayload.schemaViolations[0]?.kind === "nodeType", "Implicit node suggestion must still require schema approval.");
 
+// Relations never create nodes, and there are no fallback types.
+const relationOnlyPayload = normalizeGraphPayload(extractCustomGraph("RELATION_CREATE|ekyc_screen|pan_api|uses|||"), { schema });
+assert(relationOnlyPayload.nodes.length === 0, "A relation must not create endpoint nodes.");
+assert(relationOnlyPayload.relations[0].sourceId === "node:ekyc_screen" && relationOnlyPayload.relations[0].targetId === "node:pan_api", "Relation endpoints should reference nodes by id.");
+assert(relationOnlyPayload.schemaViolations.length === 0, "A relation with an approved type should pass schema normalization.");
+
+const untypedPayload = normalizeGraphPayload(extractCustomGraph([
+	"NODE_CREATE|abc|ABC||",
+	"NODE_CREATE|xyz|XYZ|screen|",
+	"RELATION_CREATE|abc|xyz||||",
+].join("\n")), { schema });
+assert(untypedPayload.nodes.find((node) => node.name === "abc")?.type === "", "A blank node type must stay blank, not become a fallback.");
+assert(untypedPayload.relations[0].relation === "", "A blank relation type must stay blank, not become a fallback.");
+assert(untypedPayload.schemaViolations.some((violation) => violation.kind === "nodeType" && violation.message.includes("has no node type")), "A blank node type must be a schema violation.");
+assert(untypedPayload.schemaViolations.some((violation) => violation.kind === "relationshipType" && violation.message.includes("has no relationship type")), "A blank relation type must be a schema violation.");
+assert(untypedPayload.schemaSuggestions.nodeTypes.length === 0 && untypedPayload.schemaSuggestions.relationshipTypes.length === 0, "Blank types must not become type suggestions.");
+
 const renderedPrompt = buildExtractionPrompt("Schema:\n{{GRAPH_SCHEMA}}\nContext:\n{{EXISTING_GRAPH_CONTEXT}}\nInput:\n{{USER_INPUT}}", {
 	graphSchema: schema,
 	existingGraphContext: "node:existing_varun | label: Varun",
@@ -256,6 +268,9 @@ const service = new IngestionService({
 		},
 	},
 	graphStore: {
+		async getExistingNodeIds() {
+			return [];
+		},
 		async expandFromNodes(nodeIds, depth) {
 			capturedGraphExpansion = { nodeIds, depth };
 			return {
@@ -311,6 +326,9 @@ const pendingContextService = new IngestionService({
 		},
 	},
 	graphStore: {
+		async getExistingNodeIds() {
+			return [];
+		},
 		async expandFromNodes() {
 			return { nodes: [], relations: [] };
 		},
@@ -358,19 +376,25 @@ const deletedVectorRelations = [];
 const deletedVectorNodes = [];
 let mutationUpsertGraph = null;
 let mutationIndexedGraph = null;
+let mutationStoredNote = null;
+const mutationExtraction = {
+	nodes: [{ name: "new_screen", label: "New Screen", type: "screen", description: "Newly captured screen." }],
+	relations: [{ sourceName: "new_screen", targetName: "pan_api", relation: "uses", information: "during onboarding" }],
+	nodeDeletes: [{ name: "old_screen" }],
+	relationDeletes: [{ sourceName: "xyz_screen", targetName: "old_owner", relation: "owned_by" }],
+	schemaSuggestions: { nodeTypes: [], relationshipTypes: [] },
+};
 const mutationService = new IngestionService({
 	llmProvider: {
 		async extractGraph() {
-			return {
-				nodes: [{ name: "new_screen", label: "New Screen", type: "screen", description: "Newly captured screen." }],
-				relations: [{ sourceName: "new_screen", targetName: "pan_api", relation: "uses", information: "during onboarding" }],
-				nodeDeletes: [{ name: "old_screen" }],
-				relationDeletes: [{ sourceName: "xyz_screen", targetName: "old_owner", relation: "owned_by" }],
-				schemaSuggestions: { nodeTypes: [], relationshipTypes: [] },
-			};
+			return structuredClone(mutationExtraction);
 		},
 	},
 	graphStore: {
+		async getExistingNodeIds(ids) {
+			// pan_api is an existing node that the extracted relation references without a node record.
+			return ids.filter((id) => id === "node:pan_api");
+		},
 		async expandFromNodes() {
 			return { nodes: [], relations: [] };
 		},
@@ -400,6 +424,10 @@ const mutationService = new IngestionService({
 		async upsertGraphIndex(graph) {
 			mutationIndexedGraph = graph;
 		},
+		async upsertHitlNote(note) {
+			mutationStoredNote = note;
+			return { id: note.id, document: note.llmResponse, metadata: { createdAt: note.createdAt } };
+		},
 	},
 		prompts: {
 			...runtimePrompts,
@@ -412,7 +440,18 @@ const mutationService = new IngestionService({
 		contextDepth: 1,
 	},
 });
-const mutationResult = await mutationService.ingestText({ text: "Apply graph mutations.", source: "test" });
+// Auto mode never applies deletes; they become a HITL proposal.
+const autoDeleteResult = await mutationService.ingestText({ text: "Apply graph mutations.", source: "test" });
+assert(autoDeleteResult.status === "pending_hitl", "Auto mode must send a payload with deletes to HITL.");
+assert(autoDeleteResult.reviewReasons.some((reason) => reason.includes("node delete")) && autoDeleteResult.reviewReasons.some((reason) => reason.includes("relation delete")), "Auto-mode review reasons should name the deletes.");
+assert(mutationStoredNote?.llmResponse.includes("NODE_DELETE|old_screen"), "The forced proposal should keep the delete records.");
+assert(deletedNodes.length === 0 && deletedRelations.length === 0 && mutationUpsertGraph === null, "Auto mode must not touch the graph when deletes are present.");
+
+// Delete mechanics through applyGraphPayload(), the path HITL approval uses.
+const mutationResult = await mutationService.applyGraphPayload(
+	normalizeGraphPayload(structuredClone(mutationExtraction), { schema: serviceGraphSchema }),
+	{ source: "test", debugLogger: { log() {} } },
+);
 assert(deletedRelations.length === 1, "Ingestion service should delete extracted relation deletes.");
 assert(deletedNodes[0] === "node:old_screen", "Ingestion service should delete extracted node deletes.");
 assert(deletedVectorNodes[0] === "node:old_screen", "Ingestion service should delete node vectors.");
@@ -420,6 +459,78 @@ assert(deletedVectorRelations.includes("rel:detached_from_node"), "Ingestion ser
 assert(mutationUpsertGraph?.nodes?.[0]?.id === "node:new_screen", "Ingestion service should upsert mutation node records.");
 assert(mutationIndexedGraph?.relations?.length === 1, "Ingestion service should index mutation relation upserts.");
 assert(mutationResult.deletedNodeIds[0] === "node:old_screen", "Ingestion result should expose deleted node IDs.");
+
+// Auto mode applies only clean creates and updates; review signals force HITL.
+function autoModeService(extraction, existingNodeIds = []) {
+	const calls = { stored: null, applied: null };
+	const autoService = new IngestionService({
+		llmProvider: {
+			async extractGraph() {
+				return structuredClone(extraction);
+			},
+		},
+		graphStore: {
+			async getExistingNodeIds(ids) {
+				return ids.filter((id) => existingNodeIds.includes(id));
+			},
+			async expandFromNodes() {
+				return { nodes: [], relations: [] };
+			},
+			async upsertGraph(graph) {
+				calls.applied = graph;
+				return graph;
+			},
+		},
+		vectorStore: {
+			async queryNodes() {
+				return [];
+			},
+			async upsertGraphIndex() {},
+			async upsertHitlNote(note) {
+				calls.stored = note;
+				return { id: note.id, document: note.llmResponse, metadata: { createdAt: note.createdAt } };
+			},
+		},
+		prompts: {
+			...runtimePrompts,
+			graphSchema: serviceGraphSchemaConfig,
+			extractionSystemTemplate: "Schema:\n{{GRAPH_SCHEMA}}\nContext:\n{{EXISTING_GRAPH_CONTEXT}}\nInput:\n{{USER_INPUT}}",
+		},
+		ingestion: { mode: "auto", contextEnabled: true, contextTopK: 1, contextDepth: 1 },
+	});
+	return { autoService, calls };
+}
+
+const ambiguousAuto = autoModeService({
+	nodes: [{ name: "rajat", label: "Rajat", type: "person", description: "", metadata: "AMBIGUITY:multiple users match" }],
+	relations: [],
+});
+const ambiguousAutoResult = await ambiguousAuto.autoService.ingestText({ text: "Rajat joined.", source: "test" });
+assert(ambiguousAutoResult.status === "pending_hitl" && ambiguousAuto.calls.applied === null, "Auto mode must send an ambiguity to HITL.");
+assert(ambiguousAutoResult.reviewReasons.some((reason) => reason.includes("ambiguity")), "Review reasons should name the ambiguity.");
+
+const contradictionAuto = autoModeService({
+	nodes: [],
+	relations: [{ sourceName: "xyz_screen", targetName: "pan_api", relation: "uses", operation: "update", metadata: "CONTRADICTION:existing graph differs" }],
+}, ["node:xyz_screen", "node:pan_api"]);
+const contradictionAutoResult = await contradictionAuto.autoService.ingestText({ text: "XYZ does not use PAN.", source: "test" });
+assert(contradictionAutoResult.status === "pending_hitl" && contradictionAuto.calls.applied === null, "Auto mode must send a contradiction to HITL.");
+assert(contradictionAutoResult.reviewReasons.some((reason) => reason.includes("contradiction")), "Review reasons should name the contradiction.");
+
+const convertedCreateAuto = autoModeService({
+	nodes: [{ name: "xyz_screen", label: "XYZ Screen", type: "screen", description: "Guessed description.", operation: "create" }],
+	relations: [],
+}, ["node:xyz_screen"]);
+const convertedCreateAutoResult = await convertedCreateAuto.autoService.ingestText({ text: "XYZ screen exists.", source: "test" });
+assert(convertedCreateAutoResult.status === "pending_hitl" && convertedCreateAuto.calls.applied === null, "Auto mode must not apply a create for a node that already exists.");
+
+const cleanUpdateAuto = autoModeService({
+	nodes: [{ name: "xyz_screen", label: "XYZ Screen", type: "screen", description: "New detail.", operation: "update" }],
+	relations: [{ sourceName: "xyz_screen", targetName: "pan_api", relation: "uses", operation: "create" }],
+}, ["node:xyz_screen", "node:pan_api"]);
+const cleanUpdateAutoResult = await cleanUpdateAuto.autoService.ingestText({ text: "XYZ screen uses PAN.", source: "test" });
+assert(cleanUpdateAutoResult.status !== "pending_hitl" && cleanUpdateAuto.calls.stored === null, "Auto mode should apply clean creates and updates.");
+assert(cleanUpdateAuto.calls.applied?.nodes?.[0]?.id === "node:xyz_screen" && cleanUpdateAuto.calls.applied?.relations?.length === 1, "Clean auto-mode updates should reach the graph.");
 
 let hitlStoredNote = null;
 let hitlGraphTouched = false;
@@ -437,6 +548,9 @@ const hitlService = new IngestionService({
 		},
 	},
 	graphStore: {
+		async getExistingNodeIds() {
+			return [];
+		},
 		async expandFromNodes() {
 			return { nodes: [], relations: [] };
 		},
@@ -487,6 +601,9 @@ const forcedHitlService = new IngestionService({
 		},
 	},
 	graphStore: {
+		async getExistingNodeIds() {
+			return [];
+		},
 		async expandFromNodes() {
 			return { nodes: [], relations: [] };
 		},
@@ -530,15 +647,15 @@ const duplicatePendingHitlService = new IngestionService({
 			return {
 				rawResponse: [
 					"<start#$#$>",
-					"NODE_CREATE|sales_journey_flow|Sales Journey Flow|concept|Duplicate create emitted by model.|",
-					"NODE_CREATE|apple_stage|Apple Stage|concept||",
+					"NODE_CREATE|sales_journey_flow|Sales Journey Flow|screen|Duplicate create emitted by model.|",
+					"NODE_CREATE|apple_stage|Apple Stage|screen||",
 					"RELATION_CREATE|sales_journey_flow|apple_stage|contains|||",
 					"</end#$#$>",
 				].join("\n"),
 				graph: {
 					nodes: [
-						{ name: "sales_journey_flow", label: "Sales Journey Flow", type: "concept", description: "Duplicate create emitted by model.", operation: "create" },
-						{ name: "apple_stage", label: "Apple Stage", type: "concept", description: "", operation: "create" },
+						{ name: "sales_journey_flow", label: "Sales Journey Flow", type: "screen", description: "Duplicate create emitted by model.", operation: "create" },
+						{ name: "apple_stage", label: "Apple Stage", type: "screen", description: "", operation: "create" },
 					],
 					relations: [
 						{ sourceName: "sales_journey_flow", targetName: "apple_stage", relation: "contains", operation: "create" },
@@ -549,6 +666,9 @@ const duplicatePendingHitlService = new IngestionService({
 		},
 	},
 	graphStore: {
+		async getExistingNodeIds() {
+			return [];
+		},
 		async expandFromNodes() {
 			return { nodes: [], relations: [] };
 		},
@@ -566,7 +686,7 @@ const duplicatePendingHitlService = new IngestionService({
 				userName: "Frontend User",
 				llmResponse: [
 					"<start#$#$>",
-					"NODE_CREATE|sales_journey_flow|Sales Journey Flow|concept||",
+					"NODE_CREATE|sales_journey_flow|Sales Journey Flow|screen||",
 					"</end#$#$>",
 				].join("\n"),
 			}];
@@ -593,6 +713,57 @@ assert(duplicatePendingHitlStoredNote?.llmResponse.includes("NODE_UPDATE|sales_j
 assert(!duplicatePendingHitlStoredNote?.llmResponse.includes("NODE_CREATE|sales_journey_flow"), "Pending duplicate node creates should not remain in stored HITL response.");
 assert(duplicatePendingHitlStoredNote?.llmResponse.includes("NODE_CREATE|apple_stage"), "New nodes should remain creates after pending duplicate reconciliation.");
 
+// Graph-aware checks: existing endpoints are references, missing ones are violations.
+const resolverGraphStore = {
+	async getExistingNodeIds(ids) {
+		return ids.filter((id) => id === "node:ekyc_screen" || id === "node:pan_api");
+	},
+};
+const referenceResolution = await resolveGraphPayload(relationOnlyPayload, resolverGraphStore);
+assert(referenceResolution.graphPayload.schemaViolations.length === 0, "Existing relation endpoints should be accepted as references.");
+assert(referenceResolution.graphPayload.nodes.length === 0, "Existing relation endpoints must never be written.");
+assert(referenceResolution.changed === false, "A valid relation-only payload should not be rewritten.");
+
+const typoPayload = normalizeGraphPayload(extractCustomGraph("RELATION_CREATE|ekyc_scren|pan_api|uses|||"), { schema });
+const typoResolution = await resolveGraphPayload(typoPayload, resolverGraphStore);
+assert(typoResolution.graphPayload.schemaViolations.some((violation) => violation.kind === "relationEndpoint" && violation.message.includes("\"ekyc_scren\" does not exist")), "A relation to a missing node must be a violation.");
+assert(typoResolution.graphPayload.nodes.length === 0, "A relation to a missing node must not create it.");
+assert(countReviewSignals(typoResolution.graphPayload).ambiguityCount === 1, "A missing endpoint should be flagged on the relation for review.");
+
+const deletedEndpointResolution = await resolveGraphPayload(normalizeGraphPayload(extractCustomGraph([
+	"NODE_DELETE|pan_api|",
+	"RELATION_CREATE|ekyc_screen|pan_api|uses|||",
+].join("\n")), { schema }), resolverGraphStore);
+assert(deletedEndpointResolution.graphPayload.schemaViolations.some((violation) => violation.message.includes("is deleted by this proposal")), "A relation to a node deleted by the same payload must be a violation.");
+
+const existingCreateResolution = await resolveGraphPayload(normalizeGraphPayload(extractCustomGraph("NODE_CREATE|ekyc_screen|EKYC Screen|screen|New detail.|"), { schema }), resolverGraphStore);
+assert(existingCreateResolution.graphPayload.nodes[0].operation === "update", "NODE_CREATE for an existing node should be applied as an update.");
+assert(existingCreateResolution.changed === true, "A converted create should mark the payload as changed.");
+assert(countReviewSignals(existingCreateResolution.graphPayload).ambiguityCount === 1, "A converted create should carry an ambiguity review signal.");
+assert(formatGraphRecords(existingCreateResolution.graphPayload).includes("NODE_UPDATE|ekyc_screen|EKYC Screen|screen|New detail.|AMBIGUITY:"), "The stored proposal should show the converted update and its signal.");
+
+let rejectedApplyTouchedGraph = false;
+const applyGuardService = new IngestionService({
+	llmProvider: null,
+	graphStore: {
+		...resolverGraphStore,
+		async upsertGraph() {
+			rejectedApplyTouchedGraph = true;
+			return { nodes: [], relations: [] };
+		},
+	},
+	vectorStore: {},
+	prompts: runtimePrompts,
+});
+let applyRejected = false;
+try {
+	await applyGuardService.applyGraphPayload(typoPayload, { source: "test", debugLogger: { log() {} } });
+} catch (error) {
+	applyRejected = error.status === 400 && error.message.includes("does not exist");
+}
+assert(applyRejected, "applyGraphPayload must reject a relation to a missing node.");
+assert(rejectedApplyTouchedGraph === false, "A rejected apply must not touch the graph.");
+
 const failingLogDir = await fs.mkdtemp(path.join(os.tmpdir(), "kg-ingest-debug-"));
 const failingService = new IngestionService({
 	llmProvider: {
@@ -604,6 +775,9 @@ const failingService = new IngestionService({
 		},
 	},
 	graphStore: {
+		async getExistingNodeIds() {
+			return [];
+		},
 		async expandFromNodes() {
 			return { nodes: [], relations: [] };
 		},

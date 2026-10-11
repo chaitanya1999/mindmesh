@@ -16,11 +16,14 @@ IngestionService.ingestText()                      src/ingestion/ingestionServic
   -> extractGraphWithRawResponse()                 src/llm/*Provider.js
   -> reconcileExtractionWithPendingHitl()
   -> normalizeGraphPayload()                       src/ingestion/graphPayload.js
+  -> resolveGraphPayload()                         src/ingestion/graphResolution.js (Neo4jGraphStore.getExistingNodeIds)
   -> storeHitlProposal()                           ChromaVectorStore.upsertHitlNote()
-     or applyGraphPayload()                        Neo4jGraphStore.upsertGraph() + ChromaVectorStore.upsertGraphIndex()
+     or applyGraphPayload()                        resolveGraphPayload() again, then Neo4jGraphStore.upsertGraph() + ChromaVectorStore.upsertGraphIndex()
 ```
 
-Also: `src/ingestion/reviewSignals.js` (signal counts), `src/rag/graphContext.js::formatExtractionGraphContext()`, `prompts/extraction-system-custom.md`.
+Also: `src/ingestion/reviewSignals.js` (signal counts; `reviewReasons()` is the auto-mode gate used by `ingestText()` and MCP `apply-ingestion`), `formatGraphRecords()` in `graphPayload.js` (payload -> stored proposal text), `src/rag/graphContext.js::formatExtractionGraphContext()`, `prompts/extraction-system-custom.md`.
+
+Graph check (`resolveGraphPayload()`) callers: `ingestText()`, `storeHitlRegeneration()`, `applyGraphPayload()`, MCP `apply-ingestion`, `storeManualHitlProposal()` in `src/server/server.js`. Manual relation routes also call `requireExistingEndpoints()` in `server.js`.
 
 ## HITL Review
 

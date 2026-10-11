@@ -35,7 +35,6 @@ function normalizeSchemaDraft(schema) {
 		relationshipTypes: normalizeSchemaEntries(schema?.relationshipTypes),
 	};
 	delete nextSchema.path;
-	delete nextSchema.fallbacks;
 	delete nextSchema.suggestions;
 	return nextSchema;
 }

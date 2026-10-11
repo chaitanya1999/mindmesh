@@ -6,7 +6,7 @@ export function createNodeDraft(node) {
 	return {
 		label: node?.label ?? "",
 		name: node?.name ?? "",
-		type: node?.type ?? "concept",
+		type: node?.type ?? "",
 		description: displayText(node?.description),
 	};
 }
@@ -54,7 +54,7 @@ export function NodeForm({
 				<input
 					value={draft.name}
 					onInput={(event) => updateField("name", event.currentTarget.value)}
-					placeholder="auto_from_label"
+					placeholder={toSnakeCase(draft.label) || "derived_from_label"}
 					readOnly={isNameLocked}
 					title={isNameLocked ? "The name is this node's permanent id. Change the label instead." : undefined}
 				/>
@@ -67,7 +67,7 @@ export function NodeForm({
 						</option>
 					))}
 				</datalist>
-				<input list="node-type-options" value={draft.type} onInput={(event) => updateField("type", event.currentTarget.value)} required />
+				<input list="node-type-options" value={draft.type} onInput={(event) => updateField("type", event.currentTarget.value)} placeholder="Choose a schema type" required />
 			</Field>
 			<Field label="Description">
 				<textarea rows="4" value={draft.description} onInput={(event) => updateField("description", event.currentTarget.value)} />

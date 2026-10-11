@@ -26,7 +26,7 @@ export function formatGraphContext(graph, prompts = {}) {
 }
 
 function relationPhrase(relation) {
-	return String(relation ?? "relates_to").replaceAll("_", " ");
+	return String(relation ?? "").replaceAll("_", " ");
 }
 
 function nodeReference(node, fallbackId) {
@@ -53,7 +53,7 @@ export function formatExtractionGraphContext(graph) {
 	const relations = graph?.relations ?? [];
 	const nodeById = new Map(nodes.map((node) => [node.id, node]));
 	const nodeLines = nodes.map((node) => {
-		const details = [`type: ${node.type || "concept"}`, `name: ${node.name || node.id}`];
+		const details = [node.type ? `type: ${node.type}` : "", `name: ${node.name || node.id}`].filter(Boolean);
 		const description = compact(node.description);
 		return `- ${nodeReference(node, node.id)} (${details.join(", ")}).${description ? ` Detail: ${sentence(description)}` : ""}`;
 	});

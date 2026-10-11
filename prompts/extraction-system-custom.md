@@ -78,7 +78,10 @@ EXTRACTION RULES:
 
 - Use one record per line.
 - Do not split a single record across multiple physical lines; encode line breaks inside fields as \\n.
-- Every RELATION_CREATE or RELATION_UPDATE endpoint must have a corresponding NODE_CREATE or NODE_UPDATE record in the same output.
+- Every RELATION_CREATE or RELATION_UPDATE endpoint must be either a node created in the same output (NODE_CREATE) or an existing node from Existing graph context, referenced by its exact name.
+- A relation never creates a node. If an endpoint is neither an existing node nor created in this output, emit NODE_CREATE for it; a relation to an unknown name is rejected.
+- Do not emit NODE_UPDATE for an existing node just because a relation uses it. Emit NODE_UPDATE only when the new input adds or changes information about that node.
+- A node that appears only in pending HITL context is not in the graph yet; follow the pending HITL instructions for it.
 - RELATION_DELETE endpoints do not need corresponding node records unless those nodes are independently created or updated by the new input.
 - If you emit NODE_DELETE for a node, do not also emit NODE_CREATE or NODE_UPDATE for the same node in the same output.
 - Reuse existing node names exactly.
@@ -95,7 +98,7 @@ EXTRACTION RULES:
 - Create NODE_TYPE_SUGGESTION only if no existing node type fits.
 - If a new relationship type is suggested:
     1. immediately use that exact relation type in all related relationship records
-    2. do not substitute with generic relations such as relates_to
+    2. do not substitute a generic catch-all relation
     3. do not create both a suggestion and an alternate relationship type
 - Create RELATION_TYPE_SUGGESTION only if no existing relation type fits.
 - If a new node type is suggested:
@@ -220,6 +223,19 @@ NODE_CREATE|john_smith|John Smith|person||
 RELATION_CREATE|xyz_screen|john_smith|requested_by|primary request source||
 NODE_TYPE_SUGGESTION|person|A human individual.|The input names a person but no approved person node type fits.
 RELATION_TYPE_SUGGESTION|requested_by|Source exists or changed because of a request from target.|No approved relationship type captures request origin.
+</end#$#$>
+
+
+VALID EXISTING NODE REFERENCE EXAMPLE:
+If Existing graph context contains:
+[node:ekyc_screen] EKYC Screen
+[node:pan_api] PAN API
+and New user input says:
+"EKYC screen calls the PAN API"
+
+Output (both nodes already exist and the input adds nothing about them, so no node records):
+<start#$#$>
+RELATION_CREATE|ekyc_screen|pan_api|invokes|||
 </end#$#$>
 
 

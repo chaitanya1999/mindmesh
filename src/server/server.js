@@ -9,7 +9,8 @@ import WordExtractor from "word-extractor";
 import { getConfig, describeRuntime } from "../config.js";
 import { createGraphStore } from "../graph/providerFactory.js";
 import { IngestionService } from "../ingestion/ingestionService.js";
-import { encodePipelineField, normalizeGraphPayload, parseGraphExtraction, toSnakeCase } from "../ingestion/graphPayload.js";
+import { encodePipelineField, formatGraphRecords, normalizeGraphPayload, parseGraphExtraction, toSnakeCase } from "../ingestion/graphPayload.js";
+import { resolveGraphPayload } from "../ingestion/graphResolution.js";
 import { countReviewSignals } from "../ingestion/reviewSignals.js";
 import { KgJobsService } from "../jobs/kgJobsService.js";
 import { createLlmProvider } from "../llm/providerFactory.js";
@@ -113,16 +114,22 @@ function normalizeManualNode(body, existingId = "") {
 		id: existingId || body?.id || `node:${name}`,
 		label: String(body?.label || labelFromName(name)).trim(),
 		name,
-		type: toSnakeCase(body?.type || "concept") || "concept",
+		type: requireString(toSnakeCase(body?.type), "Node type"),
 		description: String(body?.description ?? "").trim(),
 	};
 }
 
+// Accepts a node id ("node:ekyc_screen") or a bare name typed into the relation form.
+function manualNodeId(value, fieldName) {
+	const text = requireString(value, fieldName);
+	return text.startsWith("node:") ? text : `node:${toSnakeCase(text)}`;
+}
+
 function normalizeManualRelation(body, existingId = "") {
-	const sourceId = requireString(body?.sourceId, "sourceId");
-	const targetId = requireString(body?.targetId, "targetId");
-	const relation = toSnakeCase(body?.relation || "relates_to") || "relates_to";
-	
+	const sourceId = manualNodeId(body?.sourceId, "sourceId");
+	const targetId = manualNodeId(body?.targetId, "targetId");
+	const relation = requireString(toSnakeCase(body?.relation), "Relation type");
+
 	return {
 		id: existingId || body?.id || `rel:${stableHash(`${sourceId}:${relation}:${targetId}`)}`,
 		sourceId,
@@ -273,7 +280,7 @@ function nodePipelineRecord(recordType, node) {
 		recordType,
 		graphNameFromId(node.name || node.id),
 		node.label || labelFromName(graphNameFromId(node.name || node.id)),
-		node.type || "concept",
+		node.type || "",
 		node.description || "",
 		node.metadata || "",
 	].map(safePipeField).join("|");
@@ -292,7 +299,7 @@ function relationPipelineRecord(recordType, relation) {
 		recordType,
 		graphNameFromId(relation.sourceId),
 		graphNameFromId(relation.targetId),
-		relation.relation || "relates_to",
+		relation.relation || "",
 		relation.information || "",
 		relation.description || "",
 		relation.metadata || "",
@@ -304,7 +311,7 @@ function relationDeletePipelineRecord(relation, metadata = relation?.metadata ??
 		"RELATION_DELETE",
 		graphNameFromId(relation.sourceId),
 		graphNameFromId(relation.targetId),
-		relation.relation || "relates_to",
+		relation.relation || "",
 		metadata,
 	].map(safePipeField).join("|");
 }
@@ -344,9 +351,11 @@ function schemaViolationError(graphPayload) {
 	return error;
 }
 
-async function storeManualHitlProposal({ llmResponse, userInput, userName }) {
+async function storeManualHitlProposal({ llmResponse: requestedResponse, userInput, userName }) {
 	requireHitlNotesSupport();
-	const { graphSchema, graphPayload } = parseHitlResponse(llmResponse);
+	const { graphPayload: parsedPayload } = parseHitlResponse(requestedResponse);
+	const { graphPayload, changed } = await resolveGraphPayload(parsedPayload, graphStore);
+	const llmResponse = changed ? formatGraphRecords(graphPayload) : requestedResponse;
 	const reviewSignals = countReviewSignals(graphPayload);
 	const hitlNote = await vectorStore.upsertHitlNote({
 		id: createHitlNoteId(),
@@ -445,6 +454,18 @@ function requireDirectGraphCrudSupport() {
 	) {
 		const error = new Error("The configured graph store does not support direct HITL CRUD.");
 		error.status = 501;
+		throw error;
+	}
+}
+
+// A relation implies both nodes exist; a typo in the relation form must not create a node.
+async function requireExistingEndpoints(relation) {
+	const endpointIds = [...new Set([relation.sourceId, relation.targetId])];
+	const existingIds = new Set(await graphStore.getExistingNodeIds(endpointIds));
+	const missingIds = endpointIds.filter((id) => !existingIds.has(id));
+	if (missingIds.length > 0) {
+		const error = new Error(`Relation endpoints must be existing nodes. Not found: ${missingIds.join(", ")}.`);
+		error.status = 400;
 		throw error;
 	}
 }
@@ -576,7 +597,7 @@ function ensurePendingEndpointNode(nodeMap, nodeId, note) {
 		id: nodeId,
 		name,
 		label: labelFromName(name),
-		type: "concept",
+		type: "",
 		description: "",
 		...pendingMarker(note, "placeholder"),
 	});
@@ -599,7 +620,7 @@ function mergeHitlPayloadIntoGraph(baseGraph, note, graphPayload) {
 			id: nodeDelete.id,
 			name: nodeDelete.name,
 			label: labelFromName(nodeDelete.name),
-			type: "concept",
+			type: "",
 			description: "",
 			metadata: nodeDelete.metadata || "",
 		}, note, "delete");
@@ -808,6 +829,7 @@ app.delete("/api/nodes/:id", asyncRoute(async (req, res) => {
 app.post("/api/relations", asyncRoute(async (req, res) => {
 	const relation = normalizeManualRelation(req.body);
 	const userName = requireUserName(req.body);
+	await requireExistingEndpoints(relation);
 	const result = await storeManualHitlProposal({
 		userName,
 		userInput: `${userName} requested relation creation for ${relation.relation}.`,
@@ -820,6 +842,7 @@ app.post("/api/relations", asyncRoute(async (req, res) => {
 app.put("/api/relations/:id", asyncRoute(async (req, res) => {
 	const relation = normalizeManualRelation(req.body, req.params.id);
 	const userName = requireUserName(req.body);
+	await requireExistingEndpoints(relation);
 	const existingRelation = typeof graphStore.getRelation === "function"
 	? await graphStore.getRelation(req.params.id)
 	: null;
@@ -1064,6 +1087,7 @@ app.post("/api/hitl/relations", asyncRoute(async (req, res) => {
 	requireDirectGraphCrudSupport();
 	const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
 	const relation = normalizeManualRelation(req.body);
+	await requireExistingEndpoints(relation);
 	const llmResponse = pipelinePayload([relationPipelineRecord("RELATION_CREATE", relation)]);
 	const pendingProposal = await pendingProposalForSchemaViolation({
 		reviewedBy,
@@ -1092,6 +1116,7 @@ app.put("/api/hitl/relations/:id", asyncRoute(async (req, res) => {
 	const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
 	// The id is recomputed from source, relation and target, so a changed relation or endpoint gets its canonical id.
 	const relation = normalizeManualRelation(req.body);
+	await requireExistingEndpoints(relation);
 	const llmResponse = pipelinePayload([relationPipelineRecord("RELATION_UPDATE", relation)]);
 	const pendingProposal = await pendingProposalForSchemaViolation({
 		reviewedBy,
@@ -1161,12 +1186,13 @@ app.post("/api/hitl/notes/:id/approve", asyncRoute(async (req, res) => {
 		throw schemaViolationError(graphPayload);
 	}
 	
-	// Step 6: All validation passed — persist both schema AND graph mutations
-	persistHitlSchemaSuggestions(baseSchema, extractedGraph);
+	// Step 6: Apply the graph mutations (this also checks relation endpoints against the graph), then
+	// persist the approved schema types, so a failed apply leaves the schema unchanged.
 	const storedGraph = await ingestionService.applyGraphPayload(graphPayload, {
 		source: `hitl:${note.id}`,
 		debugLogger: { log: () => {} },
 	});
+	persistHitlSchemaSuggestions(baseSchema, extractedGraph);
 	await vectorStore.deleteHitlNotes([note.id]);
 	const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
 	
@@ -1225,6 +1251,7 @@ app.post("/api/ingest", upload.fields([
 		schemaSuggestions: storedGraph.schemaSuggestions,
 		schemaViolations: storedGraph.schemaViolations ?? [],
 		schemaWarnings: storedGraph.schemaWarnings,
+		reviewReasons: storedGraph.reviewReasons ?? [],
 		graph: withGraphSchema(graph),
 	});
 }));

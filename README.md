@@ -2,7 +2,7 @@
 
 Prototype personal knowledge management system that extracts graph facts from text/documents, stores approved facts in Neo4j, indexes approved graph records and pending HITL proposals in ChromaDB, and answers questions with a hybrid vector + graph RAG flow.
 
-Its working rule is "LLMs suggest, humans approve, schema enforces": extracted facts become HITL proposals that a reviewer approves, edits, or regenerates with notes before they reach the graph (or are applied directly in `auto` mode when schema-valid). The same pipeline is available three ways: the web UI, the CLIs, and an MCP server that lets any MCP-capable coding agent do the LLM reasoning without MindMesh needing its own LLM key.
+Its working rule is "LLMs suggest, humans approve, schema enforces": extracted facts become HITL proposals that a reviewer approves, edits, or regenerates with notes before they reach the graph (in `auto` mode, clean creates and updates are applied directly; anything with a schema violation, an ambiguity, a contradiction, or a delete still goes to review). The same pipeline is available three ways: the web UI, the CLIs, and an MCP server that lets any MCP-capable coding agent do the LLM reasoning without MindMesh needing its own LLM key.
 
 This README is written for humans and AI agents that need to understand or extend the codebase quickly.
 
@@ -79,7 +79,7 @@ MCP agent (no MindMesh LLM)
 - `src/ingestion/ingestionService.js`: orchestrates extraction, normalization, graph persistence, and vector indexing.
 - `src/ingestion/graphPayload.js`: parses and normalizes LLM graph output into stable node and relationship payloads.
 - `src/ingestion/reviewSignals.js`: detects ambiguity and contradiction review signals in proposed graph records.
-- `schema/graphSchema.json`: schema registry for allowed node types, relationship types, required properties, fallbacks, and LLM-facing descriptions.
+- `schema/graphSchema.json`: schema registry for allowed node types, relationship types, required properties, and LLM-facing descriptions.
 - `src/schema/graphSchema.js`: loads the schema registry and formats the schema catalog injected into extraction prompts.
 - `src/graph/neo4jGraphStore.js`: Neo4j persistence, search, graph expansion, direct CRUD, and smoke test implementation.
 - `src/vector/chromaVectorStore.js`: Chroma node/relation/HITL collections, vector query, and smoke test implementation.
@@ -205,7 +205,15 @@ RELATION_TYPE_SUGGESTION|relation_name|description|reason
 
 Unknown node or relationship types are preserved in the proposed payload, recorded as schema violations, and forced into HITL review instead of being applied to the graph. This happens even when ingestion mode is `auto`; the reviewer must update the schema or edit the proposal to approved types before approval can apply mutations.
 
-The default ingestion mode in `config.example.json` is `auto`. Set `ingestion.mode` to `hitl` to store normal ingestions as pending Chroma HITL proposals instead of immediately mutating Neo4j, or keep `auto` to apply schema-valid ingestions directly.
+The default ingestion mode in `config.example.json` is `auto`. Set `ingestion.mode` to `hitl` to store every ingestion as a pending Chroma HITL proposal instead of mutating Neo4j.
+
+In `auto` mode only clean creates and updates are applied directly. An extraction becomes a HITL proposal instead when `reviewReasons()` (`src/ingestion/reviewSignals.js`) finds any of:
+
+- a schema violation (including a `relationEndpoint` violation from the graph check);
+- an `AMBIGUITY:` or `CONTRADICTION:` signal in any record's `metadata`, including the `AMBIGUITY:` the graph check adds when `NODE_CREATE` targets an existing node;
+- a `NODE_DELETE` or `RELATION_DELETE` record (a relation re-target is a delete plus a create, so it is reviewed too).
+
+Web/CLI ingest and MCP `apply-ingestion` use the same rule and return the reasons as `reviewReasons`. Severity levels per signal (auto-applying only low-severity ones) are planned, not implemented.
 
 ### Property Descriptors (Schema-Driven Field Guidance)
 
@@ -308,7 +316,7 @@ npm run kg:mcp
 
 - `ask` — `{ query, includeUnverifiedKnowledge? }`. Returns verified graph context, the answer system prompt, and instructions so the calling agent can answer the user's question. No LLM is invoked.
 - `ingest-context` — `{ text }`. Returns retrieval-augmented extraction context (existing graph + pending HITL), the fully rendered extraction system prompt, schema catalog, field guidance, and instructions so the calling agent can extract graph records.
-- `apply-ingestion` — `{ graphRecords, text, userName?, source? }`. Parses, normalizes, and applies the pipe-delimited graph records an agent extracted. Applies mutations directly when ingestion mode is `auto` and no schema violations exist; otherwise stores a pending HITL proposal and returns its `hitlNoteId` and short `hitlNoteRef` (e.g. `#d964db`).
+- `apply-ingestion` — `{ graphRecords, text, userName?, source? }`. Parses, normalizes, and applies the pipe-delimited graph records an agent extracted. In `auto` mode it applies clean creates and updates directly; otherwise (`hitl` mode, or any of the review reasons listed under Graph Schema) it stores a pending HITL proposal and returns its `hitlNoteId`, short `hitlNoteRef` (e.g. `#d964db`), and `reviewReasons`.
 - `regenerate-context` — `{ proposal, notes? }`. `proposal` is a HITL note id or short ref. Returns the extraction prompt for regenerating that proposal: the normal ingestion prompt plus a `REVIEWER REVISION` section with the reviewer notes and the previous proposal as baseline. `notes` from chat take precedence over notes saved in the HITL UI; one of them is required. The proposal itself is excluded from pending HITL context.
 - `apply-regeneration` — `{ proposal, graphRecords, notes?, regeneratedBy? }`. Overwrites the pending proposal with the regenerated records, saves the notes, and flags it `regenerated` with origin `agent`. A block with no parseable records is rejected and the proposal is left unchanged.
 
@@ -593,6 +601,8 @@ RELATION|ekyc_screen|pan_api|uses|during identity verification|Triggered during 
 </end#$#$>
 ```
 
+A relation endpoint is either a node created in the same output or an existing node referenced by its exact name. The prompt tells the model not to emit `NODE_UPDATE` for an existing endpoint unless the input adds or changes information about it, so a relation on its own never rewrites an existing node's type or label. Nodes that exist only in pending HITL context still get a `NODE_UPDATE` record, because they are not in the graph yet.
+
 The trailing `metadata` field only carries HITL review signals (`AMBIGUITY:<reason>` or `CONTRADICTION:<reason>`). It exists only inside proposals, where it drives review-signal counts, filters and badges, and is never persisted to Neo4j or Chroma when a proposal is applied.
 
 For relationships, `sourceName`, `relation`, and `targetName` already express the core fact. `information` should contain only extra qualifiers such as conditions, timing, scope, state, or reason; leave it empty when it would merely repeat the relation. `description` is reserved for longer source-backed explanation. Node descriptions should add useful context or disambiguation, not restate the label/type.
@@ -604,14 +614,22 @@ For relationships, `sourceName`, `relation`, and `targetName` already express th
 - Converts node names, node types, and relation names to lowercase snake case.
 - Enforces the loaded graph schema when one is supplied.
 - Preserves unknown node or relationship types as schema violations so HITL can review the exact model output, and records them as implicit type suggestions in the payload (not in the schema file).
+- Treats a blank node type or relationship type as a schema violation. There are no fallback types.
 - Blocks graph application while schema violations are present.
 - Creates node IDs as `node:<name>` when no ID is provided.
-- Creates missing endpoint nodes for relations.
+- Never creates nodes for relation endpoints. An endpoint without a node record in the payload is a reference to an existing node (see the graph check below).
 - Creates relationship IDs as `rel:<12-char-sha1>` when no ID is provided.
 - Defaults missing descriptions to empty strings.
 - Preserves empty relation `information` instead of generating redundant relation text.
 - Carries node/relation create, update, and delete operations into HITL or graph application.
 - Returns `schemaSuggestions`, `schemaWarnings`, and `schemaViolations` for CLI/API visibility and HITL schema approval.
+
+`resolveGraphPayload()` then checks the normalized payload against the graph. It runs when a proposal is stored (ingest, MCP `apply-ingestion`, regeneration, manual web edits) and again inside `applyGraphPayload()`, so every graph apply (auto mode, MCP auto mode, HITL approval) passes it against the current graph:
+
+- Every relation endpoint must have a node record in the same payload or already exist in the graph. Otherwise the relation is a `relationEndpoint` violation: auto mode stores a proposal instead, and approval fails until the reviewer adds the node or fixes the name. An endpoint deleted by the same payload is also a violation.
+- An endpoint that already exists and has no node record is only referenced; its type, label, and description are never written.
+- `NODE_CREATE` for a node that already exists is applied as `NODE_UPDATE` and gets an `AMBIGUITY:` review signal asking the reviewer to confirm it is the same entity.
+- When the check changes a proposal (a converted create, or a flagged endpoint), the stored proposal text is rewritten from the checked payload so the HITL card shows the change.
 
 ## Neo4j Schema
 
@@ -656,7 +674,7 @@ MindMesh uses its own `id` property, never Neo4j's internal element id. The same
 
 `upsertGraph()` uses `MERGE` by node `id` and relationship `id`. Re-ingesting the same normalized fact updates properties and preserves `createdAt`. In this path an empty `description` (and empty relation `information`) keeps the stored value instead of clearing it, so passing mentions do not wipe existing text. `label`, `name`, and `type` are always overwritten. Direct HITL edits (`upsertNode()`, `upsertRelation()`) set fields exactly as submitted, so clearing a description is done through the edit form.
 
-`upsertGraph()` returns the nodes and relationships as Neo4j stored them, and the vector index is built from that result. Ingestion and `kg:reindex-vectors` therefore produce identical vector documents. Relationships whose endpoint node does not exist are not stored and not indexed.
+`upsertGraph()` returns the nodes and relationships as Neo4j stored them, and the vector index is built from that result. Ingestion and `kg:reindex-vectors` therefore produce identical vector documents. Endpoints are checked before apply; if one disappears in the meantime, `upsertGraph()` fails with status 409 and rolls back the whole transaction instead of skipping the relationship.
 
 Graph deletes are supported by normalized `nodeDeletes` and `relationDeletes`. Direct node/relation CRUD helpers are used by the web and HITL review flows and keep vector documents synchronized through the server layer.
 
@@ -794,7 +812,7 @@ Layout and behavior:
 - The graph panel includes instant client-side search over the loaded preview and full Neo4j search on submit. Search results focus a loaded node or fetch its neighborhood.
 - The main workspace side panel has **Ask** and **Ingest** tabs.
 - Clicking a node or relation opens a details modal to edit or delete it. The Name field is read-only for nodes that already exist in the graph, because the name is part of the node id; change the label instead.
-- Graph action buttons open modals to create nodes and relationships manually.
+- Graph action buttons open modals to create nodes and relationships manually. Node and relation forms start with an empty type, which must be filled with a schema type; the Name placeholder shows the name derived from the label, which becomes the permanent id if Name is left empty.
 - On `/`, manual node and relationship mutations create HITL proposals. On `/hitl`, reviewer mutations apply directly when schema-valid, or update the open proposal draft when one is selected.
 - The HITL workspace previews pending proposals over the approved graph, allows reviewer edits, and applies approved graph/schema mutations.
   - Submission cards show per-operation counts, e.g. `12N (8C 3U 1D) 5R (5C) 2NT 1RT` (N nodes, R relations, NT/RT node/relation type suggestions; C/U/D create/update/delete, zero counts omitted). They are parsed client-side with the same parser as the detail view. Cards also show the short `#ref` and Regenerated/Notes tags.
@@ -813,10 +831,10 @@ API endpoints:
 - `GET /api/nodes/search?q=pan&limit=12`: searches all Neo4j nodes by id, label, name, type, or description.
 - `GET /api/nodes/:id/neighborhood?depth=1`: returns a focused graph around a node.
 - `GET /api/nodes/:id/relations`: returns relationships attached to a node.
-- `POST /api/nodes`: creates a pending HITL node-create proposal.
+- `POST /api/nodes`: creates a pending HITL node-create proposal. Node routes (here and under `/api/hitl/nodes`) require a type. A create for a node that already exists is stored as an update with an `AMBIGUITY:` signal.
 - `PUT /api/nodes/:id`: creates a pending HITL node-update proposal.
 - `DELETE /api/nodes/:id`: creates a pending HITL node-delete proposal.
-- `POST /api/relations`: creates a pending HITL relation-create proposal.
+- `POST /api/relations`: creates a pending HITL relation-create proposal. Relation create/update routes (here and under `/api/hitl/relations`) require a relation type and return 400 unless both endpoints already exist; endpoints accept a node id or a bare node name.
 - `PUT /api/relations/:id`: creates a pending HITL relation-update proposal.
 - `DELETE /api/relations/:id`: creates a pending HITL relation-delete proposal.
 - `POST /api/ask`: accepts `{ "text": "question", "sessionId": "...", "memoryMessages": [], "includeUnverifiedKnowledge": false }` and returns `{ answer, entryNodes, graph, depth, sessionId }`.
@@ -834,7 +852,7 @@ API endpoints:
 - `POST /api/hitl/relations`, `PUT /api/hitl/relations/:id`, `DELETE /api/hitl/relations/:id`: direct reviewer relation mutations, or pending proposals when schema validation fails.
 - `PUT /api/hitl/notes/:id/reviewer-notes`: saves reviewer notes on a pending proposal.
 - `POST /api/hitl/notes/:id/regenerate`: accepts `{ reviewerNotes, llmResponse, reviewedBy }`, re-runs extraction on the original input with the notes and the current draft as baseline, and overwrites the proposal. Fails without changing the note if the LLM output has no records.
-- `POST /api/hitl/notes/:id/approve`: validates and applies an edited HITL proposal, then removes the pending note.
+- `POST /api/hitl/notes/:id/approve`: validates and applies an edited HITL proposal, merges its approved type suggestions into the schema only after the graph apply succeeds, then removes the pending note.
 - `DELETE /api/hitl/notes/:id`: rejects and deletes a HITL proposal.
 - Errors return `{ error: "message" }`.
 

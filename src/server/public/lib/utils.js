@@ -14,7 +14,7 @@ export function toSnakeCase(value) {
 }
 
 export function relationLabel(relation) {
-	return String(relation ?? "relates_to").replaceAll("_", " ");
+	return String(relation ?? "").replaceAll("_", " ");
 }
 
 export function decodePipelineField(value) {

@@ -70,7 +70,7 @@ export function toSnakeCase(value) {
 }
 
 export function relationLabel(relation) {
-	return String(relation ?? "relates_to").replaceAll("_", " ");
+	return String(relation ?? "").replaceAll("_", " ");
 }
 
 export function graphNameFromId(id) {
@@ -195,7 +195,7 @@ function parseNodeRecord(parts, line, index, errors) {
 		name,
 		id: nodeIdFromName(name),
 		label: parts[2] || displayNameFromIdentifier(name),
-		type: toSnakeCase(parts[3] || "concept") || "concept",
+		type: toSnakeCase(parts[3]),
 		description: parts[4] || "",
 		metadata: parts[5] || "",
 		line,
@@ -232,7 +232,7 @@ function parseRelationRecord(parts, line, index, errors) {
 	const recordType = parts[0].toUpperCase();
 	const sourceName = toSnakeCase(parts[1]);
 	const targetName = toSnakeCase(parts[2]);
-	const relation = toSnakeCase(parts[3] || "relates_to") || "relates_to";
+	const relation = toSnakeCase(parts[3]);
 	if (!sourceName || !targetName) {
 		errors.push(`Line ${index + 1}: ${recordType} requires source and target node names.`);
 	}
@@ -262,7 +262,7 @@ function parseRelationDeleteRecord(parts, line, index, errors) {
 	const recordType = parts[0].toUpperCase();
 	const sourceName = toSnakeCase(parts[1]);
 	const targetName = toSnakeCase(parts[2]);
-	const relation = toSnakeCase(parts[3] || "relates_to") || "relates_to";
+	const relation = toSnakeCase(parts[3]);
 	if (!sourceName || !targetName) {
 		errors.push(`Line ${index + 1}: RELATION_DELETE requires source and target node names.`);
 	}

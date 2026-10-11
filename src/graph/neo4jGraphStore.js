@@ -155,6 +155,12 @@ export class Neo4jGraphStore {
 							now,
 						},
 					);
+					// Endpoints are checked before apply; a missing one here means the graph changed meanwhile.
+					if (relationResult.records.length === 0) {
+						const error = new Error(`Relation ${relation.sourceId} -> ${relation.targetId} was not stored: an endpoint node does not exist.`);
+						error.status = 409;
+						throw error;
+					}
 					storedRelations.push(...relationResult.records.map((record) => (
 						formatRelationshipWithEndpoints(record.get("r"), record.get("sourceId"), record.get("targetId"))
 					)));
@@ -352,6 +358,25 @@ export class Neo4jGraphStore {
 			);
 
 			return result.records[0] ? formatNode(result.records[0].get("n")) : null;
+		} finally {
+			await session.close();
+		}
+	}
+
+	async getExistingNodeIds(nodeIds) {
+		const ids = [...new Set((nodeIds ?? []).filter(Boolean))];
+		if (ids.length === 0) {
+			return [];
+		}
+
+		const session = this.driver.session(this.sessionOptions);
+
+		try {
+			const result = await session.executeRead((tx) =>
+				tx.run("MATCH (n:KnowledgeNode) WHERE n.id IN $ids RETURN n.id AS id", { ids }),
+			);
+
+			return result.records.map((record) => record.get("id"));
 		} finally {
 			await session.close();
 		}

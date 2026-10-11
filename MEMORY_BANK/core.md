@@ -4,7 +4,7 @@ Compressed briefing for coding agents. Behavior details live in `README.md`; cod
 
 ## Purpose
 
-MindMesh is a HITL-gated, schema-governed knowledge graph for institutional knowledge, not a generic RAG pipeline. Contract: **LLMs suggest, humans approve, schema enforces.** Extracted facts become HITL proposals that a reviewer approves, edits, or regenerates with notes before they reach the graph; `auto` mode applies only schema-valid extractions.
+MindMesh is a HITL-gated, schema-governed knowledge graph for institutional knowledge, not a generic RAG pipeline. Contract: **LLMs suggest, humans approve, schema enforces.** Extracted facts become HITL proposals that a reviewer approves, edits, or regenerates with notes before they reach the graph; `auto` mode applies only clean creates and updates.
 
 Implemented: hybrid vector + graph RAG (Ask), retrieval-augmented extraction (Ingest), HITL review with reviewer notes and LLM regeneration, an editable schema, an MCP server for external coding agents, and two on-demand graph jobs (scanner, nugget).
 
@@ -22,11 +22,13 @@ Stack: Node.js ES modules, Express, Preact (NeoVis and Sigma graph renderers), N
 
 ## Hard Rules
 
-- Every graph write goes through HITL approval, a direct reviewer edit, or schema-valid `auto` mode. No silent mutations.
+- Every graph write goes through HITL approval, a direct reviewer edit, or `auto` mode. No silent mutations.
+- `auto` mode applies only clean creates and updates. Schema violations, `AMBIGUITY:` / `CONTRADICTION:` signals, and any delete force a HITL proposal; web ingest and MCP share one rule (`reviewReasons()`).
 - Neo4j is the source of truth. Chroma node/relation vectors are derived and rebuildable (`npm run kg:reindex-vectors`); HITL proposals live only in Chroma and are not rebuildable.
 - Keep graph writes and vector indexing in sync; index what Neo4j stored, not what was sent.
 - Ids are canonical and shared by Neo4j and Chroma: `node:<name>`, `rel:<hash of source:relation:target>`, unique in Neo4j. Never rename an existing node's `name`; recompute a relation's id when its type or endpoints change.
 - Record `metadata` holds HITL review signals (`AMBIGUITY:` / `CONTRADICTION:`) and exists only in proposals. Never persist it to the graph.
+- Relations never create or rewrite nodes. Every endpoint must exist in the graph or have a node record in the same payload; an existing endpoint is only referenced. There are no fallback types: a blank type is a schema violation.
 - Approved types live only in the schema's `nodeTypes`/`relationshipTypes`. Type suggestions stay in proposals and are merged on approval; never auto-promote them.
 - The MCP server never creates an LLM provider.
 - Config comes from `config.json` with `{{KEY}}` placeholders resolved from `config.replacements.json`; no env-var settings except the web port. Never commit real secrets.

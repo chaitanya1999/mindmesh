@@ -146,5 +146,5 @@ Do it with `git mv` on a branch, with no behavior change; run the smoke tests be
 ## Ideas Without A Plan Yet
 
 - **LLM query rewriting for Ask follow-ups.** Removed as dead code. If wanted, do it agent-side for MCP, or as an optional server step when an LLM is configured.
-- **Minimal users and roles.** Owner / contributor / agent; agent writes always become proposals; enforce at the API layer.
-- **Tiered HITL.** Auto-apply high-confidence, schema-valid, non-conflicting creates; queue updates, deletes, contradictions, and new types.
+- **Minimal users and roles.** Also closes review bug 3: today the write API has no auth and the server listens on all interfaces; the owner chose to solve this with user management rather than a bind-address fix. Owner / contributor / agent; agent writes always become proposals; enforce at the API layer.
+- **Tiered HITL (severity levels).** The first tier is done: `auto` mode applies only clean creates and updates, and any ambiguity, contradiction, or delete goes to review. Next idea from the owner: the LLM emits a severity per signal (for example `AMBIGUITY:HIGH:<reason>`, levels HIGH / MEDIUM / LOW); HIGH and MEDIUM need HITL, LOW can auto-apply. Needs a prompt change, a parser for the level, and a rule change in `reviewReasons()`.

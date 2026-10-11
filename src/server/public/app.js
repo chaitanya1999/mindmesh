@@ -72,7 +72,7 @@ function pipelineNodeLine(recordType, node) {
 	return pipelineRecordLine(recordType, [
 		name,
 		node.label || displayNameFromIdentifier(name),
-		node.type || "concept",
+		node.type || "",
 		node.description || "",
 		node.metadata || "",
 	]);
@@ -89,7 +89,7 @@ function pipelineRelationLine(recordType, relation) {
 	return pipelineRecordLine(recordType, [
 		graphNameFromId(relation.sourceId),
 		graphNameFromId(relation.targetId),
-		relation.relation || "relates_to",
+		relation.relation || "",
 		relation.information || "",
 		relation.description || "",
 		relation.metadata || "",
@@ -100,7 +100,7 @@ function pipelineRelationDeleteLine(relation) {
 	return pipelineRecordLine("RELATION_DELETE", [
 		graphNameFromId(relation.sourceId),
 		graphNameFromId(relation.targetId),
-		relation.relation || "relates_to",
+		relation.relation || "",
 		relation.metadata || "",
 	]);
 }
@@ -269,7 +269,7 @@ function updatePipelineRelation(text, relation, draft) {
 	const nextRelation = {
 		...relation,
 		...draft,
-		relation: toSnakeCase(draft.relation) || "relates_to",
+		relation: toSnakeCase(draft.relation),
 	};
 	const lines = pipelineLines(text);
 	let found = false;
@@ -1376,7 +1376,7 @@ function App() {
 		try {
 			const nextRelation = {
 				...draft,
-				relation: toSnakeCase(draft.relation) || "relates_to",
+				relation: toSnakeCase(draft.relation),
 			};
 
 			if (hitlSelectedNoteRef.current) {
