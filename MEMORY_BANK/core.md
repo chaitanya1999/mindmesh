@@ -25,7 +25,7 @@ Stack: Node.js ES modules, Express, Preact (NeoVis and Sigma graph renderers), N
 - Every graph write goes through HITL approval, a direct reviewer edit, or `auto` mode. No silent mutations.
 - `auto` mode applies only clean creates and updates. Schema violations, `AMBIGUITY:` / `CONTRADICTION:` signals, and any delete force a HITL proposal; web ingest and MCP share one rule (`reviewReasons()`).
 - Neo4j is the source of truth. Chroma node/relation vectors are derived and rebuildable (`npm run kg:reindex-vectors`); HITL proposals live only in Chroma and are not rebuildable.
-- Keep graph writes and vector indexing in sync; index what Neo4j stored, not what was sent.
+- Keep graph writes and vector indexing in sync; index what Neo4j stored, not what was sent. All graph writes go through `GraphWriteService`; nothing else calls store write methods (`test/writeGate.test.js` enforces it).
 - Ids are canonical and shared by Neo4j and Chroma: `node:<name>`, `rel:<hash of source:relation:target>`, unique in Neo4j. Never rename an existing node's `name`; recompute a relation's id when its type or endpoints change.
 - Record `metadata` holds HITL review signals (`AMBIGUITY:` / `CONTRADICTION:`) and exists only in proposals. Never persist it to the graph.
 - Relations never create or rewrite nodes. Every endpoint must exist in the graph or have a node record in the same payload; an existing endpoint is only referenced. There are no fallback types: a blank type is a schema violation.
@@ -43,6 +43,7 @@ Stack: Node.js ES modules, Express, Preact (NeoVis and Sigma graph renderers), N
 
 ## Working Conventions
 
-- Prefer existing service boundaries over new abstractions; for small tasks, change only the relevant pathway.
+- Prefer existing service boundaries over new abstractions; for small tasks, change only the relevant pathway. Layers: `server.js` / `mcp/server.js` are transport only; `HitlService` decides whether something may be written; `GraphWriteService` decides how; `IngestionService` extracts. Services are built once in `createMindMesh()`.
+- Behavior changes come with a test in `test/` (`npm test`, no services needed).
 - Frontend: keep the existing Preact UI; one component per file under `src/server/public/components`; `app.bundle.js` is a gitignored build output (`npm run kg:web` builds it).
 - Keep docs single-sourced: behavior -> `README.md`, code locations -> `codeMap.md`, rules -> this file, current task -> `activeContext.md`, planned work -> `roadmap.md`.

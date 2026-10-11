@@ -2,6 +2,11 @@
 
 Where things live in the code. One entry per recurring pathway: entry points, call chain, and the files to touch. For what the code does and why, follow the README section named in each entry; do not duplicate behavior here.
 
+## Composition Root and Tests
+
+- `src/mindmesh.js`: `createMindMesh(config, overrides)` builds stores, `GraphWriteService`, `IngestionService`, `HitlService`, `HybridRagService`, `KgJobsService` once; used by `server.js` (`createApp(services)`), `mcp/server.js` (`createMcpServer(services)`, `withLlm: false`), and the ingest/ask CLIs. `isMainModule()` starts a module only when run directly.
+- Tests: `test/*.test.js` (`npm test`). `test/helpers/testServices.js` builds services over `test/helpers/memoryStores.js` (in-memory graph store; real `ChromaVectorStore` on a fake Chroma client with `failNext()`), a scripted LLM, and a temp schema. `test/writeGate.test.js` enforces the write gate.
+
 ## Ingestion
 
 README: Graph Extraction Contract, Ingestion Context Flow.
@@ -9,48 +14,47 @@ README: Graph Extraction Contract, Ingestion Context Flow.
 Entry points: `src/cli/ingest.js`, `POST /api/ingest` in `src/server/server.js` (text and PDF/DOCX/DOC uploads), MCP `ingest-context` + `apply-ingestion` in `src/mcp/server.js`.
 
 ```text
-IngestionService.ingestText()                      src/ingestion/ingestionService.js
-  -> retrieveExistingContext()                     Chroma queryNodes + Neo4j expandFromNodes
-       -> retrievePendingHitlContext()             pending notes, parsed as unverified context
-  -> buildExtractionPrompt()                       src/prompts/promptRegistry.js
-  -> extractGraphWithRawResponse()                 src/llm/*Provider.js
-  -> reconcileExtractionWithPendingHitl()
-  -> normalizeGraphPayload()                       src/ingestion/graphPayload.js
-  -> resolveGraphPayload()                         src/ingestion/graphResolution.js (Neo4jGraphStore.getExistingNodeIds)
-  -> storeHitlProposal()                           ChromaVectorStore.upsertHitlNote()
-     or applyGraphPayload()                        resolveGraphPayload() again, Neo4jGraphStore.applyGraph() (one transaction),
-                                                   then vector sync (deleteNodes, deleteRelationsForNodes, deleteRelations, upsertGraphIndex);
+HitlService.ingestText()                           src/hitl/hitlService.js
+  -> IngestionService.ingestText({ submit })       src/ingestion/ingestionService.js
+       -> retrieveExistingContext()                Chroma queryNodes + Neo4j expandFromNodes
+            -> retrievePendingHitlContext()        pending notes, parsed as unverified context
+       -> buildExtractionPrompt()                  src/prompts/promptRegistry.js
+       -> extractGraphWithRawResponse()            src/llm/*Provider.js
+       -> prepareExtraction()                      reconcileExtractionWithPendingHitl() + normalizeGraphPayload()
+                                                   + resolveGraphPayload() (src/ingestion/graphResolution.js)
+  -> HitlService.submit()                          reviewReasons() gate
+       -> storeProposal()                          ChromaVectorStore.upsertHitlNote()
+          or GraphWriteService.applyPayload()      src/graph/graphWriteService.js: resolveGraphPayload() again,
+                                                   Neo4jGraphStore.applyGraph() (one transaction), vector sync;
                                                    a sync failure is vectorSyncError() (503 VECTOR_SYNC_FAILED, expose)
+MCP apply-ingestion -> HitlService.submitRecords() -> prepareExtraction() -> submit()
 ```
 
-Also: `src/ingestion/reviewSignals.js` (signal counts; `reviewReasons()` is the auto-mode gate used by `ingestText()` and MCP `apply-ingestion`), `formatGraphRecords()` in `graphPayload.js` (payload -> stored proposal text), `src/rag/graphContext.js::formatExtractionGraphContext()`, `prompts/extraction-system-custom.md`.
-
-Graph check (`resolveGraphPayload()`) callers: `ingestText()`, `storeHitlRegeneration()`, `applyGraphPayload()`, MCP `apply-ingestion`, `storeManualHitlProposal()` in `src/server/server.js`. Manual relation routes also call `requireExistingEndpoints()` in `server.js`.
+Also: `src/ingestion/reviewSignals.js` (signal counts, `reviewReasons()`), `formatGraphRecords()` in `graphPayload.js` (payload -> stored proposal text), `src/rag/graphContext.js::formatExtractionGraphContext()`, `prompts/extraction-system-custom.md`.
 
 ## HITL Review
 
 README: Web UI (HITL workspace), Chroma Schema (HITL notes).
 
-Entry points: `/hitl` UI, `/api/hitl/*` in `src/server/server.js`.
+Entry points: `/hitl` UI, `/api/hitl/*` and `/api/nodes|relations` in `src/server/server.js` (HTTP only); logic in `src/hitl/hitlService.js`.
 
 ```text
-GET /api/hitl/notes, /api/hitl/notes/:id           ChromaVectorStore.listHitlNotePage() (sorted before paging, returns total) / getHitlNote(); hitlNoteSummary()
+GET /api/hitl/notes, /api/hitl/notes/:id           HitlService.listProposals() / getProposal() + noteDetail() (pipe text + records)
 GET|POST /api/hitl/notes/:id/graph, /api/hitl/graph
-  -> buildHitlNoteGraphPreview() / buildHitlGraphPreview()
-  -> mergeHitlPayloadIntoGraph()                   adds pendingHitl, pendingOperation, approved snapshot
-POST /api/hitl/notes/:id/approve
-  -> parseGraphExtraction() + buildApprovalSchema() + normalizeGraphPayload()
-  -> persistHitlSchemaSuggestions()                mergeSchemaTypes() in src/schema/graphSchema.js
-  -> IngestionService.applyGraphPayload(), then deleteHitlNotes()
-DELETE /api/hitl/notes/:id                         reject
-/api/hitl/nodes, /api/hitl/relations               direct reviewer CRUD (proposal on schema violation)
+  -> HitlService.previewProposal() / previewAll()  mergeHitlPayloadIntoGraph(): pendingHitl, pendingOperation, approved snapshot
+POST /api/hitl/notes/:id/approve                   HitlService.approve(): buildApprovalSchema() + normalizeGraphPayload()
+  -> GraphWriteService.applyPayload(), then mergeSchemaTypes() and deleteHitlNotes()
+DELETE /api/hitl/notes/:id                         HitlService.reject()
+/api/nodes, /api/relations (main page)             HitlService.propose*() -> proposeRecords() (formatGraphRecords + graph check)
+/api/hitl/nodes, /api/hitl/relations               HitlService.editNode() / editRelation() / delete*(): GraphWriteService.write*/delete*,
+                                                   or a proposal on schema violation (proposalIfSchemaInvalid())
 ```
 
 Frontend:
 
 - `components/hitl/HitlReviewPanel.js`: list, filters, card counts, detail, reviewer notes, approve/reject/regenerate.
 - `components/hitl/HitlProposalSummary.js`: Create/Update/Delete tree, Current vs Proposed.
-- `lib/hitlProposal.js`: client-side proposal parser and counts. Keep it consistent with `src/ingestion/graphPayload.js`.
+- `lib/hitlProposal.js`: client-side proposal parser and counts. Keep it consistent with `src/ingestion/graphPayload.js` (the server now also returns `records`, so this parser can be retired).
 - Draft editing of proposal text from graph/detail edits: pipeline helpers in `src/server/public/app.js`.
 
 ## HITL Regeneration
@@ -58,13 +62,13 @@ Frontend:
 README: HITL Regeneration.
 
 ```text
-Web:  POST /api/hitl/notes/:id/regenerate  -> IngestionService.regenerateHitlProposal()
-      PUT  /api/hitl/notes/:id/reviewer-notes -> IngestionService.saveHitlReviewerNotes()
+Web:  POST /api/hitl/notes/:id/regenerate  -> HitlService.regenerate()
+      PUT  /api/hitl/notes/:id/reviewer-notes -> HitlService.saveReviewerNotes()
 MCP:  regenerate-context / apply-regeneration in src/mcp/server.js
-Both: buildHitlRegenerationPrompt() -> retrieveExistingContext({ excludeNoteIds })
-      storeHitlRegeneration()          -> ChromaVectorStore.upsertHitlNote()
+Both: IngestionService.buildHitlRegenerationPrompt() -> retrieveExistingContext({ excludeNoteIds })
+      HitlService.storeRegeneration() -> prepareExtraction() -> ChromaVectorStore.upsertHitlNote()
 Prompt section: formatReviewerRevision() in src/prompts/promptRegistry.js
-Short refs: IngestionService.resolveHitlNoteId(); UI hitlShortRef() in lib/hitlProposal.js
+Short refs: HitlService.resolveRef(); UI hitlShortRef() in lib/hitlProposal.js
 ```
 
 ## Ask / RAG
@@ -97,10 +101,11 @@ README: Graph Schema.
 
 README: Neo4j Schema (Identity and uniqueness, Write behavior), Commands (reindex).
 
-- Ids: built in `src/ingestion/graphPayload.js` (normalization) and `normalizeManualNode()` / `normalizeManualRelation()` in `src/server/server.js` (manual and reviewer edits).
-- Constraints: `Neo4jGraphStore.ensureConstraints()` in `src/graph/neo4jGraphStore.js`, called by `upsertGraph`, `upsertNode`, `upsertRelation`.
-- Rename guard: `normalizeManualNode()` (server) and `isNameLocked` in `components/entity/NodeForm.js`.
-- Relation re-id on edit: `PUT /api/hitl/relations/:id` in `src/server/server.js`, using `Neo4jGraphStore.upsertRelation(relation, { replaceId })` (one transaction).
+- Write gate: `src/graph/graphWriteService.js` is the only caller of store write methods (`applyPayload`, `writeNode`, `deleteNode`, `writeRelation`, `deleteRelation`); `test/writeGate.test.js` lists the allowed exceptions.
+- Ids: built in `src/ingestion/graphPayload.js` (normalization) and `normalizeManualNode()` / `normalizeManualRelation()` in `src/hitl/hitlService.js` (manual and reviewer edits).
+- Constraints: `Neo4jGraphStore.ensureConstraints()` in `src/graph/neo4jGraphStore.js`, called by `applyGraph`, `upsertNode`, `upsertRelation`.
+- Rename guard: `normalizeManualNode()` (HitlService) and `isNameLocked` in `components/entity/NodeForm.js`.
+- Relation re-id on edit: `HitlService.editRelation()` -> `GraphWriteService.writeRelation(relation, { replaceId })` -> `Neo4jGraphStore.upsertRelation()` (one transaction).
 - Vector documents: `nodeDocument()` / `relationDocument()` / `upsertGraphIndex()` in `src/vector/chromaVectorStore.js`.
 - Reindex: `src/cli/reindexVectors.js` (`--fresh` -> `ChromaVectorStore.clearGraphIndex()`); full wipe: `src/cli/clearChroma.js`.
 
@@ -124,7 +129,7 @@ README: Configuration, Debug Logging.
 
 README: Web UI.
 
-- Server: `src/server/server.js` (routes, static files; port from `KG_WEB_PORT` / `PORT`).
+- Server: `src/server/server.js` (HTTP only: routes, uploads, static files; `createApp(services)`; port from `KG_WEB_PORT` / `PORT`). Tests: `test/webIngest.test.js`, `test/webHitl.test.js`.
 - Frontend (`src/server/public`): `app.js` (App state, handlers, routes); `components/common`, `graph` (`NeoVisGraphPreview` default, `GraphPreview` Sigma, `graphStyle.js`), `chat`, `entity`, `hitl`, `schema`, `jobs`; `lib/` (`api.js`, `graphData.js`, `utils.js`, `hitlProposal.js`); `styles.css`.
 - Build: `npm run kg:web:build` -> `app.bundle.js` (gitignored; `npm run kg:web` builds it on start).
 
@@ -132,7 +137,7 @@ README: Web UI.
 
 README: MCP Server.
 
-- `src/mcp/server.js`: tools `ask`, `ingest-context`, `apply-ingestion`, `regenerate-context`, `apply-regeneration`; resources `mindmesh://schema`, `mindmesh://graph`, `mindmesh://hitl/notes`, `mindmesh://nodes/{nodeId}`, `mindmesh://relations/{relationId}`. Reuses `IngestionService`, `HybridRagService`, the stores, and the prompt registry; reads the same `config.json`.
+- `src/mcp/server.js`: tools `ask`, `ingest-context`, `apply-ingestion`, `regenerate-context`, `apply-regeneration`; resources `mindmesh://schema`, `mindmesh://graph`, `mindmesh://hitl/notes`, `mindmesh://nodes/{nodeId}`, `mindmesh://relations/{relationId}`. `createMcpServer(services)` uses `HitlService` (apply-ingestion, regeneration, short refs), `IngestionService` (context, regeneration prompt), `HybridRagService`, the stores (reads), and the prompt registry; reads the same `config.json`. Tests: `test/mcpServer.test.js` (in-memory transport).
 - Smoke test: `src/mcp/smokeTest.js` (throwaway nodes; `cleanUp()` removes the created proposal or nodes).
 
 ## Jobs

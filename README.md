@@ -40,8 +40,8 @@ Web UI
 
 HITL review
   -> pending proposal (Chroma HITL collection)
-  -> reviewer edits / reviewer notes + regenerate (IngestionService.regenerateHitlProposal)
-  -> approve: IngestionService.applyGraphPayload()
+  -> reviewer edits / reviewer notes + regenerate (HitlService.regenerate)
+  -> approve: HitlService.approve() -> GraphWriteService.applyPayload()
   -> Neo4jGraphStore.applyGraph() (one transaction) + ChromaVectorStore vector sync
   -> schema types merged, note deleted
 
@@ -77,7 +77,11 @@ MCP agent (no MindMesh LLM)
 - `src/cli/testConnections.js`: Neo4j and Chroma connectivity plus write/query smoke tests.
 - `src/cli/testLlm.js`: provider reachability and graph extraction smoke test.
 - `src/cli/testParser.js`: local custom extraction and graph normalization smoke test.
-- `src/ingestion/ingestionService.js`: orchestrates extraction, normalization, graph persistence, and vector indexing.
+- `test/`: `npm test` suite (`node:test`): the web API and MCP tools over in-memory stores (`test/helpers/`), plus a check that only `GraphWriteService` calls store write methods.
+- `src/mindmesh.js`: composition root. `createMindMesh(config, overrides)` builds the stores and services once for the web server, the MCP server, and the CLIs (tests pass in-memory stores and a scripted LLM as overrides).
+- `src/hitl/hitlService.js`: human-in-the-loop decisions. Submit (auto apply or proposal), list, preview, reviewer notes, regenerate, approve, reject, short refs, manual proposals from the main page, and direct reviewer edits.
+- `src/graph/graphWriteService.js`: the one gate for graph writes. Graph check, one Neo4j transaction, Chroma vector sync, and the `VECTOR_SYNC_FAILED` error.
+- `src/ingestion/ingestionService.js`: retrieval-augmented extraction: graph and pending-proposal context, the extraction prompt, the LLM call, and `prepareExtraction()` (reconcile, normalize, graph check).
 - `src/ingestion/graphPayload.js`: parses and normalizes LLM graph output into stable node and relationship payloads.
 - `src/ingestion/reviewSignals.js`: detects ambiguity and contradiction review signals in proposed graph records.
 - `schema/graphSchema.json`: schema registry for allowed node types, relationship types, required properties, and LLM-facing descriptions.
@@ -89,9 +93,9 @@ MCP agent (no MindMesh LLM)
 - `src/rag/hybridRagService.js`: vector entry-point retrieval, Neo4j expansion, context formatting, and final answer generation.
 - `src/jobs/kgJobsService.js`: graph job runner for scanner and nugget prompts.
 - `src/llm/geminiProvider.js`, `src/llm/ollamaProvider.js`, `src/llm/customHttpProvider.js`, and `src/llm/hubChatProvider.js`: LLM provider adapters with the same small interface.
-- `src/server/server.js`: Express web entry point for ask, ingest, graph, schema, jobs, upload, and HITL APIs (including approve, reviewer notes, and regenerate).
+- `src/server/server.js`: Express web entry point (HTTP only: request parsing, uploads, response shapes) for ask, ingest, graph, schema, jobs, and HITL APIs. `createApp(services)` builds the app without listening; the file starts the server only when run directly.
 - `src/server/public`: Preact UI. `app.js` (App state/handlers and routes), `components/` (one component per file: `common`, `graph`, `chat`, `entity`, `hitl`, `schema`, `jobs`), `lib/` (shared helpers, including the client-side HITL proposal parser `lib/hitlProposal.js`), `styles.css`, and the built `app.bundle.js` (gitignored build output).
-- `src/mcp/server.js`: MCP server (ask, ingest, and HITL regeneration tools); `src/mcp/smokeTest.js` is its smoke test.
+- `src/mcp/server.js`: MCP server (ask, ingest, and HITL regeneration tools); `createMcpServer(services)` builds it without a transport, and the file connects stdio only when run directly. `src/mcp/smokeTest.js` is its smoke test.
 - `src/prompts/promptRegistry.js`: loads prompt files and renders the extraction prompt placeholders, including the HITL reviewer revision section.
 - `src/rag/graphContext.js`: formats graph context for Ask (`formatGraphContext`) and for extraction (`formatExtractionGraphContext`).
 - `src/logging/debugLogger.js`: opt-in, scope-filtered debug log files.
@@ -633,7 +637,7 @@ For relationships, `sourceName`, `relation`, and `targetName` already express th
 - Carries node/relation create, update, and delete operations into HITL or graph application.
 - Returns `schemaSuggestions`, `schemaWarnings`, and `schemaViolations` for CLI/API visibility and HITL schema approval.
 
-`resolveGraphPayload()` then checks the normalized payload against the graph. It runs when a proposal is stored (ingest, MCP `apply-ingestion`, regeneration, manual web edits) and again inside `applyGraphPayload()`, so every graph apply (auto mode, MCP auto mode, HITL approval) passes it against the current graph:
+`resolveGraphPayload()` then checks the normalized payload against the graph. It runs when a proposal is stored (ingest, MCP `apply-ingestion`, regeneration, manual web edits) and again inside `GraphWriteService.applyPayload()`, so every graph apply (auto mode, MCP auto mode, HITL approval) passes it against the current graph:
 
 - Every relation endpoint must have a node record in the same payload or already exist in the graph. Otherwise the relation is a `relationEndpoint` violation: auto mode stores a proposal instead, and approval fails until the reviewer adds the node or fixes the name. An endpoint deleted by the same payload is also a violation.
 - An endpoint that already exists and has no node record is only referenced; its type, label, and description are never written.
@@ -685,7 +689,7 @@ MindMesh uses its own `id` property, never Neo4j's internal element id. The same
 
 `applyGraph()` returns the nodes and relationships as Neo4j stored them, plus the deleted node and relation ids, and the vector index is built from that result. Ingestion and `kg:reindex-vectors` therefore produce identical vector documents. Endpoints are checked before apply; if one disappears in the meantime, `applyGraph()` fails with status 409 and rolls back the whole transaction, including its deletes.
 
-Chroma cannot join the Neo4j transaction, so `applyGraphPayload()` syncs vectors after the commit. Relation vectors of deleted nodes are removed by their stored `sourceId`/`targetId` (`deleteRelationsForNodes()`), so a retry also cleans them. If the sync fails, the request fails with status 503 and code `VECTOR_SYNC_FAILED`, and the message (shown in the UI, not replaced by the generic server error) says the graph was saved. A HITL proposal stays pending, so approving again re-syncs; for `auto` ingest or MCP, run `npm run kg:reindex-vectors`.
+Chroma cannot join the Neo4j transaction, so `GraphWriteService` syncs vectors after the commit (for payloads and for direct reviewer edits). Relation vectors of deleted nodes are removed by their stored `sourceId`/`targetId` (`deleteRelationsForNodes()`), so a retry also cleans them. If the sync fails, the request fails with status 503 and code `VECTOR_SYNC_FAILED`, and the message (shown in the UI, not replaced by the generic server error) says the graph was saved. A HITL proposal stays pending, so approving again re-syncs; for `auto` ingest or MCP, run `npm run kg:reindex-vectors`.
 
 A direct relation edit that changes the relation id (`upsertRelation(relation, { replaceId })`) deletes the old relation and writes the new one in one transaction, keeping the earliest `createdAt`; if the write fails, the old relation is kept.
 
@@ -755,7 +759,7 @@ The current RAG flow queries only `kg_nodes`; relationship vectors are indexed f
 
 ## Ingestion Context Flow
 
-`IngestionService.ingestText({ text })` performs retrieval-augmented extraction:
+`HitlService.ingestText({ text, source, userName })` runs `IngestionService.ingestText()`, which performs retrieval-augmented extraction and then hands the prepared payload to `HitlService.submit()`:
 
 1. Query Chroma node collection with `ingestion.contextTopK`.
 2. Expand Neo4j graph from returned node IDs with `ingestion.contextDepth`.
@@ -763,14 +767,14 @@ The current RAG flow queries only `kg_nodes`; relationship vectors are indexed f
 4. Format approved graph and pending HITL context as human-readable node/fact lists while preserving exact `node:*` IDs.
 5. Render the extraction prompt template with schema, existing graph context, and new user input.
 6. Ask the selected LLM to extract graph records from the new input while using existing/pending context for identity resolution only.
-7. Normalize the response into upserts, deletes, suggestions, warnings, and violations.
-8. Store a pending HITL proposal when `ingestion.mode` is `hitl` or schema violations exist; otherwise apply graph mutations and sync Chroma vectors.
+7. Prepare the response (`prepareExtraction()`): reconcile creates for pending nodes into updates, normalize it into upserts, deletes, suggestions, warnings, and violations, and check it against the graph. MCP `apply-ingestion` prepares an agent's records the same way.
+8. `HitlService.submit()` stores a pending HITL proposal when `ingestion.mode` is `hitl` or `reviewReasons()` finds a reason (see Graph Schema); otherwise `GraphWriteService` applies the mutations and syncs Chroma vectors.
 
 ## HITL Regeneration
 
-A reviewer can regenerate a pending proposal with instructions instead of editing it row by row. Both entry points share `IngestionService.buildHitlRegenerationPrompt()` and `storeHitlRegeneration()`:
+A reviewer can regenerate a pending proposal with instructions instead of editing it row by row. Both entry points share `IngestionService.buildHitlRegenerationPrompt()` and `HitlService.storeRegeneration()`:
 
-- Web UI: reviewer notes + **Regenerate** call `POST /api/hitl/notes/:id/regenerate`, which runs the server's configured LLM (`regenerateHitlProposal()`).
+- Web UI: reviewer notes + **Regenerate** call `POST /api/hitl/notes/:id/regenerate`, which runs the server's configured LLM (`HitlService.regenerate()`).
 - MCP: `regenerate-context` and `apply-regeneration`, where the calling agent does the reasoning.
 
 Behavior:
@@ -857,7 +861,7 @@ API endpoints:
 - `GET /api/schema`: returns the editable graph schema.
 - `PUT /api/schema`: saves editable graph schema JSON.
 - `GET /api/hitl/notes`: lists pending HITL notes, each with its counts, review-signal counts, reviewer notes, regeneration fields, and `llmResponse` (used for per-operation card counts), oldest first, plus `total` (all pending notes) and `limit`. When `total` is larger than the page, the HITL list says how many are hidden.
-- `GET /api/hitl/notes/:id`: returns one HITL proposal.
+- `GET /api/hitl/notes/:id`: returns one HITL proposal: its counts and review fields, the pipe-delimited `llmResponse`, and `records` (the same proposal parsed into `nodes`, `relations`, `nodeDeletes`, `relationDeletes`, `schemaSuggestions`, `schemaViolations`, `schemaWarnings`). List items carry `records` too.
 - `GET /api/hitl/notes/:id/graph`: previews one HITL proposal over graph context.
 - `POST /api/hitl/notes/:id/graph`: previews edited HITL proposal text.
 - `GET /api/hitl/graph`: returns approved graph overlaid with pending HITL proposals. In both preview endpoints, pending items carry `pendingHitl`, `pendingOperation`, `hitlNoteId`, and `approved` (the DB version before the proposal, absent for items not yet in the graph).
