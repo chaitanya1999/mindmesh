@@ -90,7 +90,7 @@ MCP agent (no MindMesh LLM)
 - `src/jobs/kgJobsService.js`: graph job runner for scanner and nugget prompts.
 - `src/llm/geminiProvider.js`, `src/llm/ollamaProvider.js`, `src/llm/customHttpProvider.js`, and `src/llm/hubChatProvider.js`: LLM provider adapters with the same small interface.
 - `src/server/server.js`: Express web entry point for ask, ingest, graph, schema, jobs, upload, and HITL APIs (including approve, reviewer notes, and regenerate).
-- `src/server/public`: Preact UI. `app.js` (App state/handlers and routes), `components/` (one component per file: `common`, `graph`, `chat`, `entity`, `hitl`, `schema`, `jobs`), `lib/` (shared helpers, including the client-side HITL proposal parser `lib/hitlProposal.js`), `styles.css`, and the built `app.bundle.js`.
+- `src/server/public`: Preact UI. `app.js` (App state/handlers and routes), `components/` (one component per file: `common`, `graph`, `chat`, `entity`, `hitl`, `schema`, `jobs`), `lib/` (shared helpers, including the client-side HITL proposal parser `lib/hitlProposal.js`), `styles.css`, and the built `app.bundle.js` (gitignored build output).
 - `src/mcp/server.js`: MCP server (ask, ingest, and HITL regeneration tools); `src/mcp/smokeTest.js` is its smoke test.
 - `src/prompts/promptRegistry.js`: loads prompt files and renders the extraction prompt placeholders, including the HITL reviewer revision section.
 - `src/rag/graphContext.js`: formats graph context for Ask (`formatGraphContext`) and for extraction (`formatExtractionGraphContext`).
@@ -118,10 +118,11 @@ Chroma: http://localhost:8000
 
 `npm run chroma:start` starts a local Chroma server with data in `./chroma_data` (requires the Python `chroma` CLI).
 
-Create a local POC config and graph schema if needed (`schema/graphSchema.json` is gitignored, so a fresh clone only has the example):
+Create a local POC config and graph schema if needed (`config.json`, `config.replacements.json`, and `schema/graphSchema.json` are gitignored, so a fresh clone only has the examples):
 
 ```powershell
 Copy-Item .\config.example.json .\config.json
+Copy-Item .\config.replacements.example.json .\config.replacements.json
 Copy-Item .\schema\graphSchema.example.json .\schema\graphSchema.json
 ```
 
@@ -155,16 +156,17 @@ Use placeholders in `config.json` for secrets or machine-specific values, then p
 
 ## Configuration
 
-`getConfig()` reads `config.json` from the repository root, applies optional replacements, and parses the result as JSON. The config loader does not read application settings from environment variables and does not supply hardcoded fallback defaults; required defaults should live in `config.json` or `config.example.json`. The only environment variables used anywhere are `KG_WEB_PORT` / `PORT` for the web server port.
+`getConfig()` reads and parses `config.json` from the repository root, then applies optional replacements to its string values. The config loader does not read application settings from environment variables and does not supply hardcoded fallback defaults; required defaults should live in `config.json` or `config.example.json`. The only environment variables used anywhere are `KG_WEB_PORT` / `PORT` for the web server port.
 
 Replacement model:
 
 1. `config.json` is the complete application config.
 2. Placeholders use `{{KEY}}` syntax and are matched by uppercase letters, digits, and underscores, for example `{{GEMINI_API_KEY}}`, `{{NEO4J_PASSWORD}}`, or `{{CHROMA_URL}}`.
-3. `config.replacements.json` supplies replacement values from the repository root when the file exists.
-4. Callers may pass an explicit map with `getConfig(replacements)`. Current merge behavior starts with caller-supplied replacements and then merges `config.replacements.json` over them.
-5. Unresolved placeholders remain as literal strings by default. Use `getConfig(replacements, { strict: true })` to fail with `Unresolved placeholder: KEY`.
-6. Invalid `config.replacements.json` is ignored by the loader, so malformed replacement JSON can leave placeholders unresolved.
+3. `config.replacements.json` supplies replacement values from the repository root when the file exists (`config.replacements.example.json` shows the keys `config.example.json` uses). Both files are gitignored.
+4. Placeholders are replaced inside the parsed string values, never in the raw JSON text, so values with quotes, backslashes, or Windows paths are kept exactly. A placeholder must therefore sit inside a JSON string. A string that is only a placeholder (`"{{TOP_K}}"`) takes the replacement value with its own type, so numbers and booleans stay numbers and booleans.
+5. Callers may pass an explicit map with `getConfig(replacements)`; values from `config.replacements.json` win over it.
+6. Unresolved placeholders stay as literal strings and print one warning listing the keys (on stderr). Placeholders for unused providers are therefore harmless. Use `getConfig(replacements, { strict: true })` to fail instead.
+7. A `config.replacements.json` that is not valid JSON, or not a JSON object, fails with an error naming the file.
 
 Example:
 
@@ -828,7 +830,7 @@ Layout and behavior:
 - Node vector documents include label, name, type, and description. Relationship vector documents include relation, information, description, source ID, and target ID.
 - The chat tab supports asking, ingesting text, and ingesting uploaded PDF/DOCX/DOC files.
 - Browser chat messages are local UI state. Recent messages can be sent as request memory for follow-up resolution, but they are not persisted server-side.
-- Frontend source lives in `src/server/public`: `app.js` holds the `App` component (state, handlers, routes) and the entry point; components are one per file under `components/` (`common`, `graph`, `chat`, `entity`, `hitl`, `schema`, `jobs`); shared helpers are in `lib/`. `npm run kg:web:build` bundles everything from `app.js` into `app.bundle.js`. The bundle is tracked in git, so rebuild before committing UI changes.
+- Frontend source lives in `src/server/public`: `app.js` holds the `App` component (state, handlers, routes) and the entry point; components are one per file under `components/` (`common`, `graph`, `chat`, `entity`, `hitl`, `schema`, `jobs`); shared helpers are in `lib/`. `npm run kg:web:build` bundles everything from `app.js` into `app.bundle.js`. The bundle is gitignored; `npm run kg:web` rebuilds it every time it starts the server, so run that (not `node src/server/server.js` directly) after pulling UI changes.
 
 API endpoints:
 

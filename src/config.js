@@ -6,51 +6,98 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const CONFIG_PATH = path.join(PROJECT_ROOT, "config.json");
 const DEFAULT_REPLACEMENTS_PATH = path.join(PROJECT_ROOT, "config.replacements.json");
 
-function applyPlaceholders(text, replacements = {}, strict = false) {
-	return text.replace(/{{\s*([A-Z0-9_]+)\s*}}/g, (match, key) => {
-		if (Object.prototype.hasOwnProperty.call(replacements, key)) {
-			return String(replacements[key]);
+const PLACEHOLDER_PATTERN = /{{\s*([A-Z0-9_]+)\s*}}/g;
+const WHOLE_PLACEHOLDER_PATTERN = /^{{\s*([A-Z0-9_]+)\s*}}$/;
+
+function hasKey(map, key) {
+	return Object.prototype.hasOwnProperty.call(map, key);
+}
+
+// Replaces `{{KEY}}` inside the string values of an already-parsed config. Values never pass through
+// JSON syntax, so quotes, backslashes and Windows paths are kept exactly. A string that is only a
+// placeholder takes the replacement's own type (number, boolean, ...). Unknown keys are left as is
+// and added to `unresolved`.
+export function applyPlaceholders(value, replacements = {}, unresolved = new Set()) {
+	if (typeof value === "string") {
+		const whole = value.match(WHOLE_PLACEHOLDER_PATTERN);
+		if (whole) {
+			if (hasKey(replacements, whole[1])) {
+				return replacements[whole[1]];
+			}
+			unresolved.add(whole[1]);
+			return value;
 		}
 
-		if (strict) {
-			throw new Error(`Unresolved placeholder: ${key}`);
-		}
+		return value.replace(PLACEHOLDER_PATTERN, (match, key) => {
+			if (hasKey(replacements, key)) {
+				return String(replacements[key]);
+			}
+			unresolved.add(key);
+			return match;
+		});
+	}
 
-		return match;
-	});
+	if (Array.isArray(value)) {
+		return value.map((item) => applyPlaceholders(item, replacements, unresolved));
+	}
+
+	if (value && typeof value === "object") {
+		return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, applyPlaceholders(item, replacements, unresolved)]));
+	}
+
+	return value;
+}
+
+function readJsonFile(filePath, label) {
+	try {
+		return JSON.parse(fs.readFileSync(filePath, "utf8"));
+	} catch (error) {
+		throw new Error(`Could not read ${label} (${filePath}): ${error.message}`);
+	}
+}
+
+// A missing replacements file is fine; a broken one is an error, never silently ignored.
+export function readReplacementsFile(filePath) {
+	if (!filePath || !fs.existsSync(filePath)) {
+		return {};
+	}
+
+	const replacements = readJsonFile(filePath, "the replacements file");
+	if (!replacements || typeof replacements !== "object" || Array.isArray(replacements)) {
+		throw new Error(`The replacements file (${filePath}) must contain a JSON object of "KEY": value pairs.`);
+	}
+
+	return replacements;
 }
 
 /**
- * Minimal config loader.
- * - Reads `config.json` from project root
- * - Applies optional `{{KEY}}` replacements from a provided map or replacements file
- * - Returns parsed object
+ * Config loader.
+ * - Reads `config.json` from the project root and parses it.
+ * - Replaces `{{KEY}}` placeholders in its string values from `config.replacements.json` (or
+ *   `replacementsPath`) and the `replacements` argument; values in the file win over the argument.
+ * - Unresolved placeholders print one warning listing the keys, or throw with `strict: true`.
  *
  * Usage: `getConfig(replacements = {}, { replacementsPath, strict })`
  */
 export function getConfig(replacements = {}, options = {}) {
 	const { replacementsPath, strict = false } = options || {};
-	let map = Object.assign({}, replacements || {});
-
-	// If a replacementsPath is provided use it, otherwise look for a default
-	// `config.replacements.json` in the project root. This lets callers omit
-	// the path and still provide replacements by creating that file.
-	const rpCandidate = replacementsPath
+	const filePath = replacementsPath
 		? (path.isAbsolute(replacementsPath) ? replacementsPath : path.join(PROJECT_ROOT, replacementsPath))
 		: DEFAULT_REPLACEMENTS_PATH;
+	const map = { ...(replacements || {}), ...readReplacementsFile(filePath) };
 
-	if (rpCandidate && fs.existsSync(rpCandidate)) {
-		try {
-			const json = JSON.parse(fs.readFileSync(rpCandidate, "utf8"));
-			if (json && typeof json === "object") Object.assign(map, json);
-		} catch (e) {
-			// ignore parse errors; map remains as provided
+	const unresolved = new Set();
+	const config = applyPlaceholders(readJsonFile(CONFIG_PATH, "config.json"), map, unresolved);
+	if (unresolved.size > 0) {
+		const message = `Unresolved config placeholder(s): ${[...unresolved].join(", ")}. Add them to ${path.basename(filePath)} if the settings that use them are needed.`;
+		if (strict) {
+			throw new Error(message);
 		}
+		// stderr, so the MCP server's stdout protocol stream is not affected.
+		console.warn(`[config] ${message}`);
 	}
 
-	const raw = fs.readFileSync(CONFIG_PATH, "utf8");
-	const applied = applyPlaceholders(raw, map, strict);
-	return JSON.parse(applied);
+	return config;
 }
 
 export function describeRuntime(config) {

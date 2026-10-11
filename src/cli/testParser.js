@@ -7,7 +7,7 @@ import { countReviewSignals } from "../ingestion/reviewSignals.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { getConfig } from "../config.js";
+import { applyPlaceholders, getConfig, readReplacementsFile } from "../config.js";
 import { buildExtractionPrompt, loadPrompts } from "../prompts/promptRegistry.js";
 import { formatExtractionGraphContext } from "../rag/graphContext.js";
 import { buildOllamaMessages, extractOllamaText, OllamaProvider } from "../llm/ollamaProvider.js";
@@ -503,6 +503,53 @@ try {
 }
 assert(syncFailure?.code === "VECTOR_SYNC_FAILED" && syncFailure.status === 503 && syncFailure.expose === true, "A vector failure after commit should be a VECTOR_SYNC_FAILED error shown to the user.");
 assert(syncFailure.message.includes("Graph changes were saved") && syncFailure.message.includes("chroma down") && syncFailure.message.includes("kg:reindex-vectors"), "The vector sync error should say the graph was saved, why sync failed, and how to repair.");
+
+// Config placeholders are replaced inside parsed string values, so special characters survive intact.
+const placeholderConfig = {
+	graph: { neo4j: { password: "{{NEO4J_PASSWORD}}", uri: "bolt://{{HOST}}:7687" } },
+	logging: { directory: "{{LOG_DIR}}", enabled: "{{LOG_ENABLED}}" },
+	rag: { topK: "{{TOP_K}}" },
+	list: ["{{NEO4J_PASSWORD}}"],
+	unused: "{{NOT_PROVIDED}}",
+};
+const placeholderValues = {
+	NEO4J_PASSWORD: "a\"b\\c",
+	HOST: "localhost",
+	LOG_DIR: "C:\\new\\temp\\mindmesh",
+	LOG_ENABLED: true,
+	TOP_K: 5,
+};
+const unresolvedPlaceholders = new Set();
+const resolvedConfig = applyPlaceholders(placeholderConfig, placeholderValues, unresolvedPlaceholders);
+assert(resolvedConfig.graph.neo4j.password === "a\"b\\c", "Quotes and backslashes in a replacement must be kept exactly.");
+assert(resolvedConfig.logging.directory === "C:\\new\\temp\\mindmesh", "A Windows path must not be turned into escape sequences.");
+assert(resolvedConfig.graph.neo4j.uri === "bolt://localhost:7687", "A placeholder inside a longer string should be replaced.");
+assert(resolvedConfig.logging.enabled === true && resolvedConfig.rag.topK === 5, "A whole-string placeholder should keep the replacement's type.");
+assert(resolvedConfig.list[0] === "a\"b\\c", "Placeholders inside arrays should be replaced.");
+assert(resolvedConfig.unused === "{{NOT_PROVIDED}}" && [...unresolvedPlaceholders].join(",") === "NOT_PROVIDED", "Unknown placeholders should stay as is and be reported.");
+assert(placeholderConfig.graph.neo4j.password === "{{NEO4J_PASSWORD}}", "applyPlaceholders must not modify its input.");
+
+const replacementsDir = await fs.mkdtemp(path.join(os.tmpdir(), "kg-replacements-"));
+const brokenReplacementsPath = path.join(replacementsDir, "broken.json");
+await fs.writeFile(brokenReplacementsPath, "{ \"NEO4J_PASSWORD\": ", "utf8");
+let brokenReplacementsError = null;
+try {
+	readReplacementsFile(brokenReplacementsPath);
+} catch (error) {
+	brokenReplacementsError = error;
+}
+assert(brokenReplacementsError?.message.includes("broken.json"), "A broken replacements file must fail loudly and name the file.");
+const arrayReplacementsPath = path.join(replacementsDir, "array.json");
+await fs.writeFile(arrayReplacementsPath, "[1, 2]", "utf8");
+let arrayReplacementsError = null;
+try {
+	readReplacementsFile(arrayReplacementsPath);
+} catch (error) {
+	arrayReplacementsError = error;
+}
+assert(arrayReplacementsError?.message.includes("must contain a JSON object"), "A replacements file that is not an object must be rejected.");
+assert(Object.keys(readReplacementsFile(path.join(replacementsDir, "missing.json"))).length === 0, "A missing replacements file is allowed.");
+await fs.rm(replacementsDir, { recursive: true, force: true });
 
 // HITL listing sorts every pending note before cutting the page (Chroma returns records unordered).
 const fakeHitlRecords = [

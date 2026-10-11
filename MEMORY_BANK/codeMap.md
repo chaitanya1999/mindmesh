@@ -117,7 +117,7 @@ README: Provider Interfaces, Commands (provider configs).
 
 README: Configuration, Debug Logging.
 
-- `src/config.js` (`getConfig`, `describeRuntime`), `config.json`, `config.replacements.json`, `config.example.json`.
+- `src/config.js` (`getConfig`, `describeRuntime`; `applyPlaceholders` replaces `{{KEY}}` in parsed values, `readReplacementsFile`), local `config.json` / `config.replacements.json`, templates `config.example.json` / `config.replacements.example.json`.
 - `src/logging/debugLogger.js`: `createDebugLogger({ name, scope })`; `scope` is matched against `logging.scopes`.
 
 ## Web UI
@@ -126,7 +126,7 @@ README: Web UI.
 
 - Server: `src/server/server.js` (routes, static files; port from `KG_WEB_PORT` / `PORT`).
 - Frontend (`src/server/public`): `app.js` (App state, handlers, routes); `components/common`, `graph` (`NeoVisGraphPreview` default, `GraphPreview` Sigma, `graphStyle.js`), `chat`, `entity`, `hitl`, `schema`, `jobs`; `lib/` (`api.js`, `graphData.js`, `utils.js`, `hitlProposal.js`); `styles.css`.
-- Build: `npm run kg:web:build` -> `app.bundle.js` (tracked; rebuild before committing UI changes).
+- Build: `npm run kg:web:build` -> `app.bundle.js` (gitignored; `npm run kg:web` builds it on start).
 
 ## MCP Server
 

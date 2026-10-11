@@ -31,7 +31,7 @@ Stack: Node.js ES modules, Express, Preact (NeoVis and Sigma graph renderers), N
 - Relations never create or rewrite nodes. Every endpoint must exist in the graph or have a node record in the same payload; an existing endpoint is only referenced. There are no fallback types: a blank type is a schema violation.
 - Approved types live only in the schema's `nodeTypes`/`relationshipTypes`. Type suggestions stay in proposals and are merged on approval; never auto-promote them.
 - The MCP server never creates an LLM provider.
-- Config comes from `config.json` with `{{KEY}}` placeholders resolved from `config.replacements.json`; no env-var settings except the web port. Never commit real secrets.
+- Config comes from `config.json` with `{{KEY}}` placeholders resolved from `config.replacements.json` (both local and gitignored); no env-var settings except the web port. Never commit real secrets. Placeholders are replaced in parsed string values, never in raw JSON text.
 - Prompt behavior is part of the contract. Update the prompt files and README together.
 
 ## Design Reasons Worth Keeping
@@ -44,5 +44,5 @@ Stack: Node.js ES modules, Express, Preact (NeoVis and Sigma graph renderers), N
 ## Working Conventions
 
 - Prefer existing service boundaries over new abstractions; for small tasks, change only the relevant pathway.
-- Frontend: keep the existing Preact UI; one component per file under `src/server/public/components`; rebuild `app.bundle.js` (tracked) after UI changes.
+- Frontend: keep the existing Preact UI; one component per file under `src/server/public/components`; `app.bundle.js` is a gitignored build output (`npm run kg:web` builds it).
 - Keep docs single-sourced: behavior -> `README.md`, code locations -> `codeMap.md`, rules -> this file, current task -> `activeContext.md`, planned work -> `roadmap.md`.

@@ -253,7 +253,6 @@ export class Neo4jGraphStore {
 				tx.run(
 					`
 					MATCH (n:KnowledgeNode)
-					WHERE coalesce(n.soft_deleted, false) <> true
 					WITH n
 					ORDER BY coalesce(n.updatedAt, n.createdAt, "") DESC, n.label ASC
 					LIMIT $limit
@@ -323,7 +322,6 @@ export class Neo4jGraphStore {
 				tx.run(
 					`
 					MATCH (n:KnowledgeNode)
-					WHERE coalesce(n.soft_deleted, false) <> true
 					RETURN n
 					ORDER BY rand()
 					LIMIT 1

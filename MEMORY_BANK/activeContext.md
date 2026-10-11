@@ -15,18 +15,20 @@ At task end, record the outcome under "Last Completed", move unfinished items to
 
 ## Current Task
 
-None. Remaining from the architecture review (`claude-arch-design-REVIEW.md`, local file): the small cleanups (`src/config.js.bak`, `config.json` tracking, `.gitignore`, `soft_deleted`), then P1 (tests, `ProposalService`, proposal store). Bug 3 is deferred to user management (roadmap). The review is not yet reflected in `roadmap.md`.
+None. Next from the architecture review (`claude-arch-design-REVIEW.md`, local file): P1 (tests, `ProposalService`, proposal store). Bug 3 is deferred to user management (roadmap). The review is not yet reflected in `roadmap.md`.
 
 ## Last Completed (2026-10-11)
 
-Review bugs 5 and 6 (uncommitted, together with the Neo4j cleanup below):
+Review cleanups (uncommitted): deleted `src/config.js.bak`; `config.json`, `config.replacements.json`, and `src/server/public/app.bundle.js` untracked and gitignored (local files kept); `.gitignore` no longer lists itself; unused `soft_deleted` filters removed from `getGraphPreview()` and `getRandomNode()`. Config loader: placeholders replaced in parsed string values (quotes, backslashes, Windows paths safe; whole-string placeholders keep type), broken replacements file is an error, unresolved placeholders warn (or throw with `strict`); new `config.replacements.example.json`; tests added.
+
+Before that (commit `df47939`), review bugs 5 and 6, together with the Neo4j cleanup below:
 
 - `Neo4jGraphStore.applyGraph()` replaces `upsertGraph()`: relation deletes, node deletes, node upserts, and relation upserts in one transaction. Direct relation edits use `upsertRelation(relation, { replaceId })`, one transaction.
 - Vector sync after commit; relation vectors of deleted nodes are removed by stored endpoints (`deleteRelationsForNodes()`); a sync failure is a 503 `VECTOR_SYNC_FAILED` error with an exposed message; HITL approval stays retryable.
 - `listHitlNotePage()` sorts all matching notes before paging and returns `total`; the HITL list shows when notes are hidden; pending ingest context uses `order: "newest"`; short-ref lookup searches all.
 - Checks: `kg:test-parser` passes (new tests for one-call apply, vector sync error, listing order); bundle builds; throwaway check on home Neo4j 2026.04 + Chroma passed 13/13 with both stores restored (rollback of a failed apply, relation replace, vector cleanup on retry, listing order).
 
-Neo4j cleanup (uncommitted): `expandFromNodes()` uses `CALL (paths) { ... }` instead of the deprecated importing `WITH` (no more deprecation warning on Ask/ingest); `createConstraints()` drops the 3.5 / 4.x branches and requires Neo4j 5.23+ with a clear error. Verified on the home Neo4j 2026.04 (constraints no-op, expansion runs, no notifications).
+Neo4j cleanup: `expandFromNodes()` uses `CALL (paths) { ... }` instead of the deprecated importing `WITH` (no more deprecation warning on Ask/ingest); `createConstraints()` drops the 3.5 / 4.x branches and requires Neo4j 5.23+ with a clear error. Verified on the home Neo4j 2026.04 (constraints no-op, expansion runs, no notifications).
 
 Before that (commit `0f3bc10`), review bug 2: `auto` mode applies only clean creates and updates. `reviewReasons()` in `src/ingestion/reviewSignals.js` (schema violations, ambiguity, contradiction, node/relation deletes) gates `ingestText()` and MCP `apply-ingestion`; the reasons are returned as `reviewReasons`. Tests cover deletes, ambiguity, contradiction, converted creates, and clean updates; delete mechanics are now tested through `applyGraphPayload()`.
 

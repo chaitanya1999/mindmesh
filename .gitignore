@@ -15,8 +15,13 @@ schema/graphSchema 2.json
 embedding_request.txt
 embedding_response.txt
 .vscode/tasks.json
-.gitignore
 .sf/
 overview.json
 overview_architecture.puml
-app.bundle.js
+
+# Local config (secrets and machine-specific values). Start from config.example.json.
+config.json
+config.replacements.json
+
+# Built frontend bundle; created by npm run kg:web / kg:web:build.
+src/server/public/app.bundle.js

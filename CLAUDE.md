@@ -33,7 +33,8 @@ Before finishing, check that every doc you touched still matches the code.
 
 - Do not commit or push unless the user asks.
 - Never stage `config.json`, `claude-chat.md`, or `mindmesh-v2-handoff.md`; they are local-only.
-- `src/server/public/app.bundle.js` is tracked: run `npm run kg:web:build` before committing UI changes.
+- `src/server/public/app.bundle.js` is a build output and gitignored; `npm run kg:web` builds it before starting the server. Run `npm run kg:web:build` to check that UI changes bundle.
+- `config.json` and `config.replacements.json` are gitignored local files; changes to the config shape go in `config.example.json`.
 - End commit messages with the attribution line given by the session, if any.
 
 ## Testing
