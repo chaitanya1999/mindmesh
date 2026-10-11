@@ -7,15 +7,10 @@ import multer from "multer";
 import { PDFParse } from "pdf-parse";
 import WordExtractor from "word-extractor";
 import { getConfig, describeRuntime } from "../config.js";
-import { createGraphStore } from "../graph/providerFactory.js";
-import { IngestionService } from "../ingestion/ingestionService.js";
 import { encodePipelineField, formatGraphRecords, normalizeGraphPayload, parseGraphExtraction, toSnakeCase } from "../ingestion/graphPayload.js";
 import { resolveGraphPayload } from "../ingestion/graphResolution.js";
 import { countReviewSignals } from "../ingestion/reviewSignals.js";
-import { KgJobsService } from "../jobs/kgJobsService.js";
-import { createLlmProvider } from "../llm/providerFactory.js";
-import { loadPrompts } from "../prompts/promptRegistry.js";
-import { HybridRagService } from "../rag/hybridRagService.js";
+import { createMindMesh, isMainModule } from "../mindmesh.js";
 import {
 	loadGraphSchema,
 	readEditableGraphSchema,
@@ -23,7 +18,6 @@ import {
 	buildApprovalSchema,
 	mergeSchemaTypes
 } from "../schema/graphSchema.js";
-import { createVectorStore } from "../vector/providerFactory.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
@@ -37,6 +31,15 @@ const SUPPORTED_INGEST_FILE_EXTENSIONS = new Set(["pdf", "docx", "doc"]);
 const port = Number(process.env.KG_WEB_PORT || process.env.PORT || 3000);
 
 const wordExtractor = new WordExtractor();
+
+// Services for the current app, set by createApp(). The helpers below read these bindings; they move
+// into HitlService (P1 step 4), after which createApp() passes services explicitly.
+let config;
+let graphStore;
+let vectorStore;
+let ingestionService;
+let ragService;
+let jobsService;
 
 const upload = multer({
 	storage: multer.memoryStorage(),
@@ -722,593 +725,576 @@ function asyncRoute(handler) {
 	};
 }
 
-const config = getConfig();
-const prompts = loadPrompts(config);
-const llmProvider = createLlmProvider(config);
-const graphStore = createGraphStore(config);
-const vectorStore = createVectorStore(config);
-const ingestionService = new IngestionService({
-	llmProvider,
-	graphStore,
-	vectorStore,
-	prompts,
-	logging: config.logging,
-	ingestion: config.ingestion,
-});
-const ragService = new HybridRagService({
-	llmProvider,
-	graphStore,
-	vectorStore,
-	prompts,
-	topK: config.rag.topK,
-	depth: config.rag.depth,
-	logging: config.logging,
-	memoryEnabled: config.rag.memory.enabled,
-	memoryMaxMessages: config.rag.memory.maxMessages,
-	memoryMaxMessageChars: config.rag.memory.maxMessageChars,
-});
-const jobsService = new KgJobsService({
-	llmProvider,
-	graphStore,
-	prompts,
-});
+// Builds the Express app without listening, so tests can start it with in-memory stores.
+export function createApp(services) {
+	({ config, graphStore, vectorStore, ingestionService, ragService, jobsService } = services);
+	const app = express();
 
-const app = express();
+	app.use(express.json({ limit: "25mb" }));
+	app.use(express.static(publicDir));
 
-app.use(express.json({ limit: "25mb" }));
-app.use(express.static(publicDir));
+	app.get("/api/graph", asyncRoute(async (req, res) => {
+		const limit = parseLimit(req.query.limit);
+		const graph = await graphStore.getGraphPreview(limit);
+		
+		res.json({
+			...withGraphSchema(graph),
+			limit,
+		});
+	}));
 
-app.get("/api/graph", asyncRoute(async (req, res) => {
-	const limit = parseLimit(req.query.limit);
-	const graph = await graphStore.getGraphPreview(limit);
-	
-	res.json({
-		...withGraphSchema(graph),
-		limit,
-	});
-}));
+	app.get("/api/nodes/search", asyncRoute(async (req, res) => {
+		const query = String(req.query.q ?? "").trim();
+		const limit = parseSearchLimit(req.query.limit);
+		const nodes = await graphStore.searchNodes(query, limit);
+		
+		res.json({ nodes, query, limit });
+	}));
 
-app.get("/api/nodes/search", asyncRoute(async (req, res) => {
-	const query = String(req.query.q ?? "").trim();
-	const limit = parseSearchLimit(req.query.limit);
-	const nodes = await graphStore.searchNodes(query, limit);
-	
-	res.json({ nodes, query, limit });
-}));
+	app.get("/api/nodes/:id/neighborhood", asyncRoute(async (req, res) => {
+		const depth = parseDepth(req.query.depth);
+		const graph = await graphStore.getNodeNeighborhood(req.params.id, depth);
+		
+		res.json({ ...withGraphSchema(graph), depth });
+	}));
 
-app.get("/api/nodes/:id/neighborhood", asyncRoute(async (req, res) => {
-	const depth = parseDepth(req.query.depth);
-	const graph = await graphStore.getNodeNeighborhood(req.params.id, depth);
-	
-	res.json({ ...withGraphSchema(graph), depth });
-}));
+	app.get("/api/nodes/:id/relations", asyncRoute(async (req, res) => {
+		const relations = await graphStore.getRelationsForNode(req.params.id);
+		
+		res.json({ relations });
+	}));
 
-app.get("/api/nodes/:id/relations", asyncRoute(async (req, res) => {
-	const relations = await graphStore.getRelationsForNode(req.params.id);
-	
-	res.json({ relations });
-}));
+	app.post("/api/nodes", asyncRoute(async (req, res) => {
+		const node = normalizeManualNode(req.body);
+		const userName = requireUserName(req.body);
+		const result = await storeManualHitlProposal({
+			userName,
+			userInput: `${userName} requested node creation for ${node.label}.`,
+			llmResponse: pipelinePayload([nodePipelineRecord("NODE_CREATE", node)]),
+		});
+		
+		res.status(202).json(result);
+	}));
 
-app.post("/api/nodes", asyncRoute(async (req, res) => {
-	const node = normalizeManualNode(req.body);
-	const userName = requireUserName(req.body);
-	const result = await storeManualHitlProposal({
-		userName,
-		userInput: `${userName} requested node creation for ${node.label}.`,
-		llmResponse: pipelinePayload([nodePipelineRecord("NODE_CREATE", node)]),
-	});
-	
-	res.status(202).json(result);
-}));
+	app.put("/api/nodes/:id", asyncRoute(async (req, res) => {
+		const node = normalizeManualNode(req.body, req.params.id);
+		const userName = requireUserName(req.body);
+		const result = await storeManualHitlProposal({
+			userName,
+			userInput: `${userName} requested node update for ${node.label}.`,
+			llmResponse: pipelinePayload([nodePipelineRecord("NODE_UPDATE", node)]),
+		});
+		
+		res.status(202).json(result);
+	}));
 
-app.put("/api/nodes/:id", asyncRoute(async (req, res) => {
-	const node = normalizeManualNode(req.body, req.params.id);
-	const userName = requireUserName(req.body);
-	const result = await storeManualHitlProposal({
-		userName,
-		userInput: `${userName} requested node update for ${node.label}.`,
-		llmResponse: pipelinePayload([nodePipelineRecord("NODE_UPDATE", node)]),
-	});
-	
-	res.status(202).json(result);
-}));
+	app.delete("/api/nodes/:id", asyncRoute(async (req, res) => {
+		const userName = requireUserName(req.body);
+		const existingNode = await graphStore.getNode(req.params.id);
+		const nodeName = graphNameFromId(req.params.id);
+		const result = await storeManualHitlProposal({
+			userName,
+			userInput: `${userName} requested node deletion for ${existingNode?.label || nodeName}.`,
+			llmResponse: pipelinePayload([nodeDeletePipelineRecord(nodeName)]),
+		});
+		
+		res.status(202).json(result);
+	}));
 
-app.delete("/api/nodes/:id", asyncRoute(async (req, res) => {
-	const userName = requireUserName(req.body);
-	const existingNode = await graphStore.getNode(req.params.id);
-	const nodeName = graphNameFromId(req.params.id);
-	const result = await storeManualHitlProposal({
-		userName,
-		userInput: `${userName} requested node deletion for ${existingNode?.label || nodeName}.`,
-		llmResponse: pipelinePayload([nodeDeletePipelineRecord(nodeName)]),
-	});
-	
-	res.status(202).json(result);
-}));
+	app.post("/api/relations", asyncRoute(async (req, res) => {
+		const relation = normalizeManualRelation(req.body);
+		const userName = requireUserName(req.body);
+		await requireExistingEndpoints(relation);
+		const result = await storeManualHitlProposal({
+			userName,
+			userInput: `${userName} requested relation creation for ${relation.relation}.`,
+			llmResponse: pipelinePayload([relationPipelineRecord("RELATION_CREATE", relation)]),
+		});
+		
+		res.status(202).json(result);
+	}));
 
-app.post("/api/relations", asyncRoute(async (req, res) => {
-	const relation = normalizeManualRelation(req.body);
-	const userName = requireUserName(req.body);
-	await requireExistingEndpoints(relation);
-	const result = await storeManualHitlProposal({
-		userName,
-		userInput: `${userName} requested relation creation for ${relation.relation}.`,
-		llmResponse: pipelinePayload([relationPipelineRecord("RELATION_CREATE", relation)]),
-	});
-	
-	res.status(202).json(result);
-}));
+	app.put("/api/relations/:id", asyncRoute(async (req, res) => {
+		const relation = normalizeManualRelation(req.body, req.params.id);
+		const userName = requireUserName(req.body);
+		await requireExistingEndpoints(relation);
+		const existingRelation = typeof graphStore.getRelation === "function"
+		? await graphStore.getRelation(req.params.id)
+		: null;
+		const lines = existingRelation
+		? [
+			relationDeletePipelineRecord(existingRelation),
+			relationPipelineRecord("RELATION_CREATE", relation),
+		]
+		: [relationPipelineRecord("RELATION_UPDATE", relation)];
+		const result = await storeManualHitlProposal({
+			userName,
+			userInput: `${userName} requested relation update for ${relation.relation}.`,
+			llmResponse: pipelinePayload(lines),
+		});
+		
+		res.status(202).json(result);
+	}));
 
-app.put("/api/relations/:id", asyncRoute(async (req, res) => {
-	const relation = normalizeManualRelation(req.body, req.params.id);
-	const userName = requireUserName(req.body);
-	await requireExistingEndpoints(relation);
-	const existingRelation = typeof graphStore.getRelation === "function"
-	? await graphStore.getRelation(req.params.id)
-	: null;
-	const lines = existingRelation
-	? [
-		relationDeletePipelineRecord(existingRelation),
-		relationPipelineRecord("RELATION_CREATE", relation),
-	]
-	: [relationPipelineRecord("RELATION_UPDATE", relation)];
-	const result = await storeManualHitlProposal({
-		userName,
-		userInput: `${userName} requested relation update for ${relation.relation}.`,
-		llmResponse: pipelinePayload(lines),
-	});
-	
-	res.status(202).json(result);
-}));
+	app.delete("/api/relations/:id", asyncRoute(async (req, res) => {
+		const userName = requireUserName(req.body);
+		const relation = typeof graphStore.getRelation === "function"
+		? await graphStore.getRelation(req.params.id)
+		: null;
+		if (!relation) {
+			const error = new Error("Relation was not found.");
+			error.status = 404;
+			throw error;
+		}
+		const result = await storeManualHitlProposal({
+			userName,
+			userInput: `${userName} requested relation deletion for ${relation.relation}.`,
+			llmResponse: pipelinePayload([relationDeletePipelineRecord(relation)]),
+		});
+		
+		res.status(202).json(result);
+	}));
 
-app.delete("/api/relations/:id", asyncRoute(async (req, res) => {
-	const userName = requireUserName(req.body);
-	const relation = typeof graphStore.getRelation === "function"
-	? await graphStore.getRelation(req.params.id)
-	: null;
-	if (!relation) {
-		const error = new Error("Relation was not found.");
-		error.status = 404;
-		throw error;
-	}
-	const result = await storeManualHitlProposal({
-		userName,
-		userInput: `${userName} requested relation deletion for ${relation.relation}.`,
-		llmResponse: pipelinePayload([relationDeletePipelineRecord(relation)]),
-	});
-	
-	res.status(202).json(result);
-}));
-
-app.post("/api/ask", asyncRoute(async (req, res) => {
-	const text = requireText(req.body);
-	const result = await ragService.answer({
-		query: text,
-		source: "web",
-		sessionId: optionalSessionId(req.body),
-		memoryMessages: optionalMemoryMessages(req.body),
-		includeUnverifiedKnowledge: Boolean(req.body?.includeUnverifiedKnowledge),
-	});
-	
-	res.json({
-		answer: result.answer,
-		entryNodes: result.entryNodes,
-		graph: result.graph,
-		depth: result.depth,
-		sessionId: result.sessionId,
-	});
-}));
-
-app.post("/api/jobs/scanner", asyncRoute(async (req, res) => {
-	const result = await jobsService.runJob({
-		jobType: "scanner",
-		depth: parseJobDepth(req.body?.depth),
-		nodeId: req.body?.nodeId,
-	});
-	
-	res.json(result);
-}));
-
-app.post("/api/jobs/nugget", asyncRoute(async (req, res) => {
-	const result = await jobsService.runJob({
-		jobType: "nugget",
-		depth: parseJobDepth(req.body?.depth),
-		nodeId: req.body?.nodeId,
-	});
-	
-	res.json(result);
-}));
-
-app.get("/api/schema", asyncRoute(async (_req, res) => {
-	res.json(readEditableGraphSchema(config));
-}));
-
-app.put("/api/schema", asyncRoute(async (req, res) => {
-	try {
-		const result = saveEditableGraphSchema(config, {
-			rawJson: req.body?.rawJson,
-			schema: req.body?.schema,
+	app.post("/api/ask", asyncRoute(async (req, res) => {
+		const text = requireText(req.body);
+		const result = await ragService.answer({
+			query: text,
+			source: "web",
+			sessionId: optionalSessionId(req.body),
+			memoryMessages: optionalMemoryMessages(req.body),
+			includeUnverifiedKnowledge: Boolean(req.body?.includeUnverifiedKnowledge),
 		});
 		
 		res.json({
-			...result,
-			status: "saved",
+			answer: result.answer,
+			entryNodes: result.entryNodes,
+			graph: result.graph,
+			depth: result.depth,
+			sessionId: result.sessionId,
 		});
-	} catch (error) {
-		error.status = 400;
-		throw error;
-	}
-}));
+	}));
 
-app.get("/api/hitl/notes", asyncRoute(async (req, res) => {
-	requireHitlNotesSupport();
-	const limit = parseSearchLimit(req.query.limit || 100);
-	const { notes, total } = await vectorStore.listHitlNotePage({ status: "pending", limit });
+	app.post("/api/jobs/scanner", asyncRoute(async (req, res) => {
+		const result = await jobsService.runJob({
+			jobType: "scanner",
+			depth: parseJobDepth(req.body?.depth),
+			nodeId: req.body?.nodeId,
+		});
+		
+		res.json(result);
+	}));
 
-	res.json({
-		// llmResponse lets the review list show per-operation counts parsed exactly like the detail view.
-		notes: notes.map((note) => ({ ...hitlNoteSummary(note), llmResponse: note.llmResponse })),
-		total,
-		limit,
-	});
-}));
+	app.post("/api/jobs/nugget", asyncRoute(async (req, res) => {
+		const result = await jobsService.runJob({
+			jobType: "nugget",
+			depth: parseJobDepth(req.body?.depth),
+			nodeId: req.body?.nodeId,
+		});
+		
+		res.json(result);
+	}));
 
-app.get("/api/hitl/notes/:id", asyncRoute(async (req, res) => {
-	const note = await requireHitlNote(req.params.id);
-	
-	res.json({
-		note: hitlNoteDetail(note),
-	});
-}));
+	app.get("/api/schema", asyncRoute(async (_req, res) => {
+		res.json(readEditableGraphSchema(config));
+	}));
 
-app.put("/api/hitl/notes/:id/reviewer-notes", asyncRoute(async (req, res) => {
-	const note = await requireHitlNote(req.params.id);
-	const updatedNote = await ingestionService.saveHitlReviewerNotes({
-		noteId: note.id,
-		reviewerNotes: req.body?.reviewerNotes,
-	});
-
-	res.json({
-		note: hitlNoteDetail(updatedNote),
-	});
-}));
-
-// Overwrites the proposal with a fresh extraction guided by the reviewer notes; the note is untouched if it fails.
-app.post("/api/hitl/notes/:id/regenerate", asyncRoute(async (req, res) => {
-	const note = await requireHitlNote(req.params.id);
-	const regeneratedBy = requireString(req.body?.reviewedBy, "reviewedBy");
-	const result = await ingestionService.regenerateHitlProposal({
-		noteId: note.id,
-		reviewerNotes: req.body?.reviewerNotes,
-		previousProposal: req.body?.llmResponse,
-		regeneratedBy,
-	});
-
-	res.json({
-		note: hitlNoteDetail(result.note),
-	});
-}));
-
-app.get("/api/hitl/notes/:id/graph", asyncRoute(async (req, res) => {
-	const note = await requireHitlNote(req.params.id);
-	const depth = parseDepth(req.query.depth ?? 2);
-	const graph = await buildHitlNoteGraphPreview(note, { depth });
-	
-	res.json(graph);
-}));
-
-app.post("/api/hitl/notes/:id/graph", asyncRoute(async (req, res) => {
-	const note = await requireHitlNote(req.params.id);
-	const depth = parseDepth(req.body?.depth ?? 2);
-	const llmResponse = requireString(req.body?.llmResponse ?? note.llmResponse, "llmResponse");
-	const graph = await buildHitlNoteGraphPreview(note, { depth, llmResponse });
-	
-	res.json(graph);
-}));
-
-app.get("/api/hitl/graph", asyncRoute(async (req, res) => {
-	const limit = parseLimit(req.query.limit);
-	const graph = await buildHitlGraphPreview(limit);
-	
-	res.json(graph);
-}));
-
-app.post("/api/hitl/nodes", asyncRoute(async (req, res) => {
-	requireDirectGraphCrudSupport();
-	const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
-	const node = normalizeManualNode(req.body);
-	const llmResponse = pipelinePayload([nodePipelineRecord("NODE_CREATE", node)]);
-	const pendingProposal = await pendingProposalForSchemaViolation({
-		reviewedBy,
-		userInput: `${reviewedBy} requested node creation for ${node.label}.`,
-		llmResponse,
-	});
-	if (pendingProposal) {
-		res.status(202).json(pendingProposal);
-		return;
-	}
-	const storedNode = await graphStore.upsertNode(node);
-	await vectorStore.upsertNode(storedNode);
-	const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
-	
-	res.json({
-		status: "applied",
-		applied: true,
-		reviewedBy,
-		node: storedNode,
-		graph: withGraphSchema(graph),
-	});
-}));
-
-app.put("/api/hitl/nodes/:id", asyncRoute(async (req, res) => {
-	requireDirectGraphCrudSupport();
-	const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
-	const node = normalizeManualNode(req.body, req.params.id);
-	const llmResponse = pipelinePayload([nodePipelineRecord("NODE_UPDATE", node)]);
-	const pendingProposal = await pendingProposalForSchemaViolation({
-		reviewedBy,
-		userInput: `${reviewedBy} requested node update for ${node.label}.`,
-		llmResponse,
-	});
-	if (pendingProposal) {
-		res.status(202).json(pendingProposal);
-		return;
-	}
-	const storedNode = await graphStore.upsertNode(node);
-	await vectorStore.upsertNode(storedNode);
-	const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
-	
-	res.json({
-		status: "applied",
-		applied: true,
-		reviewedBy,
-		node: storedNode,
-		graph: withGraphSchema(graph),
-	});
-}));
-
-app.delete("/api/hitl/nodes/:id", asyncRoute(async (req, res) => {
-	requireDirectGraphCrudSupport();
-	const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
-	const result = await graphStore.deleteNode(req.params.id);
-	await vectorStore.deleteNodes([result.nodeId]);
-	await vectorStore.deleteRelations(result.relationIds ?? []);
-	await vectorStore.deleteRelationsForNodes([result.nodeId]);
-	const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
-	
-	res.json({
-		status: "applied",
-		applied: true,
-		reviewedBy,
-		deletedNodeId: result.nodeId,
-		deletedRelationIds: result.relationIds ?? [],
-		graph: withGraphSchema(graph),
-	});
-}));
-
-app.post("/api/hitl/relations", asyncRoute(async (req, res) => {
-	requireDirectGraphCrudSupport();
-	const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
-	const relation = normalizeManualRelation(req.body);
-	await requireExistingEndpoints(relation);
-	const llmResponse = pipelinePayload([relationPipelineRecord("RELATION_CREATE", relation)]);
-	const pendingProposal = await pendingProposalForSchemaViolation({
-		reviewedBy,
-		userInput: `${reviewedBy} requested relation creation for ${relation.relation}.`,
-		llmResponse,
-	});
-	if (pendingProposal) {
-		res.status(202).json(pendingProposal);
-		return;
-	}
-	const storedRelation = await graphStore.upsertRelation(relation);
-	await vectorStore.upsertRelation(storedRelation);
-	const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
-	
-	res.json({
-		status: "applied",
-		applied: true,
-		reviewedBy,
-		relation: storedRelation,
-		graph: withGraphSchema(graph),
-	});
-}));
-
-app.put("/api/hitl/relations/:id", asyncRoute(async (req, res) => {
-	requireDirectGraphCrudSupport();
-	const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
-	// The id is recomputed from source, relation and target, so a changed relation or endpoint gets its canonical id.
-	const relation = normalizeManualRelation(req.body);
-	await requireExistingEndpoints(relation);
-	const llmResponse = pipelinePayload([relationPipelineRecord("RELATION_UPDATE", relation)]);
-	const pendingProposal = await pendingProposalForSchemaViolation({
-		reviewedBy,
-		userInput: `${reviewedBy} requested relation update for ${relation.relation}.`,
-		llmResponse,
-	});
-	if (pendingProposal) {
-		res.status(202).json(pendingProposal);
-		return;
-	}
-	// One transaction: if the id changed, the old relation is removed together with writing the new one.
-	const storedRelation = await graphStore.upsertRelation(relation, { replaceId: req.params.id });
-	if (relation.id !== req.params.id) {
-		await vectorStore.deleteRelations([req.params.id]);
-	}
-	await vectorStore.upsertRelation(storedRelation);
-	const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
-	
-	res.json({
-		status: "applied",
-		applied: true,
-		reviewedBy,
-		relation: storedRelation,
-		graph: withGraphSchema(graph),
-	});
-}));
-
-app.delete("/api/hitl/relations/:id", asyncRoute(async (req, res) => {
-	requireDirectGraphCrudSupport();
-	const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
-	const result = await graphStore.deleteRelation(req.params.id);
-	await vectorStore.deleteRelations([result.relationId]);
-	const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
-	
-	res.json({
-		status: "applied",
-		applied: true,
-		reviewedBy,
-		deletedRelationId: result.relationId,
-		graph: withGraphSchema(graph),
-	});
-}));
-
-app.post("/api/hitl/notes/:id/approve", asyncRoute(async (req, res) => {
-	const note = await requireHitlNote(req.params.id);
-	const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
-	const llmResponse = requireString(req.body?.llmResponse ?? req.body?.editedResponse ?? note.llmResponse, "llmResponse");
-	
-	// Step 1: Parse and normalize (first pass to get schema suggestions)
-	const extractedGraph = parseGraphExtraction(llmResponse);
-	const baseSchema = currentGraphSchema();
-	
-	// Step 2: Normalize to extract schema suggestions
-	const explicitSuggestions = extractedGraph.schemaSuggestions;
-
-	
-	// Step 3: Build merged schema with proposed types — in memory only
-	const approvalSchema = buildApprovalSchema(baseSchema, explicitSuggestions);
-	
-	// Step 4: Re-normalize against the merged schema
-	const graphPayload = normalizeGraphPayload(extractedGraph, {
-		schema: approvalSchema,
-	});
-	
-	// Step 5: Validate — should now pass since merged schema includes the new types
-	if (hasSchemaViolations(graphPayload)) {
-		throw schemaViolationError(graphPayload);
-	}
-	
-	// Step 6: Apply the graph mutations (this also checks relation endpoints against the graph), then
-	// persist the approved schema types, so a failed apply leaves the schema unchanged.
-	const storedGraph = await ingestionService.applyGraphPayload(graphPayload, {
-		source: `hitl:${note.id}`,
-		debugLogger: { log: () => {} },
-	});
-	persistHitlSchemaSuggestions(baseSchema, extractedGraph);
-	await vectorStore.deleteHitlNotes([note.id]);
-	const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
-	
-	res.json({
-		status: "approved",
-		applied: true,
-		reviewedBy,
-		nodes: storedGraph.nodes,
-		relations: storedGraph.relations,
-		nodeDeletes: storedGraph.nodeDeletes,
-		relationDeletes: storedGraph.relationDeletes,
-		deletedNodeIds: storedGraph.deletedNodeIds,
-		deletedRelationIds: storedGraph.deletedRelationIds,
-		triplets: buildTriplets(storedGraph),
-		schemaSuggestions: graphPayload.schemaSuggestions,
-		schemaViolations: graphPayload.schemaViolations ?? [],
-		schemaWarnings: graphPayload.schemaWarnings,
-		graph: withGraphSchema(graph),
-	});
-}));
-
-app.delete("/api/hitl/notes/:id", asyncRoute(async (req, res) => {
-	const note = await requireHitlNote(req.params.id);
-	await vectorStore.deleteHitlNotes([note.id]);
-	
-	res.json({
-		status: "rejected",
-		deleted: true,
-		id: note.id,
-	});
-}));
-
-app.post("/api/ingest", upload.fields([
-	{ name: "files", maxCount: MAX_INGEST_FILES },
-	{ name: "file", maxCount: MAX_INGEST_FILES },
-]), asyncRoute(async (req, res) => {
-	const text = await buildIngestText(req);
-	const storedGraph = await ingestionService.ingestText({
-		text,
-		source: "web",
-		userName: requireIngestUserName(req),
-	});
-	const graph = await graphStore.getGraphPreview(DEFAULT_GRAPH_LIMIT);
-	
-	res.json({
-		status: storedGraph.status || "applied",
-		applied: storedGraph.applied ?? true,
-		hitlNote: storedGraph.hitlNote,
-		nodes: storedGraph.nodes,
-		relations: storedGraph.relations,
-		nodeDeletes: storedGraph.nodeDeletes,
-		relationDeletes: storedGraph.relationDeletes,
-		deletedNodeIds: storedGraph.deletedNodeIds,
-		deletedRelationIds: storedGraph.deletedRelationIds,
-		triplets: buildTriplets(storedGraph),
-		schemaSuggestions: storedGraph.schemaSuggestions,
-		schemaViolations: storedGraph.schemaViolations ?? [],
-		schemaWarnings: storedGraph.schemaWarnings,
-		reviewReasons: storedGraph.reviewReasons ?? [],
-		graph: withGraphSchema(graph),
-	});
-}));
-
-app.get(/^\/hitl\/?$/, (_req, res) => {
-	res.sendFile(path.join(publicDir, "index.html"));
-});
-
-app.get(/^\/jobs\/?$/, (_req, res) => {
-	res.sendFile(path.join(publicDir, "index.html"));
-});
-
-app.get(/^\/schema\/?$/, (_req, res) => {
-	res.sendFile(path.join(publicDir, "index.html"));
-});
-
-app.use((req, res) => {
-	res.status(404).json({ error: "Not found." });
-});
-
-app.use((error, req, res, _next) => {
-	const status = Number(error.status) || (error.name === "MulterError" ? 400 : 500);
-	// 5xx details stay in the terminal unless the error is marked `expose` (for example a vector sync
-	// failure, where the user must know the graph was saved).
-	const message = status >= 500 && !error.expose ? "Server error. Check the terminal for details." : error.message;
-	
-	if (status >= 500) {
-		console.error(error);
-	}
-	
-	res.status(status).json({ error: message });
-});
-
-const server = app.listen(port, () => {
-	console.log("MindMesh web server started.");
-	console.log(JSON.stringify({
-		...describeRuntime(config),
-		port,
-		url: `http://localhost:${port}`,
-	}, null, 2));
-});
-
-async function shutdown(signal) {
-	console.log(`\nReceived ${signal}. Closing MindMesh web server.`);
-	server.close(async () => {
+	app.put("/api/schema", asyncRoute(async (req, res) => {
 		try {
-			await graphStore.close();
-			process.exit(0);
+			const result = saveEditableGraphSchema(config, {
+				rawJson: req.body?.rawJson,
+				schema: req.body?.schema,
+			});
+			
+			res.json({
+				...result,
+				status: "saved",
+			});
 		} catch (error) {
-			console.error(error);
-			process.exit(1);
+			error.status = 400;
+			throw error;
 		}
+	}));
+
+	app.get("/api/hitl/notes", asyncRoute(async (req, res) => {
+		requireHitlNotesSupport();
+		const limit = parseSearchLimit(req.query.limit || 100);
+		const { notes, total } = await vectorStore.listHitlNotePage({ status: "pending", limit });
+
+		res.json({
+			// llmResponse lets the review list show per-operation counts parsed exactly like the detail view.
+			notes: notes.map((note) => ({ ...hitlNoteSummary(note), llmResponse: note.llmResponse })),
+			total,
+			limit,
+		});
+	}));
+
+	app.get("/api/hitl/notes/:id", asyncRoute(async (req, res) => {
+		const note = await requireHitlNote(req.params.id);
+		
+		res.json({
+			note: hitlNoteDetail(note),
+		});
+	}));
+
+	app.put("/api/hitl/notes/:id/reviewer-notes", asyncRoute(async (req, res) => {
+		const note = await requireHitlNote(req.params.id);
+		const updatedNote = await ingestionService.saveHitlReviewerNotes({
+			noteId: note.id,
+			reviewerNotes: req.body?.reviewerNotes,
+		});
+
+		res.json({
+			note: hitlNoteDetail(updatedNote),
+		});
+	}));
+
+	// Overwrites the proposal with a fresh extraction guided by the reviewer notes; the note is untouched if it fails.
+	app.post("/api/hitl/notes/:id/regenerate", asyncRoute(async (req, res) => {
+		const note = await requireHitlNote(req.params.id);
+		const regeneratedBy = requireString(req.body?.reviewedBy, "reviewedBy");
+		const result = await ingestionService.regenerateHitlProposal({
+			noteId: note.id,
+			reviewerNotes: req.body?.reviewerNotes,
+			previousProposal: req.body?.llmResponse,
+			regeneratedBy,
+		});
+
+		res.json({
+			note: hitlNoteDetail(result.note),
+		});
+	}));
+
+	app.get("/api/hitl/notes/:id/graph", asyncRoute(async (req, res) => {
+		const note = await requireHitlNote(req.params.id);
+		const depth = parseDepth(req.query.depth ?? 2);
+		const graph = await buildHitlNoteGraphPreview(note, { depth });
+		
+		res.json(graph);
+	}));
+
+	app.post("/api/hitl/notes/:id/graph", asyncRoute(async (req, res) => {
+		const note = await requireHitlNote(req.params.id);
+		const depth = parseDepth(req.body?.depth ?? 2);
+		const llmResponse = requireString(req.body?.llmResponse ?? note.llmResponse, "llmResponse");
+		const graph = await buildHitlNoteGraphPreview(note, { depth, llmResponse });
+		
+		res.json(graph);
+	}));
+
+	app.get("/api/hitl/graph", asyncRoute(async (req, res) => {
+		const limit = parseLimit(req.query.limit);
+		const graph = await buildHitlGraphPreview(limit);
+		
+		res.json(graph);
+	}));
+
+	app.post("/api/hitl/nodes", asyncRoute(async (req, res) => {
+		requireDirectGraphCrudSupport();
+		const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
+		const node = normalizeManualNode(req.body);
+		const llmResponse = pipelinePayload([nodePipelineRecord("NODE_CREATE", node)]);
+		const pendingProposal = await pendingProposalForSchemaViolation({
+			reviewedBy,
+			userInput: `${reviewedBy} requested node creation for ${node.label}.`,
+			llmResponse,
+		});
+		if (pendingProposal) {
+			res.status(202).json(pendingProposal);
+			return;
+		}
+		const storedNode = await graphStore.upsertNode(node);
+		await vectorStore.upsertNode(storedNode);
+		const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
+		
+		res.json({
+			status: "applied",
+			applied: true,
+			reviewedBy,
+			node: storedNode,
+			graph: withGraphSchema(graph),
+		});
+	}));
+
+	app.put("/api/hitl/nodes/:id", asyncRoute(async (req, res) => {
+		requireDirectGraphCrudSupport();
+		const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
+		const node = normalizeManualNode(req.body, req.params.id);
+		const llmResponse = pipelinePayload([nodePipelineRecord("NODE_UPDATE", node)]);
+		const pendingProposal = await pendingProposalForSchemaViolation({
+			reviewedBy,
+			userInput: `${reviewedBy} requested node update for ${node.label}.`,
+			llmResponse,
+		});
+		if (pendingProposal) {
+			res.status(202).json(pendingProposal);
+			return;
+		}
+		const storedNode = await graphStore.upsertNode(node);
+		await vectorStore.upsertNode(storedNode);
+		const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
+		
+		res.json({
+			status: "applied",
+			applied: true,
+			reviewedBy,
+			node: storedNode,
+			graph: withGraphSchema(graph),
+		});
+	}));
+
+	app.delete("/api/hitl/nodes/:id", asyncRoute(async (req, res) => {
+		requireDirectGraphCrudSupport();
+		const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
+		const result = await graphStore.deleteNode(req.params.id);
+		await vectorStore.deleteNodes([result.nodeId]);
+		await vectorStore.deleteRelations(result.relationIds ?? []);
+		await vectorStore.deleteRelationsForNodes([result.nodeId]);
+		const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
+		
+		res.json({
+			status: "applied",
+			applied: true,
+			reviewedBy,
+			deletedNodeId: result.nodeId,
+			deletedRelationIds: result.relationIds ?? [],
+			graph: withGraphSchema(graph),
+		});
+	}));
+
+	app.post("/api/hitl/relations", asyncRoute(async (req, res) => {
+		requireDirectGraphCrudSupport();
+		const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
+		const relation = normalizeManualRelation(req.body);
+		await requireExistingEndpoints(relation);
+		const llmResponse = pipelinePayload([relationPipelineRecord("RELATION_CREATE", relation)]);
+		const pendingProposal = await pendingProposalForSchemaViolation({
+			reviewedBy,
+			userInput: `${reviewedBy} requested relation creation for ${relation.relation}.`,
+			llmResponse,
+		});
+		if (pendingProposal) {
+			res.status(202).json(pendingProposal);
+			return;
+		}
+		const storedRelation = await graphStore.upsertRelation(relation);
+		await vectorStore.upsertRelation(storedRelation);
+		const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
+		
+		res.json({
+			status: "applied",
+			applied: true,
+			reviewedBy,
+			relation: storedRelation,
+			graph: withGraphSchema(graph),
+		});
+	}));
+
+	app.put("/api/hitl/relations/:id", asyncRoute(async (req, res) => {
+		requireDirectGraphCrudSupport();
+		const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
+		// The id is recomputed from source, relation and target, so a changed relation or endpoint gets its canonical id.
+		const relation = normalizeManualRelation(req.body);
+		await requireExistingEndpoints(relation);
+		const llmResponse = pipelinePayload([relationPipelineRecord("RELATION_UPDATE", relation)]);
+		const pendingProposal = await pendingProposalForSchemaViolation({
+			reviewedBy,
+			userInput: `${reviewedBy} requested relation update for ${relation.relation}.`,
+			llmResponse,
+		});
+		if (pendingProposal) {
+			res.status(202).json(pendingProposal);
+			return;
+		}
+		// One transaction: if the id changed, the old relation is removed together with writing the new one.
+		const storedRelation = await graphStore.upsertRelation(relation, { replaceId: req.params.id });
+		if (relation.id !== req.params.id) {
+			await vectorStore.deleteRelations([req.params.id]);
+		}
+		await vectorStore.upsertRelation(storedRelation);
+		const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
+		
+		res.json({
+			status: "applied",
+			applied: true,
+			reviewedBy,
+			relation: storedRelation,
+			graph: withGraphSchema(graph),
+		});
+	}));
+
+	app.delete("/api/hitl/relations/:id", asyncRoute(async (req, res) => {
+		requireDirectGraphCrudSupport();
+		const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
+		const result = await graphStore.deleteRelation(req.params.id);
+		await vectorStore.deleteRelations([result.relationId]);
+		const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
+		
+		res.json({
+			status: "applied",
+			applied: true,
+			reviewedBy,
+			deletedRelationId: result.relationId,
+			graph: withGraphSchema(graph),
+		});
+	}));
+
+	app.post("/api/hitl/notes/:id/approve", asyncRoute(async (req, res) => {
+		const note = await requireHitlNote(req.params.id);
+		const reviewedBy = requireString(req.body?.reviewedBy, "reviewedBy");
+		const llmResponse = requireString(req.body?.llmResponse ?? req.body?.editedResponse ?? note.llmResponse, "llmResponse");
+		
+		// Step 1: Parse and normalize (first pass to get schema suggestions)
+		const extractedGraph = parseGraphExtraction(llmResponse);
+		const baseSchema = currentGraphSchema();
+		
+		// Step 2: Normalize to extract schema suggestions
+		const explicitSuggestions = extractedGraph.schemaSuggestions;
+
+		
+		// Step 3: Build merged schema with proposed types — in memory only
+		const approvalSchema = buildApprovalSchema(baseSchema, explicitSuggestions);
+		
+		// Step 4: Re-normalize against the merged schema
+		const graphPayload = normalizeGraphPayload(extractedGraph, {
+			schema: approvalSchema,
+		});
+		
+		// Step 5: Validate — should now pass since merged schema includes the new types
+		if (hasSchemaViolations(graphPayload)) {
+			throw schemaViolationError(graphPayload);
+		}
+		
+		// Step 6: Apply the graph mutations (this also checks relation endpoints against the graph), then
+		// persist the approved schema types, so a failed apply leaves the schema unchanged.
+		const storedGraph = await ingestionService.applyGraphPayload(graphPayload, {
+			source: `hitl:${note.id}`,
+			debugLogger: { log: () => {} },
+		});
+		persistHitlSchemaSuggestions(baseSchema, extractedGraph);
+		await vectorStore.deleteHitlNotes([note.id]);
+		const graph = await buildHitlGraphPreview(DEFAULT_GRAPH_LIMIT);
+		
+		res.json({
+			status: "approved",
+			applied: true,
+			reviewedBy,
+			nodes: storedGraph.nodes,
+			relations: storedGraph.relations,
+			nodeDeletes: storedGraph.nodeDeletes,
+			relationDeletes: storedGraph.relationDeletes,
+			deletedNodeIds: storedGraph.deletedNodeIds,
+			deletedRelationIds: storedGraph.deletedRelationIds,
+			triplets: buildTriplets(storedGraph),
+			schemaSuggestions: graphPayload.schemaSuggestions,
+			schemaViolations: graphPayload.schemaViolations ?? [],
+			schemaWarnings: graphPayload.schemaWarnings,
+			graph: withGraphSchema(graph),
+		});
+	}));
+
+	app.delete("/api/hitl/notes/:id", asyncRoute(async (req, res) => {
+		const note = await requireHitlNote(req.params.id);
+		await vectorStore.deleteHitlNotes([note.id]);
+		
+		res.json({
+			status: "rejected",
+			deleted: true,
+			id: note.id,
+		});
+	}));
+
+	app.post("/api/ingest", upload.fields([
+		{ name: "files", maxCount: MAX_INGEST_FILES },
+		{ name: "file", maxCount: MAX_INGEST_FILES },
+	]), asyncRoute(async (req, res) => {
+		const text = await buildIngestText(req);
+		const storedGraph = await ingestionService.ingestText({
+			text,
+			source: "web",
+			userName: requireIngestUserName(req),
+		});
+		const graph = await graphStore.getGraphPreview(DEFAULT_GRAPH_LIMIT);
+		
+		res.json({
+			status: storedGraph.status || "applied",
+			applied: storedGraph.applied ?? true,
+			hitlNote: storedGraph.hitlNote,
+			nodes: storedGraph.nodes,
+			relations: storedGraph.relations,
+			nodeDeletes: storedGraph.nodeDeletes,
+			relationDeletes: storedGraph.relationDeletes,
+			deletedNodeIds: storedGraph.deletedNodeIds,
+			deletedRelationIds: storedGraph.deletedRelationIds,
+			triplets: buildTriplets(storedGraph),
+			schemaSuggestions: storedGraph.schemaSuggestions,
+			schemaViolations: storedGraph.schemaViolations ?? [],
+			schemaWarnings: storedGraph.schemaWarnings,
+			reviewReasons: storedGraph.reviewReasons ?? [],
+			graph: withGraphSchema(graph),
+		});
+	}));
+
+	app.get(/^\/hitl\/?$/, (_req, res) => {
+		res.sendFile(path.join(publicDir, "index.html"));
 	});
+
+	app.get(/^\/jobs\/?$/, (_req, res) => {
+		res.sendFile(path.join(publicDir, "index.html"));
+	});
+
+	app.get(/^\/schema\/?$/, (_req, res) => {
+		res.sendFile(path.join(publicDir, "index.html"));
+	});
+
+	app.use((req, res) => {
+		res.status(404).json({ error: "Not found." });
+	});
+
+	app.use((error, req, res, _next) => {
+		const status = Number(error.status) || (error.name === "MulterError" ? 400 : 500);
+		// 5xx details stay in the terminal unless the error is marked `expose` (for example a vector sync
+		// failure, where the user must know the graph was saved).
+		const message = status >= 500 && !error.expose ? "Server error. Check the terminal for details." : error.message;
+		
+		if (status >= 500) {
+			console.error(error);
+		}
+		
+		res.status(status).json({ error: message });
+	});
+
+	return app;
 }
 
-process.on("SIGINT", () => shutdown("SIGINT"));
-process.on("SIGTERM", () => shutdown("SIGTERM"));
+async function main() {
+	const services = createMindMesh(getConfig());
+	const app = createApp(services);
+	const server = app.listen(port, () => {
+		console.log("MindMesh web server started.");
+		console.log(JSON.stringify({
+			...describeRuntime(services.config),
+			port,
+			url: `http://localhost:${port}`,
+		}, null, 2));
+	});
+
+	async function shutdown(signal) {
+		console.log(`\nReceived ${signal}. Closing MindMesh web server.`);
+		server.close(async () => {
+			try {
+				await services.close();
+				process.exit(0);
+			} catch (error) {
+				console.error(error);
+				process.exit(1);
+			}
+		});
+	}
+
+	process.on("SIGINT", () => shutdown("SIGINT"));
+	process.on("SIGTERM", () => shutdown("SIGTERM"));
+}
+
+if (isMainModule(import.meta.url)) {
+	main();
+}

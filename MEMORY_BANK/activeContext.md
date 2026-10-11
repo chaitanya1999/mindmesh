@@ -15,7 +15,22 @@ At task end, record the outcome under "Last Completed", move unfinished items to
 
 ## Current Task
 
-None. Next from the architecture review (`claude-arch-design-REVIEW.md`, local file): P1 (tests, `ProposalService`, proposal store). Bug 3 is deferred to user management (roadmap). The review is not yet reflected in `roadmap.md`.
+Goal: P1 from the architecture review. Move the proposal lifecycle and direct reviewer edits into `HitlService`, and every graph write into `GraphWriteService`, behind characterization tests. No behavior change.
+
+Agreed design:
+- `HitlService`: submit, approve, reject, regenerate, reviewer notes, preview, list, short refs, and direct reviewer edits. Decides whether something may be written (schema rules, `reviewReasons()`, approved type merge). Returns both pipe text and structured records.
+- `GraphWriteService`: graph check, one Neo4j transaction, vector sync, vector sync error. The only caller of store write methods.
+- `IngestionService` shrinks to context retrieval, prompt, LLM call, parsing.
+- No spaces / context argument for now.
+
+Plan (one commit per step; all tests pass after each):
+1. Composition root: `createMindMesh(config, overrides)` builds stores and services once (server, MCP, ingest/ask CLIs); `createApp(services)` and `createMcpServer(services)` build without listening/connecting.
+2. Characterization tests with `node:test` in `test/` (`npm test`), fake in-memory stores, HTTP and MCP in-memory transport.
+3. Extract `GraphWriteService`; direct-edit routes use it.
+4. Extract `HitlService`; server and MCP become thin.
+5. Docs: README, codeMap, core, review file.
+
+Done when: `npm test` and `kg:test-parser` pass after every step, and the server, MCP, and CLIs start as before.
 
 ## Last Completed (2026-10-11)
 

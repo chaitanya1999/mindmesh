@@ -1,10 +1,6 @@
 import { getConfig, describeRuntime } from "../config.js";
 import { readInput } from "../input/readInput.js";
-import { loadPrompts } from "../prompts/promptRegistry.js";
-import { createLlmProvider } from "../llm/providerFactory.js";
-import { createGraphStore } from "../graph/providerFactory.js";
-import { createVectorStore } from "../vector/providerFactory.js";
-import { IngestionService } from "../ingestion/ingestionService.js";
+import { createMindMesh } from "../mindmesh.js";
 
 const FALLBACK_TEXT = "EKYC Screen uses PAN Verification API. PAN Verification API validates customer PAN details for onboarding.";
 
@@ -15,21 +11,10 @@ async function main() {
 		prompt: "Text to ingest: ",
 	});
 	const config = getConfig();
-	const prompts = loadPrompts(config);
-	const llmProvider = createLlmProvider(config, input.options.provider);
-	const graphStore = createGraphStore(config);
-	const vectorStore = createVectorStore(config);
+	const services = createMindMesh(config, { llmProviderName: input.options.provider });
 
 	try {
-		const service = new IngestionService({
-			llmProvider,
-			graphStore,
-			vectorStore,
-			prompts,
-			logging: config.logging,
-			ingestion: config.ingestion,
-		});
-		const graph = await service.ingestText({
+		const graph = await services.ingestionService.ingestText({
 			text: input.text,
 			source: input.source,
 			userName: config.ingestion.hitlDefaultUserName || "cli-user",
@@ -87,7 +72,7 @@ async function main() {
 			}
 		}
 	} finally {
-		await graphStore.close();
+		await services.close();
 	}
 }
 

@@ -1,10 +1,6 @@
 import { getConfig, describeRuntime } from "../config.js";
 import { readInput } from "../input/readInput.js";
-import { loadPrompts } from "../prompts/promptRegistry.js";
-import { createLlmProvider } from "../llm/providerFactory.js";
-import { createGraphStore } from "../graph/providerFactory.js";
-import { createVectorStore } from "../vector/providerFactory.js";
-import { HybridRagService } from "../rag/hybridRagService.js";
+import { createMindMesh } from "../mindmesh.js";
 
 const FALLBACK_QUESTION = "What does the EKYC screen use?";
 
@@ -15,22 +11,10 @@ async function main() {
 		prompt: "Question: ",
 	});
 	const config = getConfig();
-	const prompts = loadPrompts(config);
-	const llmProvider = createLlmProvider(config, input.options.provider);
-	const graphStore = createGraphStore(config);
-	const vectorStore = createVectorStore(config);
+	const services = createMindMesh(config, { llmProviderName: input.options.provider });
 
 	try {
-		const service = new HybridRagService({
-			llmProvider,
-			graphStore,
-			vectorStore,
-			prompts,
-			topK: config.rag.topK,
-			depth: config.rag.depth,
-			logging: config.logging,
-		});
-		const result = await service.answer({ query: input.text, source: input.source });
+		const result = await services.ragService.answer({ query: input.text, source: input.source });
 
 		console.log("MindMesh answer complete.");
 		console.log(JSON.stringify({
@@ -52,7 +36,7 @@ async function main() {
 		console.log("\nAnswer:");
 		console.log(result.answer);
 	} finally {
-		await graphStore.close();
+		await services.close();
 	}
 }
 
