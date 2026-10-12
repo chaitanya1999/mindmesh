@@ -30,7 +30,7 @@ Stack: Node.js ES modules, Express, Preact (NeoVis and Sigma graph renderers), N
 - Record `metadata` holds HITL review signals (`AMBIGUITY:` / `CONTRADICTION:`) and exists only in proposals. Never persist it to the graph.
 - Relations never create or rewrite nodes. Every endpoint must exist in the graph or have a node record in the same payload; an existing endpoint is only referenced. There are no fallback types: a blank type is a schema violation.
 - Approved types live only in the schema's `nodeTypes`/`relationshipTypes`. Type suggestions stay in proposals and are merged on approval; never auto-promote them.
-- The MCP server never creates an LLM provider.
+- The MCP server never creates an LLM provider. Approve and reject over MCP exist only when `mcp.allowReviewDecisions` is true (default false). `query_cypher` stays read-only, enforced by Neo4j (`EXPLAIN` query type `r`, read transaction), never by keyword checks alone. The MCP process writes nothing but protocol messages to stdout.
 - Config comes from `config.json` with `{{KEY}}` placeholders resolved from `config.replacements.json` (both local and gitignored); no env-var settings except the web port. Never commit real secrets. Placeholders are replaced in parsed string values, never in raw JSON text.
 - Prompt behavior is part of the contract. Update the prompt files and README together.
 

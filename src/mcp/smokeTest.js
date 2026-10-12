@@ -11,6 +11,8 @@ const serverPath = path.join(__dirname, "server.js");
 const SMOKE_SOURCE_NAME = "mcp_smoke_test_node";
 const SMOKE_TARGET_NAME = "mcp_smoke_test_target";
 let createdHitlNoteId = null;
+// stdout must carry only MCP protocol messages; anything else breaks strict clients.
+const nonJsonLines = [];
 
 const child = spawn(process.execPath, [serverPath], {
 	stdio: ["pipe", "pipe", "pipe"],
@@ -47,6 +49,7 @@ child.stdout.on("data", (chunk) => {
 			message = JSON.parse(line);
 		} catch {
 			console.error("Non-JSON output from server:", line);
+			nonJsonLines.push(line);
 			continue;
 		}
 		if (message.id && pending.has(message.id)) {
@@ -85,42 +88,33 @@ async function main() {
 		const resources = await send("resources/list");
 		console.log("resources/list OK:", resources.resources.map((r) => r.uri).join(", "));
 		
-		const askResult = await send("tools/call", {
-			name: "ask",
-			arguments: { query: "What does the EKYC screen use?" },
-		});
-		if (askResult.isError) {
-			throw new Error(`ask tool returned error: ${askResult.content?.[0]?.text ?? "no message"}`);
+		async function callTool(name, args) {
+			const result = await send("tools/call", { name, arguments: args });
+			if (result.isError) {
+				throw new Error(`${name} returned error: ${result.content?.[0]?.text ?? "no message"}`);
+			}
+			return JSON.parse(result.content?.[0]?.text ?? "{}");
 		}
-		const askText = askResult.content?.[0]?.text ?? "";
-		const askParsed = JSON.parse(askText);
-		console.log("ask OK: context length =", askParsed.context?.length ?? 0);
-		console.log("ask OK: systemPrompt length =", askParsed.systemPrompt?.length ?? 0);
-		console.log("ask OK: instructions length =", askParsed.instructions?.length ?? 0);
-		console.log("ask OK: entryNodes =", askParsed.entryNodes?.length ?? 0);
-		console.log("ask OK: graph nodes =", askParsed.graph?.nodes?.length ?? 0, "relations =", askParsed.graph?.relations?.length ?? 0);
-		
-		const ingestResult = await send("tools/call", {
-			name: "ingest-context",
-			arguments: { text: "EKYC Screen uses PAN Verification API." },
-		});
-		const ingestText = ingestResult.content?.[0]?.text ?? "";
-		const ingestParsed = JSON.parse(ingestText);
-		console.log("ingest-context OK: context length =", ingestParsed.context?.length ?? 0);
-		console.log("ingest-context OK: extractionSystemPrompt length =", ingestParsed.extractionSystemPrompt?.length ?? 0);
-		console.log("ingest-context OK: schemaCatalog length =", ingestParsed.schemaCatalog?.length ?? 0);
-		console.log("ingest-context OK: fieldGuidance length =", ingestParsed.fieldGuidance?.length ?? 0);
-		console.log("ingest-context OK: ingestionMode =", ingestParsed.ingestionMode);
-		
+
+		const contextParsed = await callTool("search_context", { query: "What does the EKYC screen use?" });
+		console.log("search_context OK: context length =", contextParsed.context?.length ?? 0, "entryNodes =", contextParsed.entryNodes?.length ?? 0);
+
+		const schemaParsed = await callTool("get_schema", {});
+		console.log("get_schema OK: node types =", schemaParsed.nodeTypes?.length ?? 0, "totals =", JSON.stringify(schemaParsed.totals));
+
+		const ingestParsed = await callTool("get_ingest_prompt", { text: "EKYC Screen uses PAN Verification API." });
+		console.log("get_ingest_prompt OK: extractionSystemPrompt length =", ingestParsed.extractionSystemPrompt?.length ?? 0);
+		console.log("get_ingest_prompt OK: retrievedNodes =", ingestParsed.retrievedNodes?.length ?? 0, "ingestionMode =", ingestParsed.ingestionMode);
+
 		const schemaResult = await send("resources/read", { uri: "mindmesh://schema" });
 		console.log("resources/read schema OK: text length =", schemaResult.contents?.[0]?.text?.length ?? 0);
 		
-		// apply-ingestion uses throwaway nodes only; cleanUp() removes whatever it created
+		// submit_ingest uses throwaway nodes only; cleanUp() removes whatever it created
 		// (graph data in auto mode, a pending HITL proposal in hitl mode).
 		const applyResult = await send("tools/call", {
-			name: "apply-ingestion",
+			name: "submit_ingest",
 			arguments: {
-				graphRecords: [
+				records: [
 					"<start#$#$>",
 					`NODE_CREATE|${SMOKE_SOURCE_NAME}|MCP Smoke Test Node|screen|A node created by the MCP smoke test.|`,
 					`NODE_CREATE|${SMOKE_TARGET_NAME}|MCP Smoke Test Target|screen|A node created by the MCP smoke test.|`,
@@ -128,17 +122,17 @@ async function main() {
 					"</end#$#$>",
 				].join("\n"),
 				text: "MCP smoke test node uses the MCP smoke test target.",
-				userName: "mcp-smoke-test",
+				author: "mcp-smoke-test",
 				source: "mcp-smoke-test",
 			},
 		});
 		if (applyResult.isError) {
-			throw new Error(`apply-ingestion returned error: ${applyResult.content?.[0]?.text ?? "no message"}`);
+			throw new Error(`submit_ingest returned error: ${applyResult.content?.[0]?.text ?? "no message"}`);
 		}
 		const applyParsed = JSON.parse(applyResult.content?.[0]?.text ?? "{}");
-		createdHitlNoteId = applyParsed.hitlNoteId ?? null;
-		console.log("apply-ingestion OK: status =", applyParsed.status, "applied =", applyParsed.applied);
-		console.log("apply-ingestion OK: nodes =", applyParsed.nodes?.length ?? 0, "relations =", applyParsed.relations?.length ?? 0);
+		createdHitlNoteId = applyParsed.id ?? null;
+		console.log("submit_ingest OK: status =", applyParsed.status, "applied =", applyParsed.applied, "ref =", applyParsed.ref);
+		console.log("submit_ingest OK: counts =", JSON.stringify(applyParsed.counts));
 
 		if (applyParsed.applied) {
 			const nodeResult = await send("resources/read", { uri: `mindmesh://nodes/node:${SMOKE_SOURCE_NAME}` });
@@ -147,6 +141,10 @@ async function main() {
 			console.log("resources/read node skipped: records were stored as a HITL proposal, not applied.");
 		}
 
+		if (nonJsonLines.length > 0) {
+			throw new Error(`the server wrote ${nonJsonLines.length} non-protocol line(s) to stdout`);
+		}
+		console.log("stdout OK: only MCP protocol messages");
 		console.log("\nALL SMOKE TESTS PASSED");
 	} catch (error) {
 		console.error("\nSMOKE TEST FAILED:", error.message);

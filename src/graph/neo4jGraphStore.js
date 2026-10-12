@@ -1,5 +1,44 @@
 import neo4j from "neo4j-driver";
 
+// Upper bound on nodes returned by one expansion.
+const EXPANSION_NODE_LIMIT = 2000;
+
+function httpError(message, status) {
+	const error = new Error(message);
+	error.status = status;
+	return error;
+}
+
+// Neo4j values as plain JSON: integers as numbers, nodes and relationships as their properties.
+function toPlainValue(value) {
+	if (neo4j.isInt(value)) {
+		return neo4j.integer.inSafeRange(value) ? neo4j.integer.toNumber(value) : neo4j.integer.toString(value);
+	}
+	if (neo4j.isNode(value)) {
+		return { labels: value.labels, ...toPlainValue(value.properties) };
+	}
+	if (neo4j.isRelationship(value)) {
+		return { type: value.type, ...toPlainValue(value.properties) };
+	}
+	if (neo4j.isPath(value)) {
+		return {
+			nodes: [value.start, ...value.segments.map((segment) => segment.end)].map(toPlainValue),
+			relationships: value.segments.map((segment) => toPlainValue(segment.relationship)),
+		};
+	}
+	if (Array.isArray(value)) {
+		return value.map(toPlainValue);
+	}
+	if (value && typeof value === "object") {
+		// Temporal and spatial values print as their Cypher literal.
+		if (value.constructor && value.constructor !== Object) {
+			return String(value);
+		}
+		return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, toPlainValue(item)]));
+	}
+	return value;
+}
+
 function formatNode(node) {
 	return {
 		id: node.properties.id,
@@ -87,6 +126,9 @@ export class Neo4jGraphStore {
 			}
 
 			await session.run("CREATE CONSTRAINT relates_to_id IF NOT EXISTS FOR ()-[r:RELATES_TO]-() REQUIRE r.id IS UNIQUE");
+			// Type filters in search, traversal, and agent queries.
+			await session.run("CREATE INDEX knowledge_node_type IF NOT EXISTS FOR (n:KnowledgeNode) ON (n.type)");
+			await session.run("CREATE INDEX relates_to_relation IF NOT EXISTS FOR ()-[r:RELATES_TO]-() ON (r.relation)");
 		} finally {
 			await session.close();
 		}
@@ -203,42 +245,140 @@ export class Neo4jGraphStore {
 		}
 	}
 
-	async expandFromNodes(nodeIds, depth) {
-		const session = this.driver.session(this.sessionOptions);
+	// Breadth-first expansion: one query per hop, so the cost follows the size of the neighbourhood instead of
+	// the number of paths (a variable-length path query explodes on dense graphs). Returns the start nodes,
+	// every node within `depth` hops (each with its hop `distance`), and every relation traversed.
+	// Options (explore_graph): direction "both" | "out" | "in", relationTypes, nodeTypes, limit (max nodes).
+	async expandFromNodes(nodeIds, depth, { direction = "both", relationTypes = [], nodeTypes = [], limit = EXPANSION_NODE_LIMIT } = {}) {
 		const safeDepth = Math.max(0, Math.min(Number(depth) || 0, 8));
+		const ids = [...new Set((nodeIds ?? []).filter(Boolean))];
+		const pattern = direction === "out"
+			? "(n)-[r:RELATES_TO]->(m:KnowledgeNode)"
+			: direction === "in"
+				? "(n)<-[r:RELATES_TO]-(m:KnowledgeNode)"
+				: "(n)-[r:RELATES_TO]-(m:KnowledgeNode)";
+		const session = this.driver.session(this.sessionOptions);
+		const nodes = new Map();
+		const relations = new Map();
+		let truncated = false;
+
+		try {
+			const startResult = await session.executeRead((tx) =>
+				tx.run("MATCH (n:KnowledgeNode) WHERE n.id IN $ids RETURN n", { ids }),
+			);
+			for (const record of startResult.records) {
+				const node = formatNode(record.get("n"));
+				nodes.set(node.id, { ...node, distance: 0 });
+			}
+
+			let frontier = [...nodes.keys()];
+			for (let hop = 1; hop <= safeDepth && frontier.length > 0; hop += 1) {
+				const hopResult = await session.executeRead((tx) =>
+					tx.run(
+						`
+						MATCH (n:KnowledgeNode)
+						WHERE n.id IN $frontier
+						MATCH ${pattern}
+						WHERE (size($relationTypes) = 0 OR r.relation IN $relationTypes)
+							AND (size($nodeTypes) = 0 OR m.type IN $nodeTypes)
+						RETURN r, startNode(r).id AS sourceId, endNode(r).id AS targetId, m
+						`,
+						{ frontier, relationTypes, nodeTypes },
+					),
+				);
+				const next = [];
+				for (const record of hopResult.records) {
+					const neighbour = formatNode(record.get("m"));
+					if (!nodes.has(neighbour.id)) {
+						if (nodes.size >= limit) {
+							truncated = true;
+							continue;
+						}
+						nodes.set(neighbour.id, { ...neighbour, distance: hop });
+						next.push(neighbour.id);
+					}
+					const relation = formatRelationshipWithEndpoints(record.get("r"), record.get("sourceId"), record.get("targetId"));
+					relations.set(relation.id, relation);
+				}
+				frontier = next;
+			}
+
+			return { nodes: [...nodes.values()], relations: [...relations.values()], truncated };
+		} finally {
+			await session.close();
+		}
+	}
+
+	// Shortest paths between two nodes, in either direction, up to maxDepth (1..6) relations.
+	async findPaths(fromId, toId, { maxDepth = 4, relationTypes = [], limit = 5 } = {}) {
+		const depth = Math.max(1, Math.min(Number(maxDepth) || 4, 6));
+		const session = this.driver.session(this.sessionOptions);
 
 		try {
 			const result = await session.executeRead((tx) =>
 				tx.run(
 					`
-					MATCH (start:KnowledgeNode)
-					WHERE start.id IN $nodeIds
-					OPTIONAL MATCH path = (start)-[:RELATES_TO*0..${safeDepth}]-(connected:KnowledgeNode)
-					WITH collect(DISTINCT start) + collect(DISTINCT connected) AS rawNodes, collect(path) AS paths
-					UNWIND rawNodes AS node
-					WITH collect(DISTINCT node) AS nodes, paths
-					CALL (paths) {
-						UNWIND paths AS path
-						WITH path
-						WHERE path IS NOT NULL
-						UNWIND relationships(path) AS relationship
-						RETURN collect(DISTINCT relationship) AS relationships
-					}
-					RETURN nodes, relationships
+					MATCH (a:KnowledgeNode {id: $fromId}), (b:KnowledgeNode {id: $toId})
+					MATCH p = allShortestPaths((a)-[:RELATES_TO*..${depth}]-(b))
+					WHERE size($relationTypes) = 0 OR all(r IN relationships(p) WHERE r.relation IN $relationTypes)
+					RETURN nodes(p) AS pathNodes,
+						[r IN relationships(p) | {relationship: r, sourceId: startNode(r).id, targetId: endNode(r).id}] AS pathRelations
+					LIMIT $limit
 					`,
-					{ nodeIds },
+					{ fromId, toId, relationTypes, limit: neo4j.int(Math.max(1, Math.min(Number(limit) || 5, 20))) },
 				),
 			);
 
-			if (result.records.length === 0) {
-				return { nodes: [], relations: [] };
+			return result.records.map((record) => ({
+				nodes: record.get("pathNodes").map(formatNode),
+				relations: record.get("pathRelations").map((item) => formatRelationshipWithEndpoints(item.relationship, item.sourceId, item.targetId)),
+			}));
+		} finally {
+			await session.close();
+		}
+	}
+
+	// Runs an agent's Cypher only if Neo4j itself reports it as read-only (EXPLAIN query type "r"), in a read
+	// transaction with a timeout, returning at most `limit` rows as plain JSON values.
+	async runReadOnlyQuery(cypher, params = {}, { limit = 100, timeoutMs = 10000 } = {}) {
+		const text = String(cypher ?? "").trim();
+		if (!text) {
+			throw httpError("A Cypher query is required.", 400);
+		}
+		if (/\bLOAD\s+CSV\b/i.test(text) || /\b(dbms|apoc)\s*\./i.test(text)) {
+			throw httpError("LOAD CSV, dbms.* and apoc.* are not allowed in query_cypher.", 400);
+		}
+		// SHOW SETTINGS, SHOW TRANSACTIONS and similar reveal server configuration or other sessions, not graph knowledge.
+		if (/^\s*SHOW\b/i.test(text) && !/^\s*SHOW\s+(?:\w+\s+)?(?:INDEX|INDEXES|CONSTRAINT|CONSTRAINTS)\b/i.test(text)) {
+			throw httpError("Only SHOW INDEXES and SHOW CONSTRAINTS are allowed in query_cypher.", 400);
+		}
+
+		const session = this.driver.session({ ...this.sessionOptions, defaultAccessMode: neo4j.session.READ });
+		try {
+			let plan;
+			try {
+				plan = await session.run(`EXPLAIN ${text}`, params);
+			} catch (error) {
+				throw httpError(`Invalid Cypher: ${error.message}`, 400);
+			}
+			const queryType = plan.summary.queryType;
+			if (queryType !== "r") {
+				throw httpError(`query_cypher runs read-only queries only; Neo4j reports this query as "${queryType}" (r = read, rw/w = write, s = schema).`, 400);
 			}
 
-			const record = result.records[0];
-			const nodes = (record.get("nodes") ?? []).filter(Boolean).map(formatNode);
-			const relations = (record.get("relationships") ?? []).filter(Boolean).map(formatRelationship);
-
-			return { nodes, relations };
+			return await session.executeRead(async (tx) => {
+				const result = tx.run(text, params);
+				const rows = [];
+				let truncated = false;
+				for await (const record of result) {
+					if (rows.length >= limit) {
+						truncated = true;
+						break;
+					}
+					rows.push(Object.fromEntries(record.keys.map((key) => [key, toPlainValue(record.get(key))])));
+				}
+				return { columns: rows.length > 0 ? Object.keys(rows[0]) : [], rows, truncated };
+			}, { timeout: timeoutMs });
 		} finally {
 			await session.close();
 		}
@@ -335,7 +475,8 @@ export class Neo4jGraphStore {
 		}
 	}
 
-	async searchNodes(query, limit = 20) {
+	// Case-insensitive substring match on id, label, name, type, and description; exact label/name matches first.
+	async searchNodes(query, limit = 20, { type = "" } = {}) {
 		const session = this.driver.session(this.sessionOptions);
 		const text = compactString(query).toLowerCase();
 		const safeLimit = Math.max(1, Math.min(Number(limit) || 20, 100));
@@ -349,11 +490,12 @@ export class Neo4jGraphStore {
 				tx.run(
 					`
 					MATCH (n:KnowledgeNode)
-					WHERE toLower(coalesce(n.id, "")) CONTAINS $query
+					WHERE ($type = "" OR n.type = $type)
+						AND (toLower(coalesce(n.id, "")) CONTAINS $query
 						OR toLower(coalesce(n.label, "")) CONTAINS $query
 						OR toLower(coalesce(n.name, "")) CONTAINS $query
 						OR toLower(coalesce(n.type, "")) CONTAINS $query
-						OR toLower(coalesce(n.description, "")) CONTAINS $query
+						OR toLower(coalesce(n.description, "")) CONTAINS $query)
 					RETURN n
 					ORDER BY
 						CASE
@@ -366,11 +508,78 @@ export class Neo4jGraphStore {
 						n.label ASC
 					LIMIT $limit
 					`,
-					{ query: text, limit: neo4j.int(safeLimit) },
+					{ query: text, type: compactString(type), limit: neo4j.int(safeLimit) },
 				),
 			);
 
 			return result.records.map((record) => formatNode(record.get("n")));
+		} finally {
+			await session.close();
+		}
+	}
+
+	async getNodesByIds(nodeIds) {
+		const ids = [...new Set((nodeIds ?? []).filter(Boolean))];
+		if (ids.length === 0) {
+			return [];
+		}
+
+		const session = this.driver.session(this.sessionOptions);
+
+		try {
+			const result = await session.executeRead((tx) =>
+				tx.run("MATCH (n:KnowledgeNode) WHERE n.id IN $ids RETURN n", { ids }),
+			);
+
+			return result.records.map((record) => formatNode(record.get("n")));
+		} finally {
+			await session.close();
+		}
+	}
+
+	async getRelationsByIds(relationIds) {
+		const ids = [...new Set((relationIds ?? []).filter(Boolean))];
+		if (ids.length === 0) {
+			return [];
+		}
+
+		const session = this.driver.session(this.sessionOptions);
+
+		try {
+			const result = await session.executeRead((tx) =>
+				tx.run(
+					`
+					MATCH (source:KnowledgeNode)-[relationship:RELATES_TO]->(target:KnowledgeNode)
+					WHERE relationship.id IN $ids
+					RETURN relationship, source.id AS sourceId, target.id AS targetId
+					`,
+					{ ids },
+				),
+			);
+
+			return result.records.map((record) => formatRelationshipWithEndpoints(record.get("relationship"), record.get("sourceId"), record.get("targetId")));
+		} finally {
+			await session.close();
+		}
+	}
+
+	// How many nodes use each node type and how many relations use each relation type.
+	async countByType() {
+		const session = this.driver.session(this.sessionOptions);
+
+		try {
+			const nodeResult = await session.executeRead((tx) =>
+				tx.run("MATCH (n:KnowledgeNode) RETURN n.type AS type, count(n) AS count ORDER BY count DESC, type ASC"),
+			);
+			const relationResult = await session.executeRead((tx) =>
+				tx.run("MATCH ()-[r:RELATES_TO]->() RETURN r.relation AS type, count(r) AS count ORDER BY count DESC, type ASC"),
+			);
+			const rows = (result) => result.records.map((record) => ({
+				type: record.get("type") ?? "",
+				count: neo4j.integer.toNumber(record.get("count")),
+			}));
+
+			return { nodeTypes: rows(nodeResult), relationTypes: rows(relationResult) };
 		} finally {
 			await session.close();
 		}

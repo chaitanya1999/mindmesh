@@ -22,6 +22,7 @@ export class MemoryGraphStore {
 		this.nodes = new Map();
 		this.relations = new Map();
 		this.clock = 0;
+		this.readQueryHandler = null;
 	}
 
 	now() {
@@ -115,30 +116,86 @@ export class MemoryGraphStore {
 		};
 	}
 
-	async expandFromNodes(nodeIds, depth) {
-		const found = new Set(nodeIds.filter((id) => this.nodes.has(id)));
-		let frontier = [...found];
+	// Same rules as Neo4jGraphStore.expandFromNodes(): breadth-first, hop distances, filters, node limit.
+	async expandFromNodes(nodeIds, depth, { direction = "both", relationTypes = [], nodeTypes = [], limit = 2000 } = {}) {
+		const distances = new Map(nodeIds.filter((id) => this.nodes.has(id)).map((id) => [id, 0]));
+		let frontier = [...distances.keys()];
 		const relationIds = new Set();
-		for (let level = 0; level < depth; level += 1) {
+		let truncated = false;
+		for (let hop = 1; hop <= depth && frontier.length > 0; hop += 1) {
 			const next = [];
 			for (const relation of this.relations.values()) {
-				for (const [from, to] of [[relation.sourceId, relation.targetId], [relation.targetId, relation.sourceId]]) {
-					if (frontier.includes(from)) {
-						relationIds.add(relation.id);
-						if (!found.has(to)) {
-							found.add(to);
-							next.push(to);
-						}
+				if (relationTypes.length > 0 && !relationTypes.includes(relation.relation)) {
+					continue;
+				}
+				const steps = [];
+				if (direction !== "in") {
+					steps.push([relation.sourceId, relation.targetId]);
+				}
+				if (direction !== "out") {
+					steps.push([relation.targetId, relation.sourceId]);
+				}
+				for (const [from, to] of steps) {
+					if (!frontier.includes(from) || (nodeTypes.length > 0 && !nodeTypes.includes(this.nodes.get(to)?.type))) {
+						continue;
 					}
+					if (!distances.has(to)) {
+						if (distances.size >= limit) {
+							truncated = true;
+							continue;
+						}
+						distances.set(to, hop);
+						next.push(to);
+					}
+					relationIds.add(relation.id);
 				}
 			}
 			frontier = next;
 		}
 
 		return {
-			nodes: [...found].map((id) => clone(this.nodes.get(id))),
+			nodes: [...distances].map(([id, distance]) => ({ ...clone(this.nodes.get(id)), distance })),
 			relations: [...relationIds].map((id) => clone(this.relations.get(id))),
+			truncated,
 		};
+	}
+
+	// Shortest paths (in either direction) between two nodes, breadth-first.
+	async findPaths(fromId, toId, { maxDepth = 4, relationTypes = [], limit = 5 } = {}) {
+		if (!this.nodes.has(fromId) || !this.nodes.has(toId)) {
+			return [];
+		}
+		const usable = [...this.relations.values()].filter((relation) => relationTypes.length === 0 || relationTypes.includes(relation.relation));
+		let paths = [{ nodeIds: [fromId], relationIds: [] }];
+		for (let length = 1; length <= maxDepth; length += 1) {
+			const extended = [];
+			for (const path of paths) {
+				const last = path.nodeIds.at(-1);
+				for (const relation of usable) {
+					const next = relation.sourceId === last ? relation.targetId : relation.targetId === last ? relation.sourceId : null;
+					if (next && !path.nodeIds.includes(next)) {
+						extended.push({ nodeIds: [...path.nodeIds, next], relationIds: [...path.relationIds, relation.id] });
+					}
+				}
+			}
+			const arrived = extended.filter((path) => path.nodeIds.at(-1) === toId);
+			if (arrived.length > 0) {
+				return arrived.slice(0, limit).map((path) => ({
+					nodes: path.nodeIds.map((id) => clone(this.nodes.get(id))),
+					relations: path.relationIds.map((id) => clone(this.relations.get(id))),
+				}));
+			}
+			paths = extended;
+		}
+		return [];
+	}
+
+	// Cypher cannot run in memory; tests set `readQueryHandler` to stand in for Neo4j.
+	async runReadOnlyQuery(cypher, params = {}, options = {}) {
+		if (!this.readQueryHandler) {
+			throw httpError("Cypher queries need Neo4j; the in-memory store cannot run them.", 501);
+		}
+		return this.readQueryHandler(cypher, params, options);
 	}
 
 	async getGraphPreview(limit = 150) {
@@ -158,11 +215,35 @@ export class MemoryGraphStore {
 		return clone([...this.nodes.values()][0] ?? null);
 	}
 
-	async searchNodes(query, limit = 20) {
+	async searchNodes(query, limit = 20, { type = "" } = {}) {
 		const text = String(query ?? "").toLowerCase();
 		return clone([...this.nodes.values()]
+			.filter((node) => !type || node.type === type)
 			.filter((node) => [node.id, node.label, node.name, node.type, node.description].some((value) => String(value ?? "").toLowerCase().includes(text)))
 			.slice(0, limit));
+	}
+
+	async getNodesByIds(nodeIds) {
+		return clone([...new Set(nodeIds)].map((id) => this.nodes.get(id)).filter(Boolean));
+	}
+
+	async getRelationsByIds(relationIds) {
+		return clone([...new Set(relationIds)].map((id) => this.relations.get(id)).filter(Boolean));
+	}
+
+	async countByType() {
+		const count = (items, key) => {
+			const counts = new Map();
+			for (const item of items) {
+				counts.set(item[key] ?? "", (counts.get(item[key] ?? "") ?? 0) + 1);
+			}
+			return [...counts].map(([type, value]) => ({ type, count: value }))
+				.sort((left, right) => right.count - left.count || left.type.localeCompare(right.type));
+		};
+		return {
+			nodeTypes: count(this.nodes.values(), "type"),
+			relationTypes: count(this.relations.values(), "relation"),
+		};
 	}
 
 	async getNode(nodeId) {

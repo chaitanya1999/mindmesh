@@ -92,6 +92,62 @@ function proposalRecords(graphPayload) {
 	};
 }
 
+function nodeFields(node) {
+	return { name: node.name, label: node.label, type: node.type, description: node.description ?? "" };
+}
+
+function relationFields(relation) {
+	return {
+		relation: relation.relation,
+		sourceId: relation.sourceId,
+		targetId: relation.targetId,
+		information: relation.information ?? "",
+		description: relation.description ?? "",
+	};
+}
+
+// The records of a proposal that would touch one node: its own records and relations that use it.
+function changesTouchingNode(graphPayload, nodeId) {
+	const touches = (relation) => relation.sourceId === nodeId || relation.targetId === nodeId;
+	return [
+		...graphPayload.nodes.filter((node) => node.id === nodeId).map((node) => ({ kind: "node", operation: node.operation, proposed: nodeFields(node) })),
+		...graphPayload.nodeDeletes.filter((node) => node.id === nodeId).map(() => ({ kind: "node", operation: "delete" })),
+		...graphPayload.relations.filter(touches).map((relation) => ({ kind: "relation", operation: relation.operation, id: relation.id, proposed: relationFields(relation) })),
+		...graphPayload.relationDeletes.filter(touches).map((relation) => ({ kind: "relation", operation: "delete", id: relation.id, proposed: relationFields(relation) })),
+	];
+}
+
+// List filters. signal: "ambiguity" | "contradiction"; operation: "create" | "update" | "delete";
+// author / source: case-insensitive exact match.
+function matchesProposalFilter(item, { signal, operation, author, source }) {
+	if (signal === "ambiguity" && !(item.ambiguityCount > 0)) {
+		return false;
+	}
+	if (signal === "contradiction" && !(item.contradictionCount > 0)) {
+		return false;
+	}
+	if (operation) {
+		const records = item.records ?? { nodes: [], relations: [], nodeDeletes: [], relationDeletes: [] };
+		const upserts = [...records.nodes, ...records.relations];
+		const found = operation === "delete"
+			? records.nodeDeletes.length + records.relationDeletes.length > 0
+			// Legacy NODE / RELATION records parse as "upsert"; they count as creates.
+			: upserts.some((record) => (record.operation === "upsert" ? "create" : record.operation) === operation);
+		if (!found) {
+			return false;
+		}
+	}
+	const same = (left, right) => String(left ?? "").toLowerCase() === String(right ?? "").toLowerCase();
+	if (author && !same(item.userName, author)) {
+		return false;
+	}
+	if (source && !same(item.source, source)) {
+		return false;
+	}
+
+	return true;
+}
+
 // Manual and reviewer edits arrive as form fields.
 
 function normalizeManualNode(body, existingId = "") {
@@ -404,17 +460,101 @@ export class HitlService {
 		return matches[0].id;
 	}
 
+	listItem(note) {
+		const { summary, records } = this.noteSummary(note);
+		return { ...summary, llmResponse: note.llmResponse, records };
+	}
+
 	// Oldest first. llmResponse lets the review list show per-operation counts parsed exactly like the detail view.
-	async listProposals({ limit }) {
+	// Filters (signal, operation, author, source) apply to every pending proposal before the page is cut.
+	async listProposals({ limit, filter = {} }) {
 		this.requireProposalStore();
-		const { notes, total } = await this.vectorStore.listHitlNotePage({ status: "pending", limit });
-		return {
-			notes: notes.map((note) => {
-				const { summary, records } = this.noteSummary(note);
-				return { ...summary, llmResponse: note.llmResponse, records };
-			}),
-			total,
-		};
+		if (!Object.values(filter).some(Boolean)) {
+			const { notes, total } = await this.vectorStore.listHitlNotePage({ status: "pending", limit });
+			return { notes: notes.map((note) => this.listItem(note)), total };
+		}
+
+		const all = await this.vectorStore.listHitlNotes({ status: "pending", limit: 0 });
+		const matching = all.map((note) => this.listItem(note)).filter((item) => matchesProposalFilter(item, filter));
+		return { notes: matching.slice(0, limit), total: matching.length };
+	}
+
+	// Pending proposals ranked by meaning (vector search over the proposal collection). Always unverified.
+	async searchProposals({ query, limit = 10 }) {
+		this.requireProposalStore();
+		const notes = await this.vectorStore.queryHitlNotes(query, limit);
+		return notes.map((note) => ({ ...this.listItem(note), distance: note.distance, verified: false }));
+	}
+
+	// Pending changes that would touch one node: its own records and relations that use it.
+	async proposalsTouchingNode(nodeId) {
+		this.requireProposalStore();
+		const notes = await this.vectorStore.listHitlNotes({ status: "pending", limit: PREVIEW_NOTE_LIMIT });
+		const touching = [];
+		for (const note of notes) {
+			let graphPayload;
+			try {
+				({ graphPayload } = this.parseRecords(note.llmResponse));
+			} catch {
+				continue;
+			}
+			const changes = changesTouchingNode(graphPayload, nodeId);
+			if (changes.length > 0) {
+				touching.push({ id: note.id, author: note.userName, createdAt: note.createdAt, verified: false, changes });
+			}
+		}
+
+		return touching;
+	}
+
+	// One proposal for review: its detail, plus every record next to the current graph value it would change.
+	async getProposalReview({ ref }) {
+		const note = await this.getProposal(await this.resolveRef(ref));
+		const proposal = this.noteDetail(note);
+		const records = proposal.records ?? { nodes: [], relations: [], nodeDeletes: [], relationDeletes: [] };
+		const currentNodes = new Map((await this.graphStore.getNodesByIds(
+			[...records.nodes, ...records.nodeDeletes].map((record) => record.id),
+		)).map((node) => [node.id, node]));
+		const currentRelations = new Map((await this.graphStore.getRelationsByIds(
+			[...records.relations, ...records.relationDeletes].map((record) => record.id),
+		)).map((relation) => [relation.id, relation]));
+
+		const changes = [
+			...records.nodes.map((record) => ({
+				kind: "node",
+				operation: record.operation,
+				id: record.id,
+				proposed: nodeFields(record),
+				current: currentNodes.has(record.id) ? nodeFields(currentNodes.get(record.id)) : null,
+				reviewSignal: record.metadata || "",
+			})),
+			...records.nodeDeletes.map((record) => ({
+				kind: "node",
+				operation: "delete",
+				id: record.id,
+				proposed: null,
+				current: currentNodes.has(record.id) ? nodeFields(currentNodes.get(record.id)) : null,
+				reviewSignal: record.metadata || "",
+			})),
+			...records.relations.map((record) => ({
+				kind: "relation",
+				operation: record.operation,
+				id: record.id,
+				proposed: relationFields(record),
+				current: currentRelations.has(record.id) ? relationFields(currentRelations.get(record.id)) : null,
+				reviewSignal: record.metadata || "",
+			})),
+			...records.relationDeletes.map((record) => ({
+				kind: "relation",
+				operation: "delete",
+				id: record.id,
+				proposed: null,
+				current: currentRelations.has(record.id) ? relationFields(currentRelations.get(record.id)) : null,
+				reviewSignal: record.metadata || "",
+			})),
+		];
+
+		return { proposal, changes };
 	}
 
 	// One proposal merged over the approved graph around it. `llmResponse` previews unsaved edits.

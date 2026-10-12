@@ -418,12 +418,14 @@ export class ChromaVectorStore {
 		});
 	}
 
-	async queryNodes(query, topK) {
+	// `type` limits results to one node type (stored in the vector metadata).
+	async queryNodes(query, topK, { type = "" } = {}) {
 		const collection = await this.getNodeCollection();
 		const results = await collection.query({
 			queryTexts: this.embeddingProvider ? undefined : [query],
 			queryEmbeddings: this.embeddingProvider ? [await this.embeddingProvider.embedQuery(query)] : undefined,
 			nResults: topK,
+			where: type ? { type } : undefined,
 		});
 
 		const ids = results.ids?.[0] ?? [];
@@ -434,6 +436,27 @@ export class ChromaVectorStore {
 		return ids.map((id, index) => ({
 			id,
 			document: documents[index],
+			metadata: metadatas[index] ?? {},
+			distance: distances[index],
+		}));
+	}
+
+	// `relation` limits results to one relation type (stored in the vector metadata).
+	async queryRelations(query, topK, { relation = "" } = {}) {
+		const collection = await this.getRelationCollection();
+		const results = await collection.query({
+			queryTexts: this.embeddingProvider ? undefined : [query],
+			queryEmbeddings: this.embeddingProvider ? [await this.embeddingProvider.embedQuery(query)] : undefined,
+			nResults: topK,
+			where: relation ? { relation } : undefined,
+		});
+
+		const ids = results.ids?.[0] ?? [];
+		const metadatas = results.metadatas?.[0] ?? [];
+		const distances = results.distances?.[0] ?? [];
+
+		return ids.map((id, index) => ({
+			id,
 			metadata: metadatas[index] ?? {},
 			distance: distances[index],
 		}));

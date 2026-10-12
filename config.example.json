@@ -101,5 +101,8 @@
 		"contextFormatPath": "./prompts/context-format.md",
 		"jobScannerSystemPath": "./prompts/job-scanner-system.md",
 		"jobNuggetSystemPath": "./prompts/job-nugget-system.md"
+	},
+	"mcp": {
+		"allowReviewDecisions": false
 	}
 }

@@ -4,14 +4,14 @@ Where things live in the code. One entry per recurring pathway: entry points, ca
 
 ## Composition Root and Tests
 
-- `src/mindmesh.js`: `createMindMesh(config, overrides)` builds stores, `GraphWriteService`, `IngestionService`, `HitlService`, `HybridRagService`, `KgJobsService` once; used by `server.js` (`createApp(services)`), `mcp/server.js` (`createMcpServer(services)`, `withLlm: false`), and the ingest/ask CLIs. `isMainModule()` starts a module only when run directly.
+- `src/mindmesh.js`: `createMindMesh(config, overrides)` builds stores, `GraphReadService`, `GraphWriteService`, `IngestionService`, `HitlService`, `HybridRagService`, `KgJobsService` once; used by `server.js` (`createApp(services)`), `mcp/server.js` (`createMcpServer(services)`, `withLlm: false`), and the ingest/ask CLIs. `isMainModule()` starts a module only when run directly.
 - Tests: `test/*.test.js` (`npm test`). `test/helpers/testServices.js` builds services over `test/helpers/memoryStores.js` (in-memory graph store; real `ChromaVectorStore` on a fake Chroma client with `failNext()`), a scripted LLM, and a temp schema. `test/writeGate.test.js` enforces the write gate.
 
 ## Ingestion
 
 README: Graph Extraction Contract, Ingestion Context Flow.
 
-Entry points: `src/cli/ingest.js`, `POST /api/ingest` in `src/server/server.js` (text and PDF/DOCX/DOC uploads), MCP `ingest-context` + `apply-ingestion` in `src/mcp/server.js`.
+Entry points: `src/cli/ingest.js`, `POST /api/ingest` in `src/server/server.js` (text and PDF/DOCX/DOC uploads), MCP `get_ingest_prompt` + `submit_ingest` in `src/mcp/server.js`.
 
 ```text
 HitlService.ingestText()                           src/hitl/hitlService.js
@@ -27,7 +27,7 @@ HitlService.ingestText()                           src/hitl/hitlService.js
           or GraphWriteService.applyPayload()      src/graph/graphWriteService.js: resolveGraphPayload() again,
                                                    Neo4jGraphStore.applyGraph() (one transaction), vector sync;
                                                    a sync failure is vectorSyncError() (503 VECTOR_SYNC_FAILED, expose)
-MCP apply-ingestion -> HitlService.submitRecords() -> prepareExtraction() -> submit()
+MCP submit_ingest -> HitlService.submitRecords() -> prepareExtraction() -> submit()
 ```
 
 Also: `src/ingestion/reviewSignals.js` (signal counts, `reviewReasons()`), `formatGraphRecords()` in `graphPayload.js` (payload -> stored proposal text), `src/rag/graphContext.js::formatExtractionGraphContext()`, `prompts/extraction-system-custom.md`.
@@ -64,7 +64,7 @@ README: HITL Regeneration.
 ```text
 Web:  POST /api/hitl/notes/:id/regenerate  -> HitlService.regenerate()
       PUT  /api/hitl/notes/:id/reviewer-notes -> HitlService.saveReviewerNotes()
-MCP:  regenerate-context / apply-regeneration in src/mcp/server.js
+MCP:  get_regenerate_prompt / submit_regeneration in src/mcp/server.js
 Both: IngestionService.buildHitlRegenerationPrompt() -> retrieveExistingContext({ excludeNoteIds })
       HitlService.storeRegeneration() -> prepareExtraction() -> ChromaVectorStore.upsertHitlNote()
 Prompt section: formatReviewerRevision() in src/prompts/promptRegistry.js
@@ -75,7 +75,7 @@ Short refs: HitlService.resolveRef(); UI hitlShortRef() in lib/hitlProposal.js
 
 README: RAG Flow.
 
-Entry points: `src/cli/ask.js`, `POST /api/ask`, MCP `ask`.
+Entry points: `src/cli/ask.js`, `POST /api/ask`, MCP `search_context` (retrieval only).
 
 ```text
 HybridRagService.answer()                          src/rag/hybridRagService.js
@@ -137,7 +137,7 @@ README: Web UI.
 
 README: MCP Server.
 
-- `src/mcp/server.js`: tools `ask`, `ingest-context`, `apply-ingestion`, `regenerate-context`, `apply-regeneration`; resources `mindmesh://schema`, `mindmesh://graph`, `mindmesh://hitl/notes`, `mindmesh://nodes/{nodeId}`, `mindmesh://relations/{relationId}`. `createMcpServer(services)` uses `HitlService` (apply-ingestion, regeneration, short refs), `IngestionService` (context, regeneration prompt), `HybridRagService`, the stores (reads), and the prompt registry; reads the same `config.json`. Tests: `test/mcpServer.test.js` (in-memory transport).
+- `src/mcp/server.js`: `createMcpServer(services)`; `registerTool()` / `readTool()` helpers; tools grouped as graph reads (`search_context` -> `HybridRagService.retrieveContext`; `search_nodes`, `search_relations`, `get_node`, `explore_graph`, `find_paths`, `query_cypher`, `get_schema` -> `src/graph/graphReadService.js` -> `Neo4jGraphStore.expandFromNodes` / `findPaths` / `runReadOnlyQuery`), proposal reads (`search_proposals`, `list_proposals`, `get_proposal`, `get_node` pending changes -> `HitlService`), proposing (`get_ingest_prompt` -> `IngestionService.retrieveExistingContext` + `buildExtractionPrompt`, `retrievalQuality()`; `submit_ingest` -> `HitlService.submitRecords`; `get_regenerate_prompt` -> `IngestionService.buildHitlRegenerationPrompt`; `submit_regeneration` -> `HitlService.storeRegeneration`; `save_reviewer_notes`), and review decisions behind `config.mcp.allowReviewDecisions` (`approve_proposal`, `reject_proposal`); resources `mindmesh://schema`, `mindmesh://graph`, `mindmesh://hitl/notes`, `mindmesh://nodes/{nodeId}`, `mindmesh://relations/{relationId}`. `main()` sends console output to stderr. Tests: `test/mcpServer.test.js` (in-memory transport).
 - Smoke test: `src/mcp/smokeTest.js` (throwaway nodes; `cleanUp()` removes the created proposal or nodes).
 
 ## Jobs

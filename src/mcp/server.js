@@ -4,14 +4,22 @@ import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod/v4";
 
 import { getConfig } from "../config.js";
+import { createDebugLogger } from "../logging/debugLogger.js";
 import { createMindMesh, isMainModule } from "../mindmesh.js";
 import { buildExtractionPrompt } from "../prompts/promptRegistry.js";
-import { readEditableGraphSchema, formatSchemaCatalog, formatFieldGuidance } from "../schema/graphSchema.js";
-import { createDebugLogger } from "../logging/debugLogger.js";
+import { readEditableGraphSchema } from "../schema/graphSchema.js";
+
+// MCP server for coding agents. The agent does all reasoning: MindMesh retrieves context, hands out its
+// extraction prompts, and stores the agent's records through the same HITL path as the web UI. Transport only:
+// the logic lives in GraphReadService, HitlService, IngestionService, and HybridRagService.
 
 const DEFAULT_GRAPH_LIMIT = 150;
 const DEFAULT_HITL_LIMIT = 100;
+const RECORD_BLOCK = "the complete pipe-delimited record block, including the <start#$#$> and </end#$#$> markers";
 
+// Tool annotations (hints for the client). Read tools only look; nothing outside MindMesh is reached.
+const READ_ONLY_TOOL = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+const DECISION_TOOL = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false };
 
 function textContent(value) {
 	return {
@@ -35,6 +43,59 @@ function toolError(toolName, error) {
 	return new McpError(status === 400 || status === 404 ? ErrorCode.InvalidParams : ErrorCode.InternalError, message);
 }
 
+// Short list form of a pending proposal, shared by search_proposals and list_proposals.
+function proposalSummary(item) {
+	return {
+		ref: hitlShortRef(item.id),
+		id: item.id,
+		verified: false,
+		author: item.userName,
+		source: item.source,
+		createdAt: item.createdAt,
+		inputPreview: item.inputPreview,
+		counts: {
+			nodes: item.nodeCount,
+			relations: item.relationCount,
+			nodeDeletes: item.nodeDeleteCount,
+			relationDeletes: item.relationDeleteCount,
+			typeSuggestions: item.schemaSuggestionCount,
+		},
+		signals: { ambiguity: item.ambiguityCount, contradiction: item.contradictionCount },
+		reviewerNotes: item.reviewerNotes,
+		...(item.distance === undefined ? {} : { distance: item.distance }),
+	};
+}
+
+function compactNode(node) {
+	return { id: node.id, label: node.label, type: node.type };
+}
+
+function payloadCounts(graphPayload) {
+	return {
+		nodes: graphPayload.nodes?.length ?? 0,
+		relations: graphPayload.relations?.length ?? 0,
+		nodeDeletes: graphPayload.nodeDeletes?.length ?? 0,
+		relationDeletes: graphPayload.relationDeletes?.length ?? 0,
+		typeSuggestions: (graphPayload.schemaSuggestions?.nodeTypes?.length ?? 0) + (graphPayload.schemaSuggestions?.relationshipTypes?.length ?? 0),
+	};
+}
+
+// How well MindMesh's own retrieval covered the text, so the agent knows when to look entities up itself.
+function retrievalQuality(existingContext) {
+	const entryNodes = existingContext.entryNodes ?? [];
+	const distances = entryNodes.map((entry) => entry.distance).filter(Number.isFinite);
+	const closestDistance = distances.length > 0 ? Math.min(...distances) : null;
+	return {
+		entryNodeCount: entryNodes.length,
+		retrievedNodeCount: existingContext.graph.nodes.length,
+		pendingNodeCount: existingContext.pendingHitl.graph.nodes.length,
+		closestDistance,
+		note: entryNodes.length === 0
+			? "MindMesh retrieved no existing nodes for this text. Every entity is either new or named differently in the graph: look each one up with search_nodes before creating it."
+			: `MindMesh retrieved ${existingContext.graph.nodes.length} node(s) with one search over the whole text (closest distance ${closestDistance?.toFixed?.(3) ?? "n/a"}; lower is closer). Entities named differently in the graph can be missing: look up every entity in the text that is not in retrievedNodes or pendingNodes.`,
+	};
+}
+
 // Notes passed in chat win over notes saved in the UI; one of them is required.
 function resolveReviewerNotes(notes, note) {
 	const chatNotes = String(notes ?? "").trim();
@@ -52,65 +113,54 @@ function resolveReviewerNotes(notes, note) {
 	throw error;
 }
 
-const ASK_INSTRUCTIONS = [
-	"You are the answering agent. Use the tool result to answer the user's question.",
-	"",
-	"Instructions:",
-	"1. Use ONLY the `context` (verified graph context) as the factual source for verified claims. Do not use outside knowledge.",
-	"2. Use the `systemPrompt` as the system prompt governing your answer behavior.",
-	"3. Cite node IDs and relation IDs in square brackets for every graph-backed claim.",
-	"4. If `unverifiedNotes` are present, treat them as pending review, not confirmed fact. If you use any, put them under a separate heading 'Unverified knowledge - yet to be verified' and mention the contributor.",
-	"5. If the context is insufficient, say the graph does not contain enough information yet.",
-	"6. Be concise and answer directly in your final response to the user.",
-].join("\n");
-
 const INGEST_INSTRUCTIONS = [
-	"You are the knowledge extraction agent. Your job is to extract graph records from the user's text for ingestion into the MindMesh knowledge graph.",
-	"",
-	"Instructions:",
-	"1. Use the `extractionSystemPrompt` exactly as your system prompt for extraction output formatting.",
-	"2. The user-provided text to ingest is the source of NEW graph facts.",
-	"3. Use `context` (existing graph + pending HITL context) ONLY for identity resolution, exact node-name reuse, disambiguation, and avoiding duplicate facts. Do not extract new facts from it.",
-	"4. Follow the extraction prompt's OUTPUT FORMAT precisely: emit one pipe-delimited record per line between <start#$#$> and </end#$#$> markers, using NODE_CREATE, NODE_UPDATE, NODE_DELETE, RELATION_CREATE, RELATION_UPDATE, RELATION_DELETE, NODE_TYPE_SUGGESTION, and RELATION_TYPE_SUGGESTION records.",
-	"5. Reuse existing node names exactly when the new input refers to the same entity.",
-	"6. Use only approved schema node types and relationship types from `schemaCatalog` when possible. Suggest new types only when nothing fits.",
-	"7. Respect the AMBIGUITY and CONTRADICTION metadata rules in the extraction prompt when the input is underspecified or conflicts with existing context.",
-	"8. Do not invent facts. Prefer omission over inference.",
-	"9. After producing the graph records block, call the `apply-ingestion` tool with:",
-	"   - `graphRecords`: the full pipe-delimited block (including markers)",
-	"   - `text`: the original user text being ingested",
-	"   - `userName`: the user who provided the text if known",
-	"   - `source`: a short source identifier if known",
-	"10. Report the `apply-ingestion` result to the user, including whether it was applied or stored as a pending HITL proposal.",
+	"1. Treat `extractionSystemPrompt` as your extraction instructions and follow its record format exactly.",
+	"2. The text is the only source of new facts. `retrievedNodes`, `pendingNodes`, and the context inside the prompt are only for recognising entities that already exist.",
+	"3. Before extracting, check every entity the text mentions against `retrievedNodes` and `pendingNodes` (see `retrievalQuality`). For each one that is missing, call `search_nodes` (match \"text\" with its name, then \"semantic\" with a short description) and `get_node` to confirm; reuse the exact existing name. Create a node only when nothing matches.",
+	"4. Write the complete record block between <start#$#$> and </end#$#$>.",
+	"5. Call `submit_ingest` with `records` (the whole block), `text` (the original text), and `author` (the user, if known).",
+	"6. Tell the user the outcome: applied, or pending with its ref and review reasons.",
 ].join("\n");
 
 const REGENERATE_INSTRUCTIONS = [
-	"You are regenerating an existing pending HITL proposal using a human reviewer's notes.",
-	"",
-	"Instructions:",
-	"1. Use the `extractionSystemPrompt` exactly as your system prompt. It already contains the original input, the graph context, the reviewer notes, and the previous proposal.",
-	"2. The reviewer notes have the highest priority: apply them, but never break the schema or the output syntax.",
-	"3. Treat `previousProposal` as the baseline. Keep its records unchanged unless the notes ask for a change.",
-	"4. Output the COMPLETE revised proposal (not a diff) between <start#$#$> and </end#$#$> markers.",
-	"5. Then call `apply-regeneration` with:",
-	"   - `proposal`: the `noteId` returned here",
-	"   - `graphRecords`: the full revised block (including markers)",
-	"   - `notes`: the `reviewerNotes` returned here, so they are saved on the proposal",
-	"6. Tell the user the proposal was regenerated and give its `shortRef` so they can review it in the HITL UI.",
+	"1. Treat `extractionSystemPrompt` as your extraction instructions; it already contains the original input, the context, the reviewer notes, and the previous proposal.",
+	"2. The reviewer notes have the highest priority: apply them without breaking the schema or the record format.",
+	"3. Keep every record of `previousProposal` unchanged unless the notes ask for a change.",
+	"4. If the notes mention entities that are not in `retrievedNodes`, look them up with `search_nodes` / `get_node` first and reuse exact names.",
+	"5. Write the COMPLETE revised block (not a diff) between <start#$#$> and </end#$#$>.",
+	"6. Call `submit_regeneration` with `ref`, `records`, and `notes` (the `reviewerNotes` returned here).",
+	"7. Tell the user the proposal was regenerated and give its ref; it stays pending for approval.",
 ].join("\n");
 
+const QUERY_CYPHER_DESCRIPTION = [
+	"Runs one read-only Cypher query on the approved graph, for questions the other tools would need many calls for (for example every screen with its sections and their fields). ",
+	"Graph model: (:KnowledgeNode {id, name, label, type, description, createdAt, updatedAt})-[:RELATES_TO {id, relation, sourceId, targetId, information, description}]->(:KnowledgeNode). ",
+	"Every node has the label KnowledgeNode and every relationship the type RELATES_TO; the meaning is in the `type` and `relation` properties. Node ids are \"node:<name>\". ",
+	"Example: MATCH (s:KnowledgeNode {type: 'screen'})-[:RELATES_TO {relation: 'contains'}]->(x:KnowledgeNode) RETURN s.label, collect(x.label). ",
+	"Neo4j checks that the query only reads; writes, schema changes, LOAD CSV, dbms.* and apoc.* are refused. 10 second timeout, at most `limit` rows. Pending proposals are not in Neo4j.",
+].join("");
+
 // Builds the MCP server with its tools and resources, without connecting a transport, so tests can use
-// an in-memory transport.
+// an in-memory transport. Review decisions (approve / reject) are registered only when
+// config.mcp.allowReviewDecisions is true.
 export function createMcpServer(services) {
 	// There is no LLM provider: the calling agent performs all reasoning, and these services are used only
 	// for retrieval, normalization, and persistence.
-	const { config, prompts, graphStore, vectorStore, hitlService, ingestionService, ragService } = services;
+	const { config, prompts, graphStore, vectorStore, graphReadService, hitlService, ingestionService, ragService } = services;
+	const allowReviewDecisions = config.mcp?.allowReviewDecisions === true;
+	// In auto mode submit_ingest can apply updates directly, which overwrite stored values.
+	const submitIngestAnnotations = {
+		readOnlyHint: false,
+		destructiveHint: ingestionService.ingestion.mode !== "hitl",
+		idempotentHint: false,
+		openWorldHint: false,
+	};
 
 	const server = new McpServer(
 		{
-			name: "mindmesh-ask-ingest",
-			version: "0.1.0",
-			description: "MindMesh ask and ingest context server. Provides graph context for answering questions and for retrieval-augmented graph extraction, plus application of extracted graph records. The calling agent performs all LLM reasoning.",
+			name: "mindmesh",
+			version: "0.2.0",
+			description: "MindMesh knowledge graph: explore approved knowledge and pending proposals, and propose new knowledge through human review (HITL). The calling agent performs all reasoning.",
 		},
 		{
 			capabilities: {
@@ -118,273 +168,428 @@ export function createMcpServer(services) {
 				resources: {},
 			},
 			instructions: [
-				"MindMesh MCP server for ask & ingest, backed by Neo4j + ChromaDB.",
+				"MindMesh is a human-reviewed knowledge graph (Neo4j + Chroma). Approved facts are in the graph; new knowledge becomes a pending proposal that a person reviews.",
 				"",
-				"Tools:",
-				"- `ask`: retrieve verified graph context + answer system prompt + instructions to answer a user question.",
-				"- `ingest-context`: retrieve retrieval-augmented extraction context (existing graph + pending HITL), the fully rendered extraction prompt, schema catalog, and instructions to extract graph records.",
-				"- `apply-ingestion`: parse, normalize, and apply (or store as HITL proposal) the graph records an agent extracted.",
-				"- `regenerate-context`: get the extraction prompt to regenerate a pending HITL proposal with reviewer notes (from chat or saved in the UI).",
-				"- `apply-regeneration`: overwrite that HITL proposal with the regenerated graph records.",
-				"",
-				"Recommended flow for regenerating a HITL proposal (the user names it by id or short ref such as #d964db):",
-				"1. Call `regenerate-context` with the proposal reference and any instructions the user gave in chat as `notes`.",
-				"2. Produce the complete revised graph records following the returned `extractionSystemPrompt`.",
-				"3. Call `apply-regeneration` with the same proposal reference, the records, and the notes.",
-				"",
-				"Recommended flow for ingestion:",
-				"1. Call `ingest-context` with the user's text.",
-				"2. Reason over the returned context and extract pipe-delimited graph records following the `extractionSystemPrompt`.",
-				"3. Call `apply-ingestion` with the extracted records.",
-				"",
-				"Resources:",
-				"- `mindmesh://schema`: the editable graph schema.",
-				"- `mindmesh://graph`: graph preview.",
-				"- `mindmesh://hitl/notes`: pending HITL proposals.",
-				"- `mindmesh://nodes/{nodeId}`: a single graph node.",
-				"- `mindmesh://relations/{relationId}`: a single graph relation.",
+				"Questions: start with `search_context`; use `search_nodes`, `search_relations`, `get_node`, `explore_graph`, `find_paths`, and `query_cypher` to go deeper. Cite node and relation ids. Pending proposals (`search_proposals`, includePending) are unverified: keep them separate from approved facts.",
+				"Ingestion: `get_ingest_prompt` with the user's text, look up any entity it did not retrieve, extract records, then `submit_ingest`.",
+				"Reviewing: `list_proposals` and `get_proposal`; `save_reviewer_notes`; regenerate with `get_regenerate_prompt` then `submit_regeneration`.",
+				allowReviewDecisions
+					? "Decisions: `approve_proposal` and `reject_proposal` are enabled. Use them only when the user explicitly asks for that proposal."
+					: "Decisions: approving and rejecting are done by a person in the MindMesh HITL UI (not available over MCP on this server).",
+				"Proposals are named by id or short ref such as #d964db.",
 			].join("\n"),
 		},
 	);
 
+	function registerTool(name, annotations, title, description, inputSchema, handler) {
+		server.registerTool(
+			name,
+			{ title, description, inputSchema, annotations },
+			async (args) => {
+				try {
+					return textContent(await handler(args));
+				} catch (error) {
+					throw toolError(name, error);
+				}
+			},
+		);
+	}
+
+	const readTool = (name, ...rest) => registerTool(name, READ_ONLY_TOOL, ...rest);
+
 	// ---------------------------------------------------------------------------
-	// Tools
+	// Read tools: the approved graph
 	// ---------------------------------------------------------------------------
 
-	server.registerTool(
-		"ask",
+	readTool(
+		"search_context",
+		"Search Context",
+		[
+			"Builds MindMesh's ready-made context for a question: the closest nodes by meaning, expanded through the graph. ",
+			"Use it as the first step for a question; use search_nodes, get_node, and the other read tools when it misses something. ",
+			"Cite node and relation ids in square brackets for graph-backed claims. With includePending, pending proposals are added as unverified knowledge: keep them separate from approved facts and say who contributed them.",
+		].join(""),
 		{
-			title: "Ask for Graph Context",
-			description: [
-				"Retrieve verified graph context for answering a user's question. ",
-				"Returns the formatted graph context, the answering system prompt, and instructions for the calling agent on how to answer. No LLM is invoked by this server.",
-			].join(""),
-			inputSchema: {
-				query: z.string().describe("The user's question to answer."),
-				includeUnverifiedKnowledge: z.boolean().optional().describe("Whether to include pending HITL/fleeting notes as unverified knowledge context. Defaults to false."),
-			},
+			query: z.string().describe("The question or topic to build context for."),
+			includePending: z.boolean().optional().describe("Also include pending (unapproved) proposals as unverified knowledge. Default false."),
+			depth: z.number().int().min(0).max(4).optional().describe("How many relation hops to expand from the closest nodes. Default: the server setting."),
 		},
-		async ({ query, includeUnverifiedKnowledge }) => {
-			try {
-				const result = await ragService.retrieveContext({
-					query,
-					includeUnverifiedKnowledge: Boolean(includeUnverifiedKnowledge),
-				});
-				
-				return textContent({
-					context: result.context,
-					systemPrompt: prompts.answerSystem,
-					instructions: ASK_INSTRUCTIONS,
-					entryNodes: result.entryNodes,
-					graph: result.graph,
-					unverifiedNotes: result.unverifiedNotes,
-					unverifiedContext: result.unverifiedContext,
-					retrievalQuery: result.retrievalQuery,
-					depth: result.depth,
-				});
-			} catch (error) {
-				throw new McpError(ErrorCode.InternalError, `ask failed: ${error?.message ?? String(error)}`);
-			}
+		async ({ query, includePending = false, depth }) => {
+			const result = await ragService.retrieveContext({ query, includeUnverifiedKnowledge: includePending, depth });
+			return {
+				query,
+				depth: result.depth,
+				context: result.context,
+				entryNodes: result.entryNodes.map((entry) => ({
+					id: entry.id,
+					label: entry.metadata?.label ?? "",
+					type: entry.metadata?.type ?? "",
+					distance: entry.distance,
+				})),
+				...(includePending ? {
+					pending: {
+						verified: false,
+						context: result.unverifiedContext,
+						proposals: result.unverifiedNotes.map((note) => ({ ref: hitlShortRef(note.id), id: note.id, author: note.userName, verified: false })),
+					},
+				} : {}),
+			};
 		},
 	);
 
-	server.registerTool(
-		"ingest-context",
+	readTool(
+		"search_nodes",
+		"Search Nodes",
+		[
+			"Finds approved graph nodes. match \"semantic\" (default) ranks by meaning; match \"text\" matches names, labels, and descriptions as text, which finds exact names such as API or field names that meaning search can miss. ",
+			"Use it to check whether an entity already exists before proposing it, trying text first for exact names. Results are full node records with ids.",
+		].join(""),
 		{
-			title: "Ingest Context",
-			description: [
-				"Retrieve retrieval-augmented ingestion context for a piece of text the user wants to add to the knowledge graph. ",
-				"Returns existing graph context, pending HITL context, the fully rendered extraction system prompt, schema catalog, field guidance, and instructions so the calling agent can extract graph records. No LLM is invoked by this server.",
-			].join(""),
-			inputSchema: {
-				text: z.string().describe("The text to analyze for knowledge extraction and ingestion."),
-			},
+			query: z.string().describe("Name, phrase, or description to search for."),
+			match: z.enum(["semantic", "text"]).optional().describe("semantic (default) or text."),
+			type: z.string().optional().describe("Only nodes of this node type (see get_schema)."),
+			limit: z.number().int().min(1).max(50).optional().describe("Maximum results. Default 10."),
+		},
+		async ({ query, match, type, limit }) => graphReadService.searchNodes({ query, match, type, limit }),
+	);
+
+	readTool(
+		"search_relations",
+		"Search Relations",
+		"Finds approved relations (facts between two nodes) by meaning, optionally of one relation type. Each result has the relation, its information and description, and both endpoint nodes.",
+		{
+			query: z.string().describe("The fact or relationship to search for."),
+			relationType: z.string().optional().describe("Only relations of this type (see get_schema)."),
+			limit: z.number().int().min(1).max(50).optional().describe("Maximum results. Default 10."),
+		},
+		async ({ query, relationType, limit }) => graphReadService.searchRelations({ query, relationType, limit }),
+	);
+
+	readTool(
+		"get_node",
+		"Get Node",
+		"One approved node by id (node:ekyc_screen) or exact name (ekyc_screen), with its relations grouped by direction (outgoing, incoming) and relation type. With includePending (default), also lists pending proposals that would change the node or its relations, marked unverified. If the node is not found, use search_nodes.",
+		{
+			node: z.string().describe("Node id (node:...) or exact node name."),
+			includePending: z.boolean().optional().describe("Include pending proposals touching this node. Default true."),
+		},
+		async ({ node, includePending = true }) => {
+			const result = await graphReadService.getNode({ node });
+			if (!includePending) {
+				return result;
+			}
+			const pendingChanges = await hitlService.proposalsTouchingNode(result.node.id);
+			return { ...result, pendingChanges: pendingChanges.map((item) => ({ ref: hitlShortRef(item.id), ...item })) };
+		},
+	);
+
+	readTool(
+		"explore_graph",
+		"Explore Graph",
+		"Walks the approved graph out from one node, up to `depth` hops (1-4), for impact and dependency questions: direction \"out\" follows relations the node starts (what it uses), \"in\" follows relations pointing at it (what uses it), \"both\" (default) follows all. Optional relation-type and node-type filters. Each node carries its hop `distance`; `truncated` is true when `limit` cut the result.",
+		{
+			from: z.string().describe("Start node id (node:...) or exact name."),
+			depth: z.number().int().min(1).max(4).optional().describe("Hops to walk. Default 1."),
+			direction: z.enum(["both", "out", "in"]).optional().describe("both (default), out, or in."),
+			relationTypes: z.array(z.string()).optional().describe("Only follow relations of these types."),
+			nodeTypes: z.array(z.string()).optional().describe("Only reach nodes of these types."),
+			limit: z.number().int().min(1).max(500).optional().describe("Maximum nodes. Default 100."),
+		},
+		async ({ from, depth, direction, relationTypes, nodeTypes, limit }) => graphReadService.exploreGraph({ from, depth, direction, relationTypes, nodeTypes, limit }),
+	);
+
+	readTool(
+		"find_paths",
+		"Find Paths",
+		"Shortest paths between two approved nodes, following relations in either direction, up to `maxDepth` relations (1-6): how X is connected to Y. Each path has a one-line summary with relation directions, plus its nodes and relations.",
+		{
+			from: z.string().describe("Start node id (node:...) or exact name."),
+			to: z.string().describe("End node id (node:...) or exact name."),
+			maxDepth: z.number().int().min(1).max(6).optional().describe("Longest path to look for. Default 4."),
+			relationTypes: z.array(z.string()).optional().describe("Only paths made of these relation types."),
+			limit: z.number().int().min(1).max(20).optional().describe("Maximum paths. Default 5."),
+		},
+		async ({ from, to, maxDepth, relationTypes, limit }) => graphReadService.findPaths({ from, to, maxDepth, relationTypes, limit }),
+	);
+
+	readTool(
+		"query_cypher",
+		"Query Cypher",
+		QUERY_CYPHER_DESCRIPTION,
+		{
+			cypher: z.string().describe("A read-only Cypher query. Use $name placeholders for values."),
+			params: z.record(z.string(), z.any()).optional().describe("Values for the $name placeholders."),
+			limit: z.number().int().min(1).max(500).optional().describe("Maximum rows. Default 100."),
+		},
+		async ({ cypher, params, limit }) => graphReadService.queryCypher({ cypher, params, limit }),
+	);
+
+	readTool(
+		"get_schema",
+		"Get Schema",
+		"The approved node and relation types with descriptions and how many nodes or relations use each, totals, types still used in the graph but no longer approved, and field guidance (what each record field should contain). Use it to learn what the graph holds and which types to use.",
+		{},
+		async () => graphReadService.getSchemaOverview(),
+	);
+
+	// ---------------------------------------------------------------------------
+	// Read tools: pending proposals (unverified)
+	// ---------------------------------------------------------------------------
+
+	readTool(
+		"search_proposals",
+		"Search Proposals",
+		"Finds pending (unapproved) proposals by meaning. Results are unverified knowledge, never approved facts. Use get_proposal with a result's ref for details.",
+		{
+			query: z.string().describe("Topic or text to search pending proposals for."),
+			limit: z.number().int().min(1).max(50).optional().describe("Maximum results. Default 10."),
+		},
+		async ({ query, limit }) => ({
+			results: (await hitlService.searchProposals({ query, limit })).map(proposalSummary),
+		}),
+	);
+
+	readTool(
+		"list_proposals",
+		"List Proposals",
+		"The pending proposal review queue, oldest first, with counts and review signals (ambiguity, contradiction). Filters apply to all pending proposals. Use get_proposal with a ref for details.",
+		{
+			signal: z.enum(["ambiguity", "contradiction"]).optional().describe("Only proposals with this review signal."),
+			operation: z.enum(["create", "update", "delete"]).optional().describe("Only proposals containing this kind of change."),
+			author: z.string().optional().describe("Only proposals by this user."),
+			source: z.string().optional().describe("Only proposals from this source (for example web, mcp, manual)."),
+			limit: z.number().int().min(1).max(100).optional().describe("Maximum results. Default 20."),
+		},
+		async ({ signal, operation, author, source, limit = 20 }) => {
+			const { notes, total } = await hitlService.listProposals({ limit, filter: { signal, operation, author, source } });
+			return { total, results: notes.map(proposalSummary) };
+		},
+	);
+
+	readTool(
+		"get_proposal",
+		"Get Proposal",
+		"One pending proposal by id or short ref (#d964db): the original input, the proposal text, the parsed records, and for every record the proposed value next to the current graph value (null when the record is new). Use it to review or summarize a proposal for the user. Reviewing never approves.",
+		{
+			ref: z.string().describe("Proposal id (hitl:...) or short ref such as #d964db."),
+		},
+		async ({ ref }) => {
+			const { proposal, changes } = await hitlService.getProposalReview({ ref });
+			return { ref: hitlShortRef(proposal.id), verified: false, proposal, changes };
+		},
+	);
+
+	// ---------------------------------------------------------------------------
+	// Proposing knowledge: ingestion and regeneration
+	// ---------------------------------------------------------------------------
+
+	readTool(
+		"get_ingest_prompt",
+		"Get Ingest Prompt",
+		[
+			"Step 1 of adding knowledge from the user's text. Runs MindMesh's own retrieval and returns its exact extraction prompt (record format, schema types, field guidance, retrieved context), the retrieved and pending nodes, a retrieval quality note, and instructions. ",
+			"MindMesh's retrieval is one search over the whole text and can miss entities named differently: check every entity the text mentions against retrievedNodes and pendingNodes, and look up the missing ones with search_nodes / get_node before extracting. Then call submit_ingest.",
+		].join(""),
+		{
+			text: z.string().describe("The text to add to the knowledge graph."),
 		},
 		async ({ text }) => {
-			try {
-				const graphSchema = hitlService.currentSchema();
-				const existingContext = await ingestionService.retrieveExistingContext({ text, graphSchema });
-				const extractionSystemPrompt = buildExtractionPrompt(prompts.extractionSystemTemplate, {
+			const graphSchema = hitlService.currentSchema();
+			const existingContext = await ingestionService.retrieveExistingContext({ text, graphSchema });
+			return {
+				extractionSystemPrompt: buildExtractionPrompt(prompts.extractionSystemTemplate, {
 					graphSchema,
 					existingGraphContext: existingContext.context,
 					userInput: text,
-				});
-				
-				return textContent({
-					context: existingContext.context,
-					extractionSystemPrompt,
-					schemaCatalog: formatSchemaCatalog(graphSchema),
-					fieldGuidance: formatFieldGuidance(graphSchema),
-					instructions: INGEST_INSTRUCTIONS,
-					entryNodes: existingContext.entryNodes,
-					graph: existingContext.graph,
-					pendingHitl: {
-						notes: existingContext.pendingHitl.notes,
-						graph: existingContext.pendingHitl.graph,
-						nodeDeletes: existingContext.pendingHitl.nodeDeletes,
-						relationDeletes: existingContext.pendingHitl.relationDeletes,
-						warnings: existingContext.pendingHitl.warnings,
-					},
-					ingestionMode: ingestionService.ingestion.mode,
-				});
-			} catch (error) {
-				throw new McpError(ErrorCode.InternalError, `ingest-context failed: ${error?.message ?? String(error)}`);
-			}
+				}),
+				retrievedNodes: existingContext.graph.nodes.map(compactNode),
+				pendingNodes: existingContext.pendingHitl.graph.nodes.map((node) => ({
+					...compactNode(node),
+					ref: hitlShortRef(node.hitlNoteId),
+					verified: false,
+				})),
+				retrievalQuality: retrievalQuality(existingContext),
+				ingestionMode: ingestionService.ingestion.mode,
+				instructions: INGEST_INSTRUCTIONS,
+			};
 		},
 	);
 
-	server.registerTool(
-		"apply-ingestion",
+	registerTool(
+		"submit_ingest",
+		submitIngestAnnotations,
+		"Submit Ingest",
+		[
+			"Step 2 of adding knowledge: submits the records you extracted following get_ingest_prompt. ",
+			"MindMesh checks them against the schema and the graph, reconciles them with pending proposals, then applies clean creates and updates directly in auto mode, or stores a pending proposal for human review (always in hitl mode, and for any schema violation, ambiguity, contradiction, or delete). ",
+			"Returns the status, the proposal ref when pending, and the review reasons.",
+		].join(""),
 		{
-			title: "Apply Ingestion",
-			description: [
-				"Parse, normalize, and apply extracted graph records to the knowledge graph. ",
-				"Accepts the pipe-delimited graph records block an agent produced (including <start#$#$> and </end#$#$> markers). ",
-				"In 'auto' ingestion mode, applies the records directly only when they are clean creates and updates (no schema violations, no AMBIGUITY or CONTRADICTION metadata, no deletes); otherwise stores a pending HITL proposal for human review and returns the reasons in `reviewReasons`.",
-			].join(""),
-			inputSchema: {
-				graphRecords: z.string().describe("The pipe-delimited graph records block output by the extraction agent, enclosed between <start#$#$> and </end#$#$> markers."),
-				text: z.string().describe("The original user text that was ingested."),
-				userName: z.string().optional().describe("User name for attribution on HITL proposals. Defaults to 'mcp-agent'."),
-				source: z.string().optional().describe("Source identifier for attribution. Defaults to 'mcp'."),
-			},
+			records: z.string().describe(`The extracted records: ${RECORD_BLOCK}.`),
+			text: z.string().describe("The original text the records were extracted from."),
+			author: z.string().optional().describe("Who provided the text. Default mcp-agent."),
+			source: z.string().optional().describe("Short source label. Default mcp."),
 		},
-		async ({ graphRecords, text, userName, source }) => {
-			const debugLogger = createDebugLogger({ ...config.logging, name: "ingest" });
-			const resolvedUserName = String(userName || "mcp-agent").trim() || "mcp-agent";
-			const resolvedSource = String(source || "mcp").trim() || "mcp";
-			
-			try {
-				// Same path as web ingest: prepared against pending proposals and the graph, then auto mode
-				// applies only clean creates and updates.
-				const result = await hitlService.submitRecords({
-					graphRecords,
-					text,
-					userName: resolvedUserName,
-					source: resolvedSource,
-					debugLogger,
-				});
-				const status = result.status ?? "applied";
-				const applied = status === "applied";
-
-				return textContent({
-					status,
-					applied,
-					nodes: result.nodes ?? [],
-					relations: result.relations ?? [],
-					nodeDeletes: result.nodeDeletes ?? [],
-					relationDeletes: result.relationDeletes ?? [],
-					deletedNodeIds: result.deletedNodeIds ?? [],
-					deletedRelationIds: result.deletedRelationIds ?? [],
-					tripletCount: (result.relations ?? []).length,
-					schemaSuggestions: result.schemaSuggestions ?? { nodeTypes: [], relationshipTypes: [] },
-					schemaViolations: result.schemaViolations ?? [],
-					schemaWarnings: result.schemaWarnings ?? [],
-					hitlNoteId: result.hitlNote?.id ?? null,
-					hitlNoteRef: hitlShortRef(result.hitlNote?.id),
-					hitlNoteStatus: result.hitlNote?.status ?? null,
-					reviewReasons: result.reviewReasons ?? [],
-				});
-			} catch (error) {
-				const message = `apply-ingestion failed: ${error?.message ?? String(error)}`;
-				if (Number(error?.status) === 400) {
-					throw new McpError(ErrorCode.InvalidParams, message);
-				}
-				throw new McpError(ErrorCode.InternalError, message);
-			}
+		async ({ records, text, author, source }) => {
+			const result = await hitlService.submitRecords({
+				graphRecords: records,
+				text,
+				userName: String(author || "mcp-agent").trim() || "mcp-agent",
+				source: String(source || "mcp").trim() || "mcp",
+				debugLogger: createDebugLogger({ ...config.logging, name: "ingest" }),
+			});
+			const status = result.status ?? "applied";
+			return {
+				status,
+				applied: status === "applied",
+				ref: hitlShortRef(result.hitlNote?.id),
+				id: result.hitlNote?.id ?? null,
+				reviewReasons: result.reviewReasons ?? [],
+				counts: payloadCounts(result),
+				nodeIds: (result.nodes ?? []).map((node) => node.id),
+				relationIds: (result.relations ?? []).map((relation) => relation.id),
+				schemaViolations: result.schemaViolations ?? [],
+				schemaWarnings: result.schemaWarnings ?? [],
+			};
 		},
 	);
 
-	server.registerTool(
-		"regenerate-context",
+	readTool(
+		"get_regenerate_prompt",
+		"Get Regenerate Prompt",
+		[
+			"Step 1 of revising a pending proposal with reviewer notes. Accepts the proposal id or short ref; notes given here (from chat) win over notes saved in the HITL UI, and one of them is required. ",
+			"Returns the extraction prompt plus the reviewer-revision section (notes and previous proposal), the original text, the retrieved nodes, and instructions. Then call submit_regeneration.",
+		].join(""),
 		{
-			title: "Regenerate HITL Proposal Context",
-			description: [
-				"Get everything needed to regenerate a pending HITL proposal with reviewer notes. ",
-				"Accepts the proposal's full id or its short reference (e.g. #d964db). Notes passed here take precedence over notes saved in the HITL UI; one of them is required. ",
-				"Returns the extraction system prompt (same as ingestion, plus a reviewer revision section), the original input, the previous proposal, and instructions. No LLM is invoked by this server.",
-			].join(""),
-			inputSchema: {
-				proposal: z.string().describe("HITL proposal id (hitl:...) or short reference such as #d964db."),
-				notes: z.string().optional().describe("Reviewer instructions given in chat. Omit to use the notes saved on the proposal in the HITL UI."),
-			},
+			ref: z.string().describe("Proposal id (hitl:...) or short ref such as #d964db."),
+			notes: z.string().optional().describe("The user's instructions for the revision. Omit to use the notes saved on the proposal."),
 		},
-		async ({ proposal, notes }) => {
-			try {
-				const noteId = await hitlService.resolveRef(proposal);
-				const note = await hitlService.getProposal(noteId);
-				const { reviewerNotes, notesSource } = resolveReviewerNotes(notes, note);
-				const { existingContext, extractionPrompt } = await ingestionService.buildHitlRegenerationPrompt({
-					note,
-					reviewerNotes,
-					previousProposal: note.llmResponse,
-				});
-
-				return textContent({
-					noteId,
-					shortRef: hitlShortRef(noteId),
-					reviewerNotes,
-					notesSource,
-					originalText: note.userInput,
-					previousProposal: note.llmResponse,
-					context: existingContext.context,
-					extractionSystemPrompt: extractionPrompt,
-					instructions: REGENERATE_INSTRUCTIONS,
-				});
-			} catch (error) {
-				throw toolError("regenerate-context", error);
-			}
+		async ({ ref, notes }) => {
+			const noteId = await hitlService.resolveRef(ref);
+			const note = await hitlService.getProposal(noteId);
+			const { reviewerNotes, notesSource } = resolveReviewerNotes(notes, note);
+			const { existingContext, extractionPrompt } = await ingestionService.buildHitlRegenerationPrompt({
+				note,
+				reviewerNotes,
+				previousProposal: note.llmResponse,
+			});
+			return {
+				ref: hitlShortRef(noteId),
+				id: noteId,
+				reviewerNotes,
+				notesSource,
+				originalText: note.userInput,
+				previousProposal: note.llmResponse,
+				extractionSystemPrompt: extractionPrompt,
+				retrievedNodes: existingContext.graph.nodes.map(compactNode),
+				instructions: REGENERATE_INSTRUCTIONS,
+			};
 		},
 	);
 
-	server.registerTool(
-		"apply-regeneration",
+	registerTool(
+		"submit_regeneration",
+		{ readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+		"Submit Regeneration",
+		"Step 2 of revising a pending proposal: overwrites it with your complete revised records and saves the reviewer notes on it. The records are checked before anything is written, so an invalid block leaves the proposal unchanged. The proposal stays pending for human approval.",
 		{
-			title: "Apply HITL Proposal Regeneration",
-			description: [
-				"Overwrite a pending HITL proposal with regenerated graph records and save the reviewer notes on it. ",
-				"The records are parsed before anything is written, so an invalid block leaves the proposal unchanged. ",
-				"The proposal stays pending for human approval in the HITL UI.",
-			].join(""),
-			inputSchema: {
-				proposal: z.string().describe("HITL proposal id (hitl:...) or short reference such as #d964db."),
-				graphRecords: z.string().describe("The complete revised pipe-delimited block, enclosed between <start#$#$> and </end#$#$> markers."),
-				notes: z.string().optional().describe("The reviewer notes used for this regeneration. Omit to keep the notes saved on the proposal."),
-				regeneratedBy: z.string().optional().describe("Who requested the regeneration. Defaults to 'mcp-agent'."),
-			},
+			ref: z.string().describe("Proposal id (hitl:...) or short ref such as #d964db."),
+			records: z.string().describe(`The revised records: ${RECORD_BLOCK}.`),
+			notes: z.string().optional().describe("The reviewer notes used for this revision. Omit to keep the notes saved on the proposal."),
+			author: z.string().optional().describe("Who asked for the revision. Default mcp-agent."),
 		},
-		async ({ proposal, graphRecords, notes, regeneratedBy }) => {
-			try {
-				const noteId = await hitlService.resolveRef(proposal);
-				const note = await hitlService.getProposal(noteId);
-				const { reviewerNotes } = resolveReviewerNotes(notes, note);
-				const { note: updatedNote, graphPayload } = await hitlService.storeRegeneration({
-					note,
-					rawResponse: graphRecords,
-					reviewerNotes,
-					regeneratedBy: String(regeneratedBy || "mcp-agent").trim() || "mcp-agent",
-					origin: "agent",
-				});
-
-				return textContent({
-					status: "pending_hitl",
-					noteId,
-					shortRef: hitlShortRef(noteId),
-					regeneratedBy: updatedNote.regeneratedBy,
-					regeneratedAt: updatedNote.regeneratedAt,
-					reviewerNotes: updatedNote.reviewerNotes,
-					nodeCount: graphPayload.nodes.length,
-					relationCount: graphPayload.relations.length,
-					nodeDeleteCount: graphPayload.nodeDeletes.length,
-					relationDeleteCount: graphPayload.relationDeletes.length,
-					schemaViolations: graphPayload.schemaViolations ?? [],
-					schemaWarnings: graphPayload.schemaWarnings ?? [],
-				});
-			} catch (error) {
-				throw toolError("apply-regeneration", error);
-			}
+		async ({ ref, records, notes, author }) => {
+			const noteId = await hitlService.resolveRef(ref);
+			const note = await hitlService.getProposal(noteId);
+			const { reviewerNotes } = resolveReviewerNotes(notes, note);
+			const { note: updatedNote, graphPayload } = await hitlService.storeRegeneration({
+				note,
+				rawResponse: records,
+				reviewerNotes,
+				regeneratedBy: String(author || "mcp-agent").trim() || "mcp-agent",
+				origin: "agent",
+			});
+			return {
+				status: "pending_hitl",
+				ref: hitlShortRef(noteId),
+				id: noteId,
+				regeneratedBy: updatedNote.regeneratedBy,
+				regeneratedAt: updatedNote.regeneratedAt,
+				reviewerNotes: updatedNote.reviewerNotes,
+				counts: payloadCounts(graphPayload),
+				schemaViolations: graphPayload.schemaViolations ?? [],
+				schemaWarnings: graphPayload.schemaWarnings ?? [],
+			};
 		},
 	);
+
+	registerTool(
+		"save_reviewer_notes",
+		{ readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+		"Save Reviewer Notes",
+		"Saves reviewer notes on a pending proposal (replacing earlier notes), for a human reviewer or a later regeneration. The proposal itself is not changed.",
+		{
+			ref: z.string().describe("Proposal id (hitl:...) or short ref such as #d964db."),
+			notes: z.string().describe("The notes to save."),
+		},
+		async ({ ref, notes }) => {
+			const noteId = await hitlService.resolveRef(ref);
+			const note = await hitlService.saveReviewerNotes({ noteId, reviewerNotes: notes });
+			return { ref: hitlShortRef(noteId), id: noteId, reviewerNotes: note.reviewerNotes };
+		},
+	);
+
+	// ---------------------------------------------------------------------------
+	// Review decisions: only when config.mcp.allowReviewDecisions is true
+	// ---------------------------------------------------------------------------
+
+	if (allowReviewDecisions) {
+		registerTool(
+			"approve_proposal",
+			DECISION_TOOL,
+			"Approve Proposal",
+			"Applies a pending proposal to the knowledge graph, exactly like Approve in the HITL UI: type suggestions in it become approved schema types, and the proposal is removed. Use it only when the user explicitly asks to approve this proposal; review it with get_proposal first. Optionally approve edited records instead of the stored ones.",
+			{
+				ref: z.string().describe("Proposal id (hitl:...) or short ref such as #d964db."),
+				reviewer: z.string().min(1).describe("The person approving (the user)."),
+				records: z.string().optional().describe(`Edited records to approve instead of the stored ones: ${RECORD_BLOCK}.`),
+			},
+			async ({ ref, reviewer, records }) => {
+				const noteId = await hitlService.resolveRef(ref);
+				const { storedGraph } = await hitlService.approve({ noteId, reviewedBy: reviewer, llmResponse: records });
+				console.error(`[mcp] Approved ${hitlShortRef(noteId)} (${noteId}) for ${reviewer}.`);
+				return {
+					status: "approved",
+					ref: hitlShortRef(noteId),
+					id: noteId,
+					reviewer,
+					nodeIds: storedGraph.nodes.map((node) => node.id),
+					relationIds: storedGraph.relations.map((relation) => relation.id),
+					deletedNodeIds: storedGraph.deletedNodeIds,
+					deletedRelationIds: storedGraph.deletedRelationIds,
+				};
+			},
+		);
+
+		registerTool(
+			"reject_proposal",
+			DECISION_TOOL,
+			"Reject Proposal",
+			"Deletes a pending proposal without changing the graph, like Reject in the HITL UI. This cannot be undone. Use it only when the user explicitly asks to reject this proposal.",
+			{
+				ref: z.string().describe("Proposal id (hitl:...) or short ref such as #d964db."),
+				reviewer: z.string().min(1).describe("The person rejecting (the user)."),
+				reason: z.string().min(1).describe("Why it is rejected (logged; MindMesh keeps no proposal history yet)."),
+			},
+			async ({ ref, reviewer, reason }) => {
+				const noteId = await hitlService.resolveRef(ref);
+				await hitlService.reject({ noteId });
+				console.error(`[mcp] Rejected ${hitlShortRef(noteId)} (${noteId}) for ${reviewer}: ${reason}`);
+				return { status: "rejected", ref: hitlShortRef(noteId), id: noteId, reviewer, reason };
+			},
+		);
+	}
 
 	// ---------------------------------------------------------------------------
 	// Resources
@@ -516,6 +721,11 @@ export function createMcpServer(services) {
 // ---------------------------------------------------------------------------
 
 async function main() {
+	// stdout carries the MCP protocol; anything else printed there would corrupt it. Services log steps with
+	// console.log, so all console output goes to stderr in this process.
+	console.log = (...args) => console.error(...args);
+	console.info = (...args) => console.error(...args);
+
 	const services = createMindMesh(getConfig(), { withLlm: false });
 	const server = createMcpServer(services);
 

@@ -1,5 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { GraphReadService } from "./graph/graphReadService.js";
 import { GraphWriteService } from "./graph/graphWriteService.js";
 import { createGraphStore } from "./graph/providerFactory.js";
 import { HitlService } from "./hitl/hitlService.js";
@@ -22,6 +23,7 @@ export function createMindMesh(config, overrides = {}) {
 	const graphStore = overrides.graphStore ?? createGraphStore(config);
 	const vectorStore = overrides.vectorStore ?? createVectorStore(config);
 	const graphWriteService = new GraphWriteService({ graphStore, vectorStore });
+	const graphReadService = new GraphReadService({ graphStore, vectorStore, schemaConfig: config });
 
 	const ingestionService = new IngestionService({
 		llmProvider,
@@ -63,6 +65,7 @@ export function createMindMesh(config, overrides = {}) {
 		llmProvider,
 		graphStore,
 		vectorStore,
+		graphReadService,
 		graphWriteService,
 		ingestionService,
 		hitlService,

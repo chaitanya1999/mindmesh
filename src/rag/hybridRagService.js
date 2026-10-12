@@ -148,11 +148,14 @@ export class HybridRagService {
 		return retrievalQuery;
 	}
 	
+	// `depth` overrides the configured expansion depth for this call (clamped to 0..4).
 	async retrieveContext({
 		query,
 		memoryMessages: incomingMemoryMessages = [],
 		includeUnverifiedKnowledge = false,
+		depth: requestedDepth,
 	}) {
+		const depth = requestedDepth === undefined ? this.depth : Math.max(0, Math.min(Number(requestedDepth) || 0, 4));
 		// Retrieval-only variant of answer(): returns the formatted context plus
 		// the metadata needed for it, without invoking any LLM. This is used by
 		// external agents (e.g. the MCP server) that perform their own reasoning.
@@ -178,7 +181,7 @@ export class HybridRagService {
 		}
 		
 		const graph = nodeIds.length > 0
-		? await this.graphStore.expandFromNodes(nodeIds, this.depth)
+		? await this.graphStore.expandFromNodes(nodeIds, depth)
 		: { nodes: [], relations: [] };
 		
 		return {
@@ -190,7 +193,7 @@ export class HybridRagService {
 			context: formatGraphContext(graph, this.prompts),
 			unverifiedNotes,
 			unverifiedContext: formatUnverifiedKnowledgeContext(unverifiedNotes),
-			depth: this.depth,
+			depth,
 		};
 	}
 	

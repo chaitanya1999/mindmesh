@@ -47,8 +47,9 @@ HITL review
 
 MCP agent (no MindMesh LLM)
   -> src/mcp/server.js (stdio)
-  -> ask / ingest-context / regenerate-context return context + prompts
-  -> the agent reasons, then apply-ingestion / apply-regeneration write proposals
+  -> read tools explore the graph and pending proposals (GraphReadService, HitlService)
+  -> get_ingest_prompt / get_regenerate_prompt return context + MindMesh prompts
+  -> the agent reasons, then submit_ingest / submit_regeneration go through HitlService
 ```
 
 ## Runtime Stack
@@ -95,7 +96,8 @@ MCP agent (no MindMesh LLM)
 - `src/llm/geminiProvider.js`, `src/llm/ollamaProvider.js`, `src/llm/customHttpProvider.js`, and `src/llm/hubChatProvider.js`: LLM provider adapters with the same small interface.
 - `src/server/server.js`: Express web entry point (HTTP only: request parsing, uploads, response shapes) for ask, ingest, graph, schema, jobs, and HITL APIs. `createApp(services)` builds the app without listening; the file starts the server only when run directly.
 - `src/server/public`: Preact UI. `app.js` (App state/handlers and routes), `components/` (one component per file: `common`, `graph`, `chat`, `entity`, `hitl`, `schema`, `jobs`), `lib/` (shared helpers, including the client-side HITL proposal parser `lib/hitlProposal.js`), `styles.css`, and the built `app.bundle.js` (gitignored build output).
-- `src/mcp/server.js`: MCP server (ask, ingest, and HITL regeneration tools); `createMcpServer(services)` builds it without a transport, and the file connects stdio only when run directly. `src/mcp/smokeTest.js` is its smoke test.
+- `src/mcp/server.js`: MCP server (graph and proposal read tools, ingestion, regeneration, optional review decisions); `createMcpServer(services)` builds it without a transport, and the file connects stdio only when run directly. `src/mcp/smokeTest.js` is its smoke test.
+- `src/graph/graphReadService.js`: read-only graph views for agents: node and relation search, `getNode`, traversal, paths, read-only Cypher, and the schema overview.
 - `src/prompts/promptRegistry.js`: loads prompt files and renders the extraction prompt placeholders, including the HITL reviewer revision section.
 - `src/rag/graphContext.js`: formats graph context for Ask (`formatGraphContext`) and for extraction (`formatExtractionGraphContext`).
 - `src/logging/debugLogger.js`: opt-in, scope-filtered debug log files.
@@ -172,6 +174,8 @@ Replacement model:
 6. Unresolved placeholders stay as literal strings and print one warning listing the keys (on stderr). Placeholders for unused providers are therefore harmless. Use `getConfig(replacements, { strict: true })` to fail instead.
 7. A `config.replacements.json` that is not valid JSON, or not a JSON object, fails with an error naming the file.
 
+`mcp.allowReviewDecisions` (default `false`) registers the MCP tools `approve_proposal` and `reject_proposal`; see MCP Server.
+
 Example:
 
 ```json
@@ -220,7 +224,7 @@ In `auto` mode only clean creates and updates are applied directly. An extractio
 - an `AMBIGUITY:` or `CONTRADICTION:` signal in any record's `metadata`, including the `AMBIGUITY:` the graph check adds when `NODE_CREATE` targets an existing node;
 - a `NODE_DELETE` or `RELATION_DELETE` record (a relation re-target is a delete plus a create, so it is reviewed too).
 
-Web/CLI ingest and MCP `apply-ingestion` use the same rule and return the reasons as `reviewReasons`. Severity levels per signal (auto-applying only low-severity ones) are planned, not implemented.
+Web/CLI ingest and MCP `submit_ingest` use the same rule and return the reasons as `reviewReasons`. Severity levels per signal (auto-applying only low-severity ones) are planned, not implemented.
 
 ### Property Descriptors (Schema-Driven Field Guidance)
 
@@ -309,9 +313,9 @@ Each ask run writes a timestamped `ask-*.log` file containing:
 - raw LLM answer response
 - exception details when the ask flow fails
 
-## MCP Server (Ask, Ingest & HITL Regeneration)
+## MCP Server
 
-MindMesh exposes an MCP (Model Context Protocol) server over stdio so that any LLM or coding agent can perform the ask and ingest features without invoking MindMesh's own LLM providers. The calling agent performs all reasoning; the MCP server only retrieves context, formats prompts, and applies/stores graph mutations.
+MindMesh exposes an MCP (Model Context Protocol) server over stdio so that a coding agent (for example Claude in Agentforce or VS Code) can explore the knowledge graph and propose new knowledge without MindMesh calling its own LLM. The agent does all reasoning; the server retrieves context, hands out MindMesh's extraction prompts, and stores the agent's records through the same HITL path as the web UI.
 
 Start the MCP server:
 
@@ -319,13 +323,48 @@ Start the MCP server:
 npm run kg:mcp
 ```
 
-### Tools
+stdout carries the MCP protocol, so the server sends all of its console output to stderr.
 
-- `ask` — `{ query, includeUnverifiedKnowledge? }`. Returns verified graph context, the answer system prompt, and instructions so the calling agent can answer the user's question. No LLM is invoked.
-- `ingest-context` — `{ text }`. Returns retrieval-augmented extraction context (existing graph + pending HITL), the fully rendered extraction system prompt, schema catalog, field guidance, and instructions so the calling agent can extract graph records.
-- `apply-ingestion` — `{ graphRecords, text, userName?, source? }`. Parses, normalizes, and applies the pipe-delimited graph records an agent extracted. In `auto` mode it applies clean creates and updates directly; otherwise (`hitl` mode, or any of the review reasons listed under Graph Schema) it stores a pending HITL proposal and returns its `hitlNoteId`, short `hitlNoteRef` (e.g. `#d964db`), and `reviewReasons`.
-- `regenerate-context` — `{ proposal, notes? }`. `proposal` is a HITL note id or short ref. Returns the extraction prompt for regenerating that proposal: the normal ingestion prompt plus a `REVIEWER REVISION` section with the reviewer notes and the previous proposal as baseline. `notes` from chat take precedence over notes saved in the HITL UI; one of them is required. The proposal itself is excluded from pending HITL context.
-- `apply-regeneration` — `{ proposal, graphRecords, notes?, regeneratedBy? }`. Overwrites the pending proposal with the regenerated records, saves the notes, and flags it `regenerated` with origin `agent`. A block with no parseable records is rejected and the proposal is left unchanged.
+### Conventions
+
+- Tool names are `verb_noun` in snake_case. Descriptions carry the workflow; the agent needs no extra setup.
+- `node`, `from`, and `to` accept a node id (`node:ekyc_screen`) or a bare name (`ekyc_screen`); `ref` accepts a proposal id or a short ref (`#d964db`).
+- One node shape (`id`, `name`, `label`, `type`, `description`) and one relation shape (`id`, `relation`, `sourceId`, `targetId`, `information`, `description`). Semantic results come from Chroma, but records are always read from Neo4j; vectors whose node is gone are skipped.
+- Pending proposals are unverified: every pending item carries `verified: false` and a `ref`.
+- Read tools are marked `readOnlyHint`; `submit_regeneration` and the review decisions are marked `destructiveHint` (and `submit_ingest` too in `auto` mode, where it can apply updates).
+- Errors for bad input or unknown ids are `InvalidParams`; an unknown node points the agent to `search_nodes`.
+
+### Approved graph (read-only)
+
+- `search_context` — `{ query, includePending?, depth? }`. MindMesh's Ask retrieval without an answer prompt: closest nodes by meaning, expanded `depth` hops (0..4, default the server setting), formatted as context, plus the entry nodes with their distance. `includePending` adds pending proposals as unverified knowledge.
+- `search_nodes` — `{ query, match?, type?, limit? }`. `match: "semantic"` (default) ranks by meaning over the node vectors; `match: "text"` is a case-insensitive match on id, label, name, type, and description in Neo4j, exact label/name matches first. `type` filters by node type. `limit` 1..50, default 10.
+- `search_relations` — `{ query, relationType?, limit? }`. Semantic search over the relation vectors; each result also has its `source` and `target` node (`id`, `label`, `type`).
+- `get_node` — `{ node, includePending? }`. The node, `relationCount`, and its relations grouped as `outgoing` / `incoming` by relation type. `includePending` (default true) adds `pendingChanges`: pending proposals that would change the node or a relation using it.
+- `explore_graph` — `{ from, depth?, direction?, relationTypes?, nodeTypes?, limit? }`. Breadth-first walk from one node, 1..4 hops (default 1). `direction: "out"` follows relations the node starts (what it uses), `"in"` relations pointing at it (what uses it), `"both"` (default) all. Each node carries its hop `distance`; `truncated` is true when `limit` (default 100, max 500) cut the result.
+- `find_paths` — `{ from, to, maxDepth?, relationTypes?, limit? }`. Shortest paths in either direction, up to `maxDepth` relations (1..6, default 4); each path has a readable `summary` (`A -[uses]-> B <-[contains]- C`), its nodes, and its relations.
+- `query_cypher` — `{ cypher, params?, limit? }`. One read-only Cypher query for answers the fixed tools would need many calls for. Neo4j's `EXPLAIN` must report the query as read-only (`r`), it runs in a read transaction with a 10 second timeout, and at most `limit` rows (default 100, max 500) are returned, with `truncated`. `LOAD CSV`, `dbms.*`, `apoc.*`, and `SHOW` commands other than `SHOW INDEXES` / `SHOW CONSTRAINTS` are refused. Values come back as plain JSON (integers as numbers, nodes and relationships as their properties).
+- `get_schema` — `{}`. Approved node and relation types with descriptions and how many nodes or relations use each, `totals`, `unapprovedTypesInGraph` (types still in the graph but no longer in the schema), and the field guidance.
+
+### Pending proposals (read-only, unverified)
+
+- `search_proposals` — `{ query, limit? }`. Semantic search over pending proposals; short summaries (`ref`, author, source, counts, signals, reviewer notes, distance).
+- `list_proposals` — `{ signal?, operation?, author?, source?, limit? }`. The review queue, oldest first, with `total`. Filters (`signal`: `ambiguity` / `contradiction`; `operation`: `create` / `update` / `delete`; `author`; `source`) apply to every pending proposal before `limit` (default 20).
+- `get_proposal` — `{ ref }`. The proposal detail (input, pipe text, parsed `records`) and `changes`: one entry per record with `proposed` and `current` values (`current` is null for a new record, `proposed` is null for a delete) and its review signal.
+
+### Proposing knowledge
+
+- `get_ingest_prompt` — `{ text }`. Runs MindMesh's default retrieval and returns `extractionSystemPrompt` (the exact extraction prompt: record format, schema types, field guidance, retrieved context, the text), `retrievedNodes`, `pendingNodes`, `retrievalQuality` (entry-node count, closest distance, and a note), `ingestionMode`, and `instructions`.
+- `submit_ingest` — `{ records, text, author?, source? }`. Submits the agent's record block. It is prepared exactly like a web ingestion (reconciled with pending proposals, normalized, checked against the graph), then applied in `auto` mode when clean or stored as a proposal (see Graph Schema for the review reasons). Returns `status`, `applied`, `ref` and `id` when pending, `reviewReasons`, `counts`, `nodeIds`, `relationIds`, `schemaViolations`, and `schemaWarnings`.
+- `get_regenerate_prompt` — `{ ref, notes? }`. The extraction prompt plus the reviewer-revision section for one proposal. `notes` from chat win over notes saved in the HITL UI; one of them is required. Also returns the original text, the previous proposal, `retrievedNodes`, and `instructions`. The proposal itself is excluded from pending context.
+- `submit_regeneration` — `{ ref, records, notes?, author? }`. Overwrites the pending proposal with the revised records, saves the notes, and marks it regenerated with origin `agent`. A block with no records is rejected and the proposal is left unchanged.
+- `save_reviewer_notes` — `{ ref, notes }`. Saves (replaces) the reviewer notes on a proposal.
+
+### Review decisions (off by default)
+
+Registered only when `mcp.allowReviewDecisions` is `true` in `config.json` (default `false`); otherwise the server cannot approve or reject, whatever the agent does.
+
+- `approve_proposal` — `{ ref, reviewer, records? }`. Exactly like Approve in the HITL UI, optionally with edited records: schema check, approved type suggestions merged, graph applied through `GraphWriteService`, proposal removed. Logged to stderr.
+- `reject_proposal` — `{ ref, reviewer, reason }`. Deletes the proposal. The reason is logged to stderr only; MindMesh keeps no proposal history yet.
 
 ### Resources
 
@@ -335,21 +374,16 @@ npm run kg:mcp
 - `mindmesh://nodes/{nodeId}` — a single graph node.
 - `mindmesh://relations/{relationId}` — a single graph relation.
 
-### Recommended ingestion flow
+### Agent workflows
 
-1. Call `ingest-context` with the user's text.
-2. Reason over the returned context and extract pipe-delimited graph records following the `extractionSystemPrompt`.
-3. Call `apply-ingestion` with the extracted records.
+The tool descriptions, the `instructions` returned by the prompt tools, and the server instructions describe these; the user configures nothing.
 
-### Recommended regeneration flow
+- Question: `search_context` first; then `search_nodes`, `get_node`, `explore_graph`, `find_paths`, or `query_cypher` when it misses something. Cite node and relation ids; keep pending knowledge separate.
+- Ingestion: `get_ingest_prompt` → check every entity in the text against `retrievedNodes` / `pendingNodes` and look up the missing ones (`search_nodes` text, then semantic; `get_node` to confirm) → extract, reusing exact names → `submit_ingest` → report the outcome and `ref`.
+- Regeneration: `get_regenerate_prompt` → apply the notes, keeping unchanged records → `submit_regeneration` → report the `ref`.
+- Review: `list_proposals` / `search_proposals` → `get_proposal` → `save_reviewer_notes`; approval by a person in the HITL UI, or with `approve_proposal` / `reject_proposal` when enabled and the user explicitly asks.
 
-The user names a pending HITL proposal by its full id or the short ref shown in the HITL UI (e.g. `#d964db`), with instructions in chat or saved as reviewer notes in the UI.
-
-1. Call `regenerate-context` with the proposal reference and any chat instructions as `notes`.
-2. Produce the complete revised graph records following the returned `extractionSystemPrompt`.
-3. Call `apply-regeneration` with the same proposal reference, the records, and the notes. The proposal stays pending for approval in the HITL UI.
-
-The MCP server reuses the existing `HybridRagService`, `IngestionService`, graph/vector stores, prompt registry, and schema modules. It never creates an LLM provider. A smoke test is available at `src/mcp/smokeTest.js` (requires Neo4j and ChromaDB running). Its `apply-ingestion` call uses two throwaway nodes, and it removes whatever it created afterwards (the pending proposal in `hitl` mode, the nodes and their vectors in `auto` mode).
+The MCP server never creates an LLM provider. `src/mcp/smokeTest.js` (requires Neo4j and ChromaDB) starts the server over stdio, calls the main tools, checks that stdout carries only protocol messages, and removes its throwaway nodes or proposal afterwards. Tests: `test/mcpServer.test.js`.
 
 ## Commands
 
@@ -637,7 +671,7 @@ For relationships, `sourceName`, `relation`, and `targetName` already express th
 - Carries node/relation create, update, and delete operations into HITL or graph application.
 - Returns `schemaSuggestions`, `schemaWarnings`, and `schemaViolations` for CLI/API visibility and HITL schema approval.
 
-`resolveGraphPayload()` then checks the normalized payload against the graph. It runs when a proposal is stored (ingest, MCP `apply-ingestion`, regeneration, manual web edits) and again inside `GraphWriteService.applyPayload()`, so every graph apply (auto mode, MCP auto mode, HITL approval) passes it against the current graph:
+`resolveGraphPayload()` then checks the normalized payload against the graph. It runs when a proposal is stored (ingest, MCP `submit_ingest`, regeneration, manual web edits) and again inside `GraphWriteService.applyPayload()`, so every graph apply (auto mode, MCP auto mode, HITL approval) passes it against the current graph:
 
 - Every relation endpoint must have a node record in the same payload or already exist in the graph. Otherwise the relation is a `relationEndpoint` violation: auto mode stores a proposal instead, and approval fails until the reviewer adds the node or fixes the name. An endpoint deleted by the same payload is also a violation.
 - An endpoint that already exists and has no node record is only referenced; its type, label, and description are never written.
@@ -695,7 +729,7 @@ A direct relation edit that changes the relation id (`upsertRelation(relation, {
 
 Graph deletes are supported by normalized `nodeDeletes` and `relationDeletes`. Direct node/relation CRUD helpers are used by the web and HITL review flows and keep vector documents synchronized through the server layer.
 
-`expandFromNodes(nodeIds, depth)` expands undirected `RELATES_TO` paths from entry nodes. Depth is clamped to `0..8` to avoid runaway traversals. The default configured depth is `4`.
+`expandFromNodes(nodeIds, depth, options)` expands breadth-first from the entry nodes, one query per hop, so the cost follows the size of the neighbourhood rather than the number of paths. It returns every node within `depth` hops (with its hop `distance`) and every relation traversed. Depth is clamped to `0..8` and at most 2000 nodes are returned. `options` (used by `explore_graph`) set `direction`, `relationTypes`, `nodeTypes`, and `limit`. The default configured depth is `4`. The graph store also creates indexes on node `type` and relation `relation` with its constraints.
 
 `getGraphPreview(limit)` returns the newest capped full graph for the web UI. The default UI limit is `150`; the server clamps API limits to `1..500`. Relationships are included only when both endpoints are in the selected node set.
 
@@ -767,7 +801,7 @@ The current RAG flow queries only `kg_nodes`; relationship vectors are indexed f
 4. Format approved graph and pending HITL context as human-readable node/fact lists while preserving exact `node:*` IDs.
 5. Render the extraction prompt template with schema, existing graph context, and new user input.
 6. Ask the selected LLM to extract graph records from the new input while using existing/pending context for identity resolution only.
-7. Prepare the response (`prepareExtraction()`): reconcile creates for pending nodes into updates, normalize it into upserts, deletes, suggestions, warnings, and violations, and check it against the graph. MCP `apply-ingestion` prepares an agent's records the same way.
+7. Prepare the response (`prepareExtraction()`): reconcile creates for pending nodes into updates, normalize it into upserts, deletes, suggestions, warnings, and violations, and check it against the graph. MCP `submit_ingest` prepares an agent's records the same way.
 8. `HitlService.submit()` stores a pending HITL proposal when `ingestion.mode` is `hitl` or `reviewReasons()` finds a reason (see Graph Schema); otherwise `GraphWriteService` applies the mutations and syncs Chroma vectors.
 
 ## HITL Regeneration
@@ -775,7 +809,7 @@ The current RAG flow queries only `kg_nodes`; relationship vectors are indexed f
 A reviewer can regenerate a pending proposal with instructions instead of editing it row by row. Both entry points share `IngestionService.buildHitlRegenerationPrompt()` and `HitlService.storeRegeneration()`:
 
 - Web UI: reviewer notes + **Regenerate** call `POST /api/hitl/notes/:id/regenerate`, which runs the server's configured LLM (`HitlService.regenerate()`).
-- MCP: `regenerate-context` and `apply-regeneration`, where the calling agent does the reasoning.
+- MCP: `get_regenerate_prompt` and `submit_regeneration`, where the calling agent does the reasoning.
 
 Behavior:
 
@@ -900,11 +934,15 @@ Graph stores should implement the methods currently used by CLIs and services:
 - `verifyConnectivity()`
 - `applyGraph(graphPayload)` (deletes and upserts in one transaction; returns stored records and deleted ids)
 - `getExistingNodeIds(nodeIds)`
-- `expandFromNodes(nodeIds, depth)`
+- `getNodesByIds(nodeIds)`, `getRelationsByIds(relationIds)`
+- `countByType()` (nodes per node type, relations per relation type)
+- `expandFromNodes(nodeIds, depth, { direction, relationTypes, nodeTypes, limit })`
+- `findPaths(fromId, toId, { maxDepth, relationTypes, limit })`
+- `runReadOnlyQuery(cypher, params, { limit, timeoutMs })` (enforces read-only; used by `query_cypher`)
 - `getGraphPreview(limit)`
 - `getGraphSnapshot(limit)`
 - `getRandomNode()`
-- `searchNodes(query, limit)`
+- `searchNodes(query, limit, { type })`
 - `getNode(nodeId)`
 - `getNodeNeighborhood(nodeId, depth)`
 - `getRelationsForNode(nodeId)`
@@ -925,7 +963,7 @@ Vector stores should implement:
 - `deleteNodes(nodeIds)`
 - `deleteRelations(relationIds)`
 - `deleteRelationsForNodes(nodeIds)`
-- `queryNodes(query, topK)`
+- `queryNodes(query, topK, { type })`, `queryRelations(query, topK, { relation })`
 - `upsertHitlNote(note)`
 - `listHitlNotePage({ status, limit, offset, order })` returning `{ notes, total }`, and `listHitlNotes(options)` returning the notes. Notes are sorted by `createdAt` across all matching notes before the page is cut (`order`: `oldest` default, or `newest`); `limit` 0 returns all
 - `getHitlNote(id)`

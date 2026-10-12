@@ -8,7 +8,7 @@ Status legend: **Next** (resume this first), **Planned** (direction agreed), **I
 
 ---
 
-## 1. Split `App()` into hooks and pages: **Next**
+## 1. Split `App()` into hooks and pages: **Planned**
 
 **Goal.** `src/server/public/app.js` still holds a ~1,700-line `App()` with about 40 `useState` hooks and 50 handlers for every route. Components were already moved into one file each (commit `5a1fefd`); this is the second phase.
 
@@ -58,29 +58,7 @@ pages/
 
 ---
 
-## 2. Richer MCP tools: **Planned**
-
-**Goal.** MCP is the main way the owner uses MindMesh at work (Coding Agents in VS Code). The current tools cover ask, ingest, and regeneration only.
-
-**Design agreed so far.** Thin tools in MindMesh, workflows as agent skills/prompts. A skill can suggest, but a tool must enforce.
-
-| Tool | Purpose |
-|---|---|
-| `search_entities(query, type?, bu?)` | check whether something exists before proposing it |
-| `get_entity(id)` | node with description and direct relations |
-| `get_dependencies(id, depth, direction)` | impact traversal ("where is Mobile Number used") |
-| `submit_proposals(records, mode, source, batchLabel)` | `mode` = `nodes` / `relations` / `full`; reject records that do not match the mode |
-| `get_schema()` | types and field guidance |
-
-Skills on top: `seed-entities` (nodes only), `seed-relations` (relations over existing nodes), `impact-analysis`, `rework-feedback` (regeneration already covers part of this).
-
-**Steps.** Add read tools first (search, get, dependencies), then `submit_proposals` with mode enforcement, then write the skill files under a `skills/` folder.
-
-**Open questions.** Batch labels and source documents need a proper proposal store (item 3) to be queryable.
-
----
-
-## 3. Move HITL proposals out of Chroma: **Planned**
+## 3. Move HITL proposals out of Chroma: **Next**
 
 **Goal.** Proposals live as Chroma documents parsed by section markers, with flat metadata. That is awkward for batches, provenance, history, and agent feedback, and proposals cannot be rebuilt if the collection is lost.
 
@@ -88,7 +66,7 @@ Skills on top: `seed-entities` (nodes only), `seed-relations` (relations over ex
 
 **Steps.** Define the store interface (the existing `upsertHitlNote` / `listHitlNotes` / `getHitlNote` / `deleteHitlNotes` / `queryHitlNotes` set plus batches), implement it, migrate existing notes, switch the server and MCP to it.
 
-**Open questions.** Keep regeneration history once a real store exists (original + latest variant was discussed)?
+**Open questions.** Keep regeneration history once a real store exists (original + latest variant was discussed)? With a real store, MCP `submit_ingest` can get seeding modes (`nodes` / `relations` / `full`, rejecting records that do not match) and batch labels, and `reject_proposal` can keep its reason.
 
 ---
 
