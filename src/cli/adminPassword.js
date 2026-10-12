@@ -71,13 +71,14 @@ function askHidden(question) {
 	});
 }
 
-// Writes admin.passwordHash into the raw config file, keeping placeholders and line endings.
+// Writes admin.passwordHash into the raw config file, keeping placeholders, indentation, and line endings.
 function writePasswordHash(configPath, passwordHash) {
 	const raw = fs.readFileSync(configPath, "utf8");
 	const eol = raw.includes("\r\n") ? "\r\n" : "\n";
+	const indent = /\n([ \t]+)"/.exec(raw)?.[1] ?? "\t";
 	const config = JSON.parse(raw);
 	config.admin = { ...(config.admin ?? {}), passwordHash };
-	fs.writeFileSync(configPath, `${JSON.stringify(config, null, "\t").replace(/\n/g, eol)}${eol}`, "utf8");
+	fs.writeFileSync(configPath, `${JSON.stringify(config, null, indent).replace(/\n/g, eol)}${eol}`, "utf8");
 }
 
 async function main() {
@@ -89,7 +90,8 @@ async function main() {
 
 	let password;
 	if (argv.includes("--stdin")) {
-		password = (await readStdinLine()).trim();
+		// Only the line break is stripped: the login compares the password exactly, spaces included.
+		password = (await readStdinLine()).replace(/\r$/, "");
 	} else {
 		password = await askHidden(`New admin password (at least ${MIN_PASSWORD_LENGTH} characters): `);
 		const again = await askHidden("Repeat it: ");

@@ -501,32 +501,6 @@ export class HitlService {
 		}));
 	}
 
-	// Pending proposals matching every given filter: author / source (case-insensitive exact), olderThanDays,
-	// text (case-insensitive, in the input or the records). At least one filter is required.
-	async findProposalsForCleanup({ author = "", source = "", olderThanDays, text = "" } = {}) {
-		this.requireProposalStore();
-		const hasAge = olderThanDays !== undefined && olderThanDays !== null && olderThanDays !== "";
-		if (!author && !source && !text && !hasAge) {
-			throw httpError("Give at least one cleanup filter (author, source, olderThanDays, or text).", 400);
-		}
-		const cutoff = hasAge ? Date.now() - Number(olderThanDays) * 24 * 60 * 60 * 1000 : null;
-		const same = (left, right) => String(left ?? "").toLowerCase() === String(right ?? "").toLowerCase();
-		const needle = String(text).toLowerCase();
-		const notes = await this.vectorStore.listHitlNotes({ status: "pending", limit: 0 });
-
-		return notes.filter((note) => (!author || same(note.userName, author))
-			&& (!source || same(note.source, source))
-			&& (cutoff === null || (Date.parse(note.createdAt || "") || 0) < cutoff)
-			&& (!needle || `${note.userInput}\n${note.llmResponse}`.toLowerCase().includes(needle)))
-			.map((note) => this.noteSummary(note).summary);
-	}
-
-	async deleteProposals(noteIds) {
-		this.requireProposalStore();
-		await this.vectorStore.deleteHitlNotes(noteIds);
-		return noteIds.length;
-	}
-
 	// Drops the whole proposal collection (admin wipe).
 	async clearAllProposals() {
 		const count = (await this.vectorStore.listHitlNotePage({ status: "", limit: 1 })).total;

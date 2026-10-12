@@ -147,7 +147,7 @@ README: Admin Panel.
 ```text
 /admin UI                                          components/admin/AdminApp.js (status, login, tabs; a 401 returns to login)
   -> /api/admin/*                                  src/server/adminRoutes.js: registerAdminRoutes() (session middleware,
-                                                   requireConfirmation(): password again + CONFIRM_WORDS, audited())
+                                                   requireConfirmation(): password again + CONFIRM_WORD for wipes, audited())
        -> AdminService                             src/admin/adminService.js
             overview()                             Neo4jGraphStore.getDatabaseInfo(), GraphReadService.getSchemaOverview(),
                                                    ChromaVectorStore.listCollectionsWithCounts(), describeRuntime()
@@ -155,7 +155,6 @@ README: Admin Panel.
             wipe(target) / reindexVectors()        GraphWriteService.wipeGraph() / clearGraphVectors() / reindexVectors(),
                                                    HitlService.clearAllProposals()
             backup()                               getGraphSnapshot() + HitlService.exportProposals()
-            previewProposalCleanup / cleanUpProposals  HitlService.findProposalsForCleanup() / deleteProposals()
             queryCypher() / vectorMatch()          GraphReadService.queryCypher(), ChromaVectorStore.queryCollections()
 ```
 

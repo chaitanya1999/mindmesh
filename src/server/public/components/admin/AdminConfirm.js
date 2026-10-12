@@ -3,7 +3,7 @@ import { Field } from "../common/Field.js";
 
 // Confirmation for a destructive admin action: the admin password again plus a typed word. The button stays
 // disabled until the word matches exactly.
-export function AdminConfirm({ word, actionLabel, description, onConfirm, busy = false, danger = true }) {
+export function AdminConfirm({ word, actionLabel, description, onConfirm, busy = false }) {
 	const [password, setPassword] = useState("");
 	const [typed, setTyped] = useState("");
 	const ready = Boolean(password) && typed === word && !busy;
@@ -31,7 +31,7 @@ export function AdminConfirm({ word, actionLabel, description, onConfirm, busy =
 					<input value={typed} onInput={(event) => setTyped(event.currentTarget.value)} autocomplete="off" spellcheck={false} />
 				</Field>
 			</div>
-			<button type="submit" class={danger ? "danger-button" : "primary"} disabled={!ready}>
+			<button type="submit" class="danger-button" disabled={!ready}>
 				{busy ? "Working..." : actionLabel}
 			</button>
 		</form>

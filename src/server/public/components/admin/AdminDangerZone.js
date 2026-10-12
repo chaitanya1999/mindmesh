@@ -2,7 +2,8 @@ import { useState } from "preact/hooks";
 import { AdminConfirm } from "./AdminConfirm.js";
 import { downloadBackup } from "./AdminMaintenance.js";
 
-// Wipes and reindex. Each needs the admin password again and a typed word; each is written to the audit log.
+// Reindex and wipes, all written to the audit log. Wipes need the admin password again and a typed word;
+// reindex only rebuilds derived vectors, so a browser confirm is enough.
 
 const WIPE_ACTIONS = [
 	{
@@ -72,17 +73,15 @@ export function AdminDangerZone({ request, onMessage, onChanged }) {
 
 			<section class="admin-card">
 				<h3>Reindex vectors</h3>
-				<AdminConfirm
-					word="REINDEX"
-					actionLabel="Reindex"
-					danger={false}
-					description="Empties the node and relation vectors and rebuilds them from Neo4j (like npm run kg:reindex-vectors). Proposals are not touched."
-					busy={busy === "reindex"}
-					onConfirm={(confirmation) => run("reindex", async () => {
-						const result = await request("POST", "/api/admin/reindex", confirmation);
+				<p class="muted-copy">Empties the node and relation vectors and rebuilds them from Neo4j (like npm run kg:reindex-vectors). Proposals are not touched.</p>
+				<div class="admin-toolbar">
+					<button type="button" class="primary" disabled={Boolean(busy)} onClick={() => window.confirm("Rebuild all graph vectors from Neo4j?") && run("reindex", async () => {
+						const result = await request("POST", "/api/admin/reindex", {});
 						onMessage(`Reindexed ${result.nodes} nodes and ${result.relations} relations.`);
-					})}
-				/>
+					})}>
+						{busy === "reindex" ? "Reindexing..." : "Reindex"}
+					</button>
+				</div>
 			</section>
 
 			{WIPE_ACTIONS.map((action) => (

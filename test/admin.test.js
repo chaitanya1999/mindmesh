@@ -95,6 +95,21 @@ describe("admin password hashing", () => {
 		assert.notEqual(tooShort.status, 0);
 		assert.equal(verifyPassword(PASSWORD, JSON.parse(fs.readFileSync(configPath, "utf8")).admin.passwordHash), true, "a rejected password leaves the old hash");
 	});
+
+	it("kg:admin:password keeps spaces in the password and the file's indentation", () => {
+		const configPath = path.join(services.directory, "config.spaces.json");
+		fs.writeFileSync(configPath, "{\n  \"llm\": {\n    \"provider\": \"hub\"\n  }\n}\n");
+		const spaced = `  ${PASSWORD}  `;
+
+		const run = spawnSync(process.execPath, [path.join(ROOT, "src/cli/adminPassword.js"), "--stdin", "--config", configPath], { input: `${spaced}\r\n`, encoding: "utf8" });
+
+		assert.equal(run.status, 0, run.stderr);
+		const raw = fs.readFileSync(configPath, "utf8");
+		assert.ok(raw.startsWith("{\n  \"llm\": {\n    \"provider\""), "two-space indentation kept");
+		const hash = JSON.parse(raw).admin.passwordHash;
+		assert.equal(verifyPassword(spaced, hash), true, "the password is stored exactly as typed");
+		assert.equal(verifyPassword(PASSWORD, hash), false);
+	});
 });
 
 describe("admin access", () => {
@@ -103,6 +118,8 @@ describe("admin access", () => {
 		assert.deepEqual((await http.get("/api/admin/status")).body, { configured: true, authenticated: false });
 		assert.equal((await http.get("/api/admin/overview")).status, 401);
 		assert.equal((await http.post("/api/admin/query/cypher", { cypher: "RETURN 1" })).status, 401);
+		assert.equal((await http.post("/api/admin/reindex", {})).status, 401);
+		assert.equal((await http.post("/api/admin/consistency/repair", {})).status, 401);
 	});
 
 	it("logs in with the password and sets an HttpOnly, SameSite=Strict cookie scoped to the admin API", async () => {
@@ -219,11 +236,14 @@ describe("admin destructive actions", () => {
 		assert.equal(services.graphStore.nodes.size, 2);
 		assert.deepEqual(services.vectorStore.ids("test_nodes"), []);
 
-		const reindex = await http.post("/api/admin/reindex", { password: PASSWORD, confirm: "REINDEX" });
+		// Reindex only rebuilds derived vectors: the session is enough, and it is still audited.
+		const reindex = await http.post("/api/admin/reindex", {});
 
 		assert.equal(reindex.body.nodes, 2);
 		assert.deepEqual(services.vectorStore.ids("test_nodes").sort(), ["node:a_screen", "node:b_api"]);
 		assert.equal(services.vectorStore.ids("test_relations").length, 1);
+		const entries = (await http.get("/api/admin/audit")).body.entries;
+		assert.ok(entries.some((entry) => entry.action === "reindex_vectors" && entry.ok === true));
 	});
 
 	it("wipe all deletes graph, vectors, and proposals; unknown targets are refused", async () => {
@@ -247,8 +267,7 @@ describe("admin maintenance", () => {
 		assert.deepEqual(report.nodesWithoutVector.sample, ["node:no_vector"]);
 		assert.deepEqual(report.vectorsWithoutNode.sample, ["node:ghost"]);
 
-		assert.equal((await http.post("/api/admin/consistency/repair", { password: PASSWORD })).status, 400, "needs the REPAIR word");
-		const repaired = await http.post("/api/admin/consistency/repair", { password: PASSWORD, confirm: "REPAIR" });
+		const repaired = await http.post("/api/admin/consistency/repair", {});
 
 		assert.equal(repaired.body.indexedNodes, 1);
 		assert.equal(repaired.body.deletedNodeVectors, 1);
@@ -268,24 +287,6 @@ describe("admin maintenance", () => {
 		assert.equal(backup.body.proposals.length, 1);
 		assert.equal(backup.body.proposals[0].userInput, "pending input");
 		assert.match(backup.body.proposals[0].llmResponse, /NODE_CREATE\|c_screen/);
-	});
-
-	it("proposal cleanup previews matches and deletes only them, with the password", async () => {
-		await propose("zztest leftover one", "NODE_CREATE|z1|Z1|screen||");
-		await propose("zztest leftover two", "NODE_CREATE|z2|Z2|screen||");
-		await propose("real knowledge", "NODE_CREATE|real|Real|screen||");
-
-		assert.equal((await http.post("/api/admin/proposals/cleanup/preview", { filter: {} })).status, 400, "a filter is required");
-		const preview = await http.post("/api/admin/proposals/cleanup/preview", { filter: { text: "zztest" } });
-		assert.equal(preview.body.count, 2);
-
-		assert.equal((await http.post("/api/admin/proposals/cleanup", { filter: { text: "zztest" }, confirm: "DELETE" })).status, 401);
-		const cleaned = await http.post("/api/admin/proposals/cleanup", { filter: { text: "zztest" }, password: PASSWORD, confirm: "DELETE" });
-
-		assert.equal(cleaned.body.deleted, 2);
-		const left = (await services.hitlService.listProposals({ limit: 5 })).notes;
-		assert.equal(left.length, 1);
-		assert.match(left[0].llmResponse, /\|real\|/);
 	});
 
 	it("query console runs read-only Cypher and vector matches across selected collections", async () => {

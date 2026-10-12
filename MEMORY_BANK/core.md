@@ -22,7 +22,7 @@ Stack: Node.js ES modules, Express, Preact (NeoVis and Sigma graph renderers), N
 
 ## Hard Rules
 
-- Every graph write goes through HITL approval, a direct reviewer edit, or `auto` mode. No silent mutations. The only exception is maintenance (wipe, reindex, vector repair, proposal cleanup), and only from the password-protected admin panel (password re-entry, confirmation word, audit log) or the CLIs; it still goes through `GraphWriteService` / `HitlService`.
+- Every graph write goes through HITL approval, a direct reviewer edit, or `auto` mode. No silent mutations. The only exception is maintenance (wipe, reindex, vector repair), and only from the password-protected admin panel (audit log; wipes also need password re-entry and a confirmation word) or the CLIs; it still goes through `GraphWriteService` / `HitlService`.
 - `auto` mode applies only clean creates and updates. Schema violations, `AMBIGUITY:` / `CONTRADICTION:` signals, and any delete force a HITL proposal; web ingest and MCP share one rule (`reviewReasons()`).
 - Neo4j is the source of truth. Chroma node/relation vectors are derived and rebuildable (`npm run kg:reindex-vectors`); HITL proposals live only in Chroma and are not rebuildable.
 - Keep graph writes and vector indexing in sync; index what Neo4j stored, not what was sent. All graph writes go through `GraphWriteService`; nothing else calls store write methods (`test/writeGate.test.js` enforces it).

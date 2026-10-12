@@ -1,16 +1,12 @@
 import { describeRuntime } from "../config.js";
 
-// Admin panel logic: overview, consistency check and repair, backup, wipes, reindex, proposal cleanup, and
-// trial queries. Access control (session, password re-entry, confirmation words) is enforced by the routes in
+// Admin panel logic: overview, consistency check and repair, backup, wipes, reindex, and trial queries.
+// Access control (session; password re-entry and the confirmation word for wipes) is enforced by the routes in
 // src/server/adminRoutes.js; graph and vector writes go through GraphWriteService.
 
-// Typed confirmation word each destructive action needs, in addition to the password.
-export const CONFIRM_WORDS = {
-	wipe: "DELETE",
-	reindex: "REINDEX",
-	repair: "REPAIR",
-	cleanup: "DELETE",
-};
+// Typed confirmation word a wipe needs, in addition to the password. Reindex and repair only rebuild derived
+// vectors, so a session is enough for them.
+export const CONFIRM_WORD = "DELETE";
 export const WIPE_TARGETS = ["graph", "vectors", "proposals", "all"];
 
 const SAMPLE_SIZE = 50;
@@ -141,17 +137,6 @@ export class AdminService {
 
 	async reindexVectors() {
 		return this.graphWriteService.reindexVectors({ fresh: true });
-	}
-
-	async previewProposalCleanup(filter) {
-		const matches = await this.hitlService.findProposalsForCleanup(filter);
-		return { count: matches.length, proposals: matches.slice(0, 200) };
-	}
-
-	async cleanUpProposals(filter) {
-		const matches = await this.hitlService.findProposalsForCleanup(filter);
-		const deleted = await this.hitlService.deleteProposals(matches.map((item) => item.id));
-		return { deleted, ids: matches.map((item) => item.id) };
 	}
 
 	async queryCypher({ cypher, params, limit }) {

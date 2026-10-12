@@ -103,7 +103,7 @@ MCP agent (no MindMesh LLM)
 - `src/logging/debugLogger.js`: opt-in, scope-filtered debug log files.
 - `src/*/providerFactory.js` (`llm`, `embedding`, `graph`, `vector`): pick the configured provider implementation.
 - `src/cli/reindexVectors.js`: rebuilds Chroma node/relation vectors from Neo4j; `src/cli/clearChroma.js`: deletes Chroma collections.
-- `src/admin/`: admin panel logic. `adminService.js` (overview, consistency, backup, wipe, reindex, proposal cleanup, query console), `adminAuth.js` (password hashing, sessions, lockout), `auditLog.js`. Routes are in `src/server/adminRoutes.js`; `src/cli/adminPassword.js` sets the password.
+- `src/admin/`: admin panel logic. `adminService.js` (overview, consistency, backup, wipe, reindex, query console), `adminAuth.js` (password hashing, sessions, lockout), `auditLog.js`. Routes are in `src/server/adminRoutes.js`; `src/cli/adminPassword.js` sets the password.
 - `prompts/`: extraction, answer, context-format, and job prompt templates.
 - `MEMORY_BANK/`: compressed context for coding agents: `core.md` (purpose and hard rules), `codeMap.md` (where each pathway lives in the code), `activeContext.md` (the current task), `roadmap.md` (planned work). `CLAUDE.md` tells Claude Code how to use them. This README stays the single source for behavior.
 
@@ -392,24 +392,22 @@ The MCP server never creates an LLM provider. `src/mcp/smokeTest.js` (requires N
 
 `/admin` is a password-protected maintenance page for the owner. It is reachable from any machine that can reach the web server, so it relies on the password alone.
 
-Setup: run `npm run kg:admin:password` on the machine running MindMesh, then restart the web server. The command asks for the password twice, without echoing it (at least 10 characters), and stores only a scrypt hash in `admin.passwordHash` of `config.json`. It keeps the file's placeholders and line endings. Run it again to change the password; `--stdin` reads the password from standard input, and `--config <path>` writes to another config file. Until a hash is set, `/admin` shows setup instructions and every `/api/admin` route returns 503.
+Setup: run `npm run kg:admin:password` on the machine running MindMesh, then restart the web server. The command asks for the password twice, without echoing it (at least 10 characters), and stores only a scrypt hash in `admin.passwordHash` of `config.json`. It keeps the file's placeholders and line endings. Run it again to change the password; `--stdin` reads the password from standard input (exactly; only the line break is stripped), and `--config <path>` writes to another config file. Until a hash is set, `/admin` shows setup instructions and every `/api/admin` route returns 503.
 
 Security:
 
 - Login creates an in-memory session (cookie `mm_admin`: `HttpOnly`, `SameSite=Strict`, `Path=/api/admin`), valid for `admin.sessionMinutes` (default 30). Restarting the server ends all sessions.
-- Five wrong passwords from one address lock it out for 15 minutes (status 429). Wrong passwords count both at login and when re-entering the password for a destructive action.
-- Destructive actions need a session, the password again, and a typed confirmation word: `DELETE` (wipes and proposal cleanup), `REINDEX`, or `REPAIR`. The UI keeps the button disabled until both are entered.
+- Five wrong passwords from one address lock it out for 15 minutes (status 429). Wrong passwords count both at login and when re-entering the password for a wipe.
+- The four wipes need a session, the password again, and the typed confirmation word `DELETE`. The UI keeps their buttons disabled until both are entered. Reindex and Repair rebuild only derived vectors, so they need just the session (and a browser confirm for Reindex).
 - Over plain HTTP the password and the session cookie travel unencrypted. Use the admin panel from another machine only on a trusted network, or put HTTPS in front of the server.
-- Every login, rejected password, backup download, and destructive action (with its outcome) is appended as one JSON line to `admin-audit.log` in `logging.directory`. Passwords are never logged.
+- Every login, rejected password, backup download, wipe, reindex, and repair (with its outcome) is appended as one JSON line to `admin-audit.log` in `logging.directory`. Passwords are never logged.
 
 Tabs:
 
 - **Overview**: runtime (providers, models, Neo4j and Chroma addresses), the Neo4j version and edition, constraints and indexes, nodes outside `KnowledgeNode`, node and relation counts per type, every Chroma collection with its role (`nodes`, `relations`, `proposals`, or other) and count, and the number of pending proposals. Schema health lists types present in the graph but missing from the schema, and approved types no node or relation uses.
 - **Maintenance**:
   - The consistency check compares Neo4j ids with the node and relation vectors and reports records without a vector and vectors without a record. **Repair** indexes the missing records and deletes the orphan vectors.
-  - **Download backup** saves a JSON file (`format: "mindmesh-backup"`, `version: 1`) with the graph (up to 10000 nodes; `truncated` says when there were more) and all pending proposals, the only data that cannot be rebuilt. Restoring from a backup is not implemented yet.
-  - Proposal cleanup deletes pending proposals matching at least one filter (author, source, older than N days, text). Run **Preview** first to see the matches.
-- **Query console**: read-only Cypher with JSON parameters and a row limit, under the same rules as MCP `query_cypher`, with the results in a table. Vector match runs one text query against the selected Chroma collections and lists the top matches per collection; a collection that fails (for example one built with another embedding) shows its error without stopping the others.
+  - **Download backup** saves a JSON file (`format: "mindmesh-backup"`, `version: 1`) with the graph (up to 10000 nodes; `truncated` says when there were more) and all pending proposals, the only data that cannot be rebuilt. Restoring from a backup is not implemented yet.- **Query console**: read-only Cypher with JSON parameters and a row limit, under the same rules as MCP `query_cypher`, with the results in a table. Vector match runs one text query against the selected Chroma collections and lists the top matches per collection; a collection that fails (for example one built with another embedding) shows its error without stopping the others.
 - **Danger zone**:
   - **Reindex** rebuilds `kg_nodes` and `kg_relationships` from Neo4j, like `npm run kg:reindex-vectors`.
   - **Delete Neo4j data** removes every `KnowledgeNode` and its relations (in batches of 1000) and clears the graph vectors to keep the stores in sync. Other node labels, constraints, and indexes are kept.
@@ -419,16 +417,16 @@ Tabs:
   - Download a backup first.
 - **Audit log**: the newest admin actions.
 
-Wipes, reindex, and repair go through `GraphWriteService` like every other graph write.
+Graph and vector maintenance goes through `GraphWriteService` like every other graph write; the proposal wipe goes through `HitlService`.
 
-API (session required, except `status`, `login` and `logout`; destructive routes take `{ password, confirm }` in the body):
+API (session required, except `status`, `login` and `logout`):
 
 - `GET /api/admin/status`: `{ configured, authenticated }`.
 - `POST /api/admin/login` `{ password }`, `POST /api/admin/logout`.
 - `GET /api/admin/overview`, `GET /api/admin/consistency`, `GET /api/admin/audit?limit=100`.
 - `GET /api/admin/backup`: the backup as a JSON attachment.
-- `POST /api/admin/consistency/repair` (`REPAIR`), `POST /api/admin/reindex` (`REINDEX`), `POST /api/admin/wipe` with `target` = `graph`, `vectors`, `proposals`, or `all` (`DELETE`).
-- `POST /api/admin/proposals/cleanup/preview` `{ filter }` and `POST /api/admin/proposals/cleanup` `{ filter }` (`DELETE`). `filter` takes `author`, `source`, `olderThanDays`, and `text`.
+- `POST /api/admin/consistency/repair`, `POST /api/admin/reindex`.
+- `POST /api/admin/wipe` `{ target, password, confirm: "DELETE" }`, with `target` = `graph`, `vectors`, `proposals`, or `all`.
 - `POST /api/admin/query/cypher` `{ cypher, params, limit }`, `POST /api/admin/query/vector` `{ query, collections, topK }` (`topK` 1-20, default 5).
 
 Tests: `test/admin.test.js`.

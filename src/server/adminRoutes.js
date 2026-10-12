@@ -1,11 +1,11 @@
 import path from "node:path";
 import { AdminSessions, verifyPassword } from "../admin/adminAuth.js";
 import { AdminAuditLog } from "../admin/auditLog.js";
-import { CONFIRM_WORDS } from "../admin/adminService.js";
+import { CONFIRM_WORD } from "../admin/adminService.js";
 
 // /api/admin/*: the admin panel's API. Every route except status and login needs an admin session (cookie);
-// destructive routes also need the password again and a typed confirmation word, and are written to the
-// audit log. The admin panel is disabled until `npm run kg:admin:password` has stored a password hash.
+// wipes also need the password again and a typed confirmation word. Every action that changes data is written
+// to the audit log. The admin panel is disabled until `npm run kg:admin:password` has stored a password hash.
 
 const COOKIE_NAME = "mm_admin";
 
@@ -68,11 +68,11 @@ export function registerAdminRoutes(app, { config, adminService, asyncRoute, ses
 		}
 	}
 
-	// Destructive actions: valid session (middleware) + password again + the exact confirmation word.
-	function requireConfirmation(req, word) {
+	// Wipes: valid session (middleware) + password again + the exact confirmation word.
+	function requireConfirmation(req) {
 		checkPassword(req, req.body?.password);
-		if (String(req.body?.confirm ?? "") !== word) {
-			throw httpError(`Type ${word} to confirm.`, 400);
+		if (String(req.body?.confirm ?? "") !== CONFIRM_WORD) {
+			throw httpError(`Type ${CONFIRM_WORD} to confirm.`, 400);
 		}
 	}
 
@@ -122,17 +122,15 @@ export function registerAdminRoutes(app, { config, adminService, asyncRoute, ses
 	}));
 
 	app.post("/api/admin/consistency/repair", asyncRoute(async (req, res) => {
-		requireConfirmation(req, CONFIRM_WORDS.repair);
 		res.json(await audited(req, "repair_vector_index", {}, () => adminService.repairVectorIndex()));
 	}));
 
 	app.post("/api/admin/reindex", asyncRoute(async (req, res) => {
-		requireConfirmation(req, CONFIRM_WORDS.reindex);
 		res.json(await audited(req, "reindex_vectors", { fresh: true }, () => adminService.reindexVectors()));
 	}));
 
 	app.post("/api/admin/wipe", asyncRoute(async (req, res) => {
-		requireConfirmation(req, CONFIRM_WORDS.wipe);
+		requireConfirmation(req);
 		const target = String(req.body?.target ?? "");
 		res.json(await audited(req, "wipe", { target }, () => adminService.wipe(target)));
 	}));
@@ -142,16 +140,6 @@ export function registerAdminRoutes(app, { config, adminService, asyncRoute, ses
 		const stamp = backup.exportedAt.replace(/[:.]/g, "-");
 		res.setHeader("Content-Disposition", `attachment; filename="mindmesh-backup-${stamp}.json"`);
 		res.json(backup);
-	}));
-
-	app.post("/api/admin/proposals/cleanup/preview", asyncRoute(async (req, res) => {
-		res.json(await adminService.previewProposalCleanup(req.body?.filter ?? {}));
-	}));
-
-	app.post("/api/admin/proposals/cleanup", asyncRoute(async (req, res) => {
-		requireConfirmation(req, CONFIRM_WORDS.cleanup);
-		const filter = req.body?.filter ?? {};
-		res.json(await audited(req, "proposal_cleanup", { filter }, () => adminService.cleanUpProposals(filter)));
 	}));
 
 	app.post("/api/admin/query/cypher", asyncRoute(async (req, res) => {
@@ -174,9 +162,6 @@ function summarizeResult(result) {
 	}
 	if (result.format === "mindmesh-backup") {
 		return { nodes: result.graph.nodes.length, relations: result.graph.relations.length, proposals: result.proposals.length };
-	}
-	if (Array.isArray(result.ids)) {
-		return { deleted: result.deleted, ids: result.ids.slice(0, 20) };
 	}
 	return result;
 }
