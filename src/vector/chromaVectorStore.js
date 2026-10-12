@@ -145,10 +145,10 @@ export class ChromaVectorStore {
 		});
 	}
 
-	// Drops only the graph index collections (nodes, relations). HITL notes are never touched.
-	async clearGraphIndex() {
+	// Deletes the named collections; ones that do not exist are skipped. Returns the names actually deleted.
+	async deleteCollections(names) {
 		const deleted = [];
-		for (const name of [this.config.nodeCollection, this.config.relationCollection]) {
+		for (const name of names) {
 			try {
 				await this.client.deleteCollection({ name });
 				deleted.push(name);
@@ -161,6 +161,83 @@ export class ChromaVectorStore {
 		}
 
 		return deleted;
+	}
+
+	// Drops only the graph index collections (nodes, relations). HITL notes are never touched.
+	async clearGraphIndex() {
+		return this.deleteCollections([this.config.nodeCollection, this.config.relationCollection]);
+	}
+
+	// Drops the HITL proposal collection. Proposals cannot be rebuilt from Neo4j; admin wipe only.
+	async clearHitlCollection() {
+		return this.deleteCollections([this.config.hitlCollection || "fleeting_notes_hitl"]);
+	}
+
+	// What each configured collection is used for, by name.
+	collectionRole(name) {
+		if (name === this.config.nodeCollection) {
+			return "nodes";
+		}
+		if (name === this.config.relationCollection) {
+			return "relations";
+		}
+		if (name === (this.config.hitlCollection || "fleeting_notes_hitl")) {
+			return "proposals";
+		}
+		return "other";
+	}
+
+	// Every collection in the configured tenant and database, with its record count and role.
+	async listCollectionsWithCounts() {
+		const collections = await this.client.listCollections();
+		const rows = [];
+		for (const collection of collections) {
+			rows.push({ name: collection.name, count: await collection.count(), role: this.collectionRole(collection.name) });
+		}
+		return rows.sort((left, right) => left.name.localeCompare(right.name));
+	}
+
+	// Every id in the node and relation collections (for the admin consistency check).
+	async listIndexIds() {
+		const nodes = await (await this.getNodeCollection()).get({ include: [] });
+		const relations = await (await this.getRelationCollection()).get({ include: [] });
+		return { nodeIds: nodes.ids ?? [], relationIds: relations.ids ?? [] };
+	}
+
+	// Admin vector match: one query text against several collections. A collection that cannot be queried
+	// (missing, or built with a different embedding) reports its error instead of failing the whole match.
+	async queryCollections(names, query, topK = 5) {
+		const existing = new Set((await this.client.listCollections()).map((collection) => collection.name));
+		const queryEmbedding = this.embeddingProvider ? await this.embeddingProvider.embedQuery(query) : null;
+		const results = [];
+		for (const name of names) {
+			if (!existing.has(name)) {
+				results.push({ collection: name, error: "Collection not found." });
+				continue;
+			}
+			try {
+				const collection = await this.client.getCollection({ name, embeddingFunction: this.embeddingProvider ? null : undefined });
+				const response = await collection.query({
+					queryTexts: queryEmbedding ? undefined : [query],
+					queryEmbeddings: queryEmbedding ? [queryEmbedding] : undefined,
+					nResults: topK,
+				});
+				const ids = response.ids?.[0] ?? [];
+				results.push({
+					collection: name,
+					role: this.collectionRole(name),
+					matches: ids.map((id, index) => ({
+						id,
+						distance: response.distances?.[0]?.[index],
+						document: previewText(response.documents?.[0]?.[index] ?? "", 400),
+						metadata: response.metadatas?.[0]?.[index] ?? {},
+					})),
+				});
+			} catch (error) {
+				results.push({ collection: name, error: error?.message ?? String(error) });
+			}
+		}
+		return results;
 	}
 
 	async getHitlCollection() {

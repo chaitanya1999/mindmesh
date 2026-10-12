@@ -112,4 +112,48 @@ export class GraphWriteService {
 		await this.syncVectors(() => this.vectorStore.deleteRelations([result.relationId]));
 		return result;
 	}
+
+	// Admin maintenance (password-protected admin panel and CLI only; not knowledge changes).
+
+	// Deletes all MindMesh graph data and, to keep the stores in step, its node and relation vectors.
+	async wipeGraph() {
+		const deleted = await this.graphStore.deleteAllKnowledge();
+		const clearedCollections = await this.vectorStore.clearGraphIndex();
+		return { ...deleted, clearedCollections };
+	}
+
+	// Drops the node and relation vectors only; reindexVectors() rebuilds them from Neo4j.
+	async clearGraphVectors() {
+		return { clearedCollections: await this.vectorStore.clearGraphIndex() };
+	}
+
+	// Rebuilds the vectors from what Neo4j stores. `fresh` empties the collections first, so vectors of items
+	// deleted in Neo4j disappear too. The graph is read before anything is deleted.
+	async reindexVectors({ fresh = true, limit = 10000 } = {}) {
+		const graph = await this.graphStore.getGraphSnapshot(limit);
+		if (fresh && graph.nodes.length >= limit) {
+			throw Object.assign(new Error(`The graph has at least ${limit} nodes, so a fresh reindex would drop vectors beyond the limit. Use a higher limit.`), { status: 400 });
+		}
+		const clearedCollections = fresh ? await this.vectorStore.clearGraphIndex() : [];
+		await this.vectorStore.upsertGraphIndex(graph);
+		return { fresh, clearedCollections, nodes: graph.nodes.length, relations: graph.relations.length };
+	}
+
+	// Brings the vector index in line with Neo4j: indexes records that have no vector and deletes vectors
+	// whose record is gone (see AdminService.consistency()).
+	async repairVectorIndex({ missingNodeIds = [], missingRelationIds = [], orphanNodeIds = [], orphanRelationIds = [] }) {
+		const nodes = await this.graphStore.getNodesByIds(missingNodeIds);
+		const relations = await this.graphStore.getRelationsByIds(missingRelationIds);
+		if (nodes.length > 0 || relations.length > 0) {
+			await this.vectorStore.upsertGraphIndex({ nodes, relations });
+		}
+		await this.vectorStore.deleteNodes(orphanNodeIds);
+		await this.vectorStore.deleteRelations(orphanRelationIds);
+		return {
+			indexedNodes: nodes.length,
+			indexedRelations: relations.length,
+			deletedNodeVectors: orphanNodeIds.length,
+			deletedRelationVectors: orphanRelationIds.length,
+		};
+	}
 }

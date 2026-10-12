@@ -8,6 +8,7 @@ import WordExtractor from "word-extractor";
 import { getConfig, describeRuntime } from "../config.js";
 import { buildTriplets } from "../hitl/hitlService.js";
 import { createMindMesh, isMainModule } from "../mindmesh.js";
+import { registerAdminRoutes } from "./adminRoutes.js";
 import { readEditableGraphSchema, saveEditableGraphSchema } from "../schema/graphSchema.js";
 
 // HTTP layer only: request parsing, file uploads, and response shapes. HITL decisions live in HitlService,
@@ -189,7 +190,7 @@ function asyncRoute(handler) {
 
 // Builds the Express app without listening, so tests can start it with in-memory stores.
 export function createApp(services) {
-	const { config, graphStore, hitlService, ragService, jobsService } = services;
+	const { config, graphStore, hitlService, ragService, jobsService, adminService } = services;
 	const app = express();
 
 	function withGraphSchema(graph) {
@@ -513,6 +514,14 @@ export function createApp(services) {
 			graph: withGraphSchema(graph),
 		});
 	}));
+
+	// Admin panel API (session, password re-entry, audit log): src/server/adminRoutes.js. Tests pass
+	// `adminRouteOptions` (sessions, audit log) through the services.
+	registerAdminRoutes(app, { config, adminService, asyncRoute, ...services.adminRouteOptions });
+
+	app.get(/^\/admin\/?$/, (_req, res) => {
+		res.sendFile(path.join(publicDir, "index.html"));
+	});
 
 	app.get(/^\/hitl\/?$/, (_req, res) => {
 		res.sendFile(path.join(publicDir, "index.html"));

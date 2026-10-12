@@ -1,5 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { AdminService } from "./admin/adminService.js";
 import { GraphReadService } from "./graph/graphReadService.js";
 import { GraphWriteService } from "./graph/graphWriteService.js";
 import { createGraphStore } from "./graph/providerFactory.js";
@@ -41,6 +42,7 @@ export function createMindMesh(config, overrides = {}) {
 		schemaConfig: config,
 		logging: config.logging,
 	});
+	const adminService = new AdminService({ config, graphStore, vectorStore, graphReadService, graphWriteService, hitlService });
 	const ragService = new HybridRagService({
 		llmProvider,
 		graphStore,
@@ -69,6 +71,7 @@ export function createMindMesh(config, overrides = {}) {
 		graphWriteService,
 		ingestionService,
 		hitlService,
+		adminService,
 		ragService,
 		jobsService,
 		async close() {

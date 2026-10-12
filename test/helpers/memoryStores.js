@@ -223,6 +223,21 @@ export class MemoryGraphStore {
 			.slice(0, limit));
 	}
 
+	async deleteAllKnowledge() {
+		const counts = { deletedNodes: this.nodes.size, deletedRelations: this.relations.size };
+		this.nodes.clear();
+		this.relations.clear();
+		return counts;
+	}
+
+	async listIds() {
+		return { nodeIds: [...this.nodes.keys()], relationIds: [...this.relations.keys()] };
+	}
+
+	async getDatabaseInfo() {
+		return { name: "Memory", version: "test", edition: "memory", database: "(memory)", nodesOutsideMindMesh: 0, constraints: [], indexes: [] };
+	}
+
 	async getNodesByIds(nodeIds) {
 		return clone([...new Set(nodeIds)].map((id) => this.nodes.get(id)).filter(Boolean));
 	}
@@ -420,13 +435,27 @@ class FakeChromaClient {
 	}
 
 	async deleteCollection({ name }) {
+		if (!this.collections.has(name)) {
+			const error = new Error(`Collection ${name} does not exist.`);
+			error.name = "ChromaNotFoundError";
+			throw error;
+		}
 		this.collections.delete(name);
 	}
 
 	async heartbeat() {}
 
 	async listCollections() {
-		return [...this.collections.keys()];
+		return [...this.collections.values()];
+	}
+
+	async getCollection({ name }) {
+		if (!this.collections.has(name)) {
+			const error = new Error(`Collection ${name} does not exist.`);
+			error.name = "ChromaNotFoundError";
+			throw error;
+		}
+		return this.collections.get(name);
 	}
 }
 

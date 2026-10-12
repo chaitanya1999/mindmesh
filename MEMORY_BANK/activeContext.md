@@ -15,11 +15,18 @@ At task end, record the outcome under "Last Completed", move unfinished items to
 
 ## Current Task
 
-None. Next: roadmap item 3 (proposal store). Review P1 step 4 (atomic schema file writes, report of nodes with removed types) is still open.
+None.
 
 ## Last Completed (2026-10-12)
 
-MCP tool set (former roadmap item 2), all steps, uncommitted:
+Admin panel (`/admin`), uncommitted. Owner decisions: all suggested extras; reachable from any machine with the password; password set by `npm run kg:admin:password`, stored only as a scrypt hash in local `config.json`.
+
+- Backend: `src/admin/` (`adminService.js`, `adminAuth.js`, `auditLog.js`), `src/server/adminRoutes.js`, `src/cli/adminPassword.js`. Maintenance writes go through `GraphWriteService` (`wipeGraph`, `clearGraphVectors`, `reindexVectors`, `repairVectorIndex`) and `HitlService` (proposal export, cleanup, clear); `kg:reindex-vectors` now uses `GraphWriteService.reindexVectors()` and no longer needs a write-gate exception. New store methods: `deleteAllKnowledge`, `listIds`, `getDatabaseInfo` (Neo4j); `deleteCollections`, `clearHitlCollection`, `listCollectionsWithCounts`, `listIndexIds`, `queryCollections` (Chroma).
+- Frontend: `components/admin/` (Overview, Maintenance, Query console, Danger zone, Audit log), `/admin` link in the route switcher.
+- `config.example.json`: `admin.passwordHash`, `admin.sessionMinutes`. Docs: README Admin Panel; core.md maintenance exception to the HITL write rule.
+- Checks: `npm test` with `test/admin.test.js` (19 tests); bundle builds; lint clean; headless UI check in jsdom against the real stores on port 3100 (17 checks, nothing destructive pressed); the consistency check and repair were also run live (they found and removed an orphan throwaway vector). Both stores ended empty, as they were before. The live run of wipe/reindex was blocked by the permission classifier and not run; those paths are covered only by the in-memory tests.
+
+Before that, the MCP tool set (former roadmap item 2), pushed as `68b4b86`:
 
 - 16 tools by default: graph reads `search_context`, `search_nodes`, `search_relations`, `get_node`, `explore_graph`, `find_paths`, `query_cypher`, `get_schema`; proposal reads `search_proposals`, `list_proposals`, `get_proposal`; proposing `get_ingest_prompt` (with `retrievalQuality`), `submit_ingest`, `get_regenerate_prompt`, `submit_regeneration`, `save_reviewer_notes`. `approve_proposal` / `reject_proposal` only with `mcp.allowReviewDecisions` (new key in `config.example.json`). Old tools `ask`, `ingest-context`, `apply-ingestion`, `regenerate-context`, `apply-regeneration` removed.
 - `src/graph/graphReadService.js`; store reads `getNodesByIds`, `getRelationsByIds`, `countByType`, `findPaths`, `runReadOnlyQuery` (EXPLAIN query type must be `r`, read transaction, 10 s timeout, row cap, LOAD CSV / dbms / apoc / most SHOW refused); breadth-first `expandFromNodes` with direction/type filters (review D); `type` / `relation` indexes (review C).
@@ -39,7 +46,8 @@ Earlier (2026-10-11, pushed): review bugs 1, 2, 5, 6, the Neo4j 5.23+ cleanup, t
 
 ## Open Follow-Ups
 
-- Commit and push the MCP tool set. After pulling on the work laptop, restart the MCP server in VS Code / Agentforce so the agent sees the new tools; agent setups or saved prompts naming the old tools need the new names.
+- Admin panel: restoring from a backup file is not implemented. Sessions are in memory (a restart logs out). Over plain HTTP the password travels unencrypted; HTTPS or a trusted network is needed for use from other machines. Run wipe and reindex once live on throwaway data when convenient.
+- After pulling on the work laptop, restart the MCP server in VS Code / Agentforce so the agent sees the new tools; agent setups or saved prompts naming the old tools need the new names.
 - The client-side parser `lib/hitlProposal.js` can now be replaced by the server's `records` (review finding F; part of roadmap item 1).
 - `src/cli/testParser.js` still holds many assertions in one script; move them into `test/` gradually.
 - If a relation references a node that exists only in another pending proposal, with no node record in its own payload, approval fails until that other proposal is approved (no ordering across proposals).

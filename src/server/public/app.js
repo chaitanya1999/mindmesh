@@ -6,6 +6,7 @@ import { fileKey } from "./components/chat/Composer.js";
 import { EntityModal } from "./components/common/EntityModal.js";
 import { RequiredNameModal } from "./components/common/RequiredNameModal.js";
 import { RouteSwitcher } from "./components/common/RouteSwitcher.js";
+import { AdminApp } from "./components/admin/AdminApp.js";
 import { WorkspaceDivider } from "./components/common/WorkspaceDivider.js";
 import { DetailPanel } from "./components/entity/DetailPanel.js";
 import { createNodeDraft, NodeForm } from "./components/entity/NodeForm.js";
@@ -2272,5 +2273,7 @@ function App() {
 
 const root = document.querySelector("#app");
 if (root) {
-	render(<App />, root);
+	// /admin is a separate page with its own state; every other route is the graph workspace.
+	const isAdminRoute = (window.location.pathname.replace(/\/+$/, "") || "/") === "/admin";
+	render(isAdminRoute ? <AdminApp /> : <App />, root);
 }

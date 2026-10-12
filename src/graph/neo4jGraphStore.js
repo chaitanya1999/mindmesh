@@ -585,6 +585,70 @@ export class Neo4jGraphStore {
 		}
 	}
 
+	// Admin wipe: deletes every KnowledgeNode and its relations (MindMesh's data only; other labels in the
+	// same database are left alone), in batches so a large graph does not need one huge transaction.
+	async deleteAllKnowledge() {
+		await this.ensureConstraints();
+		const session = this.driver.session(this.sessionOptions);
+
+		try {
+			const before = await session.run(`
+				MATCH (n:KnowledgeNode)
+				OPTIONAL MATCH (n)-[r:RELATES_TO]->()
+				RETURN count(DISTINCT n) AS nodes, count(r) AS relations
+			`);
+			await session.run("MATCH (n:KnowledgeNode) CALL (n) { DETACH DELETE n } IN TRANSACTIONS OF 1000 ROWS");
+			const record = before.records[0];
+			return {
+				deletedNodes: neo4j.integer.toNumber(record.get("nodes")),
+				deletedRelations: neo4j.integer.toNumber(record.get("relations")),
+			};
+		} finally {
+			await session.close();
+		}
+	}
+
+	// Every node and relation id, for the admin consistency check against the vector index.
+	async listIds() {
+		const session = this.driver.session(this.sessionOptions);
+
+		try {
+			const nodes = await session.executeRead((tx) => tx.run("MATCH (n:KnowledgeNode) RETURN n.id AS id"));
+			const relations = await session.executeRead((tx) => tx.run("MATCH ()-[r:RELATES_TO]->() RETURN r.id AS id"));
+			return {
+				nodeIds: nodes.records.map((record) => record.get("id")),
+				relationIds: relations.records.map((record) => record.get("id")),
+			};
+		} finally {
+			await session.close();
+		}
+	}
+
+	// Version, edition, database, data outside MindMesh, constraints, and indexes, for the admin overview.
+	async getDatabaseInfo() {
+		const session = this.driver.session(this.sessionOptions);
+
+		try {
+			const component = (await session.run("CALL dbms.components() YIELD name, versions, edition RETURN name, versions[0] AS version, edition")).records[0];
+			const other = (await session.run("MATCH (n) WHERE NOT n:KnowledgeNode RETURN count(n) AS count")).records[0];
+			const constraints = await session.run("SHOW CONSTRAINTS YIELD name, type, entityType, labelsOrTypes, properties RETURN name, type, entityType, labelsOrTypes, properties");
+			const indexes = await session.run("SHOW INDEXES YIELD name, type, state, entityType, labelsOrTypes, properties RETURN name, type, state, entityType, labelsOrTypes, properties");
+			const rows = (result) => result.records.map((record) => Object.fromEntries(record.keys.map((key) => [key, toPlainValue(record.get(key))])));
+
+			return {
+				name: component?.get("name") ?? "",
+				version: component?.get("version") ?? "",
+				edition: component?.get("edition") ?? "",
+				database: this.config.database || "(default)",
+				nodesOutsideMindMesh: neo4j.integer.toNumber(other.get("count")),
+				constraints: rows(constraints),
+				indexes: rows(indexes),
+			};
+		} finally {
+			await session.close();
+		}
+	}
+
 	async getNode(nodeId) {
 		const session = this.driver.session(this.sessionOptions);
 

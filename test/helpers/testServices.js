@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseGraphExtraction } from "../../src/ingestion/graphPayload.js";
+import { hashPassword } from "../../src/admin/adminAuth.js";
 import { createMindMesh } from "../../src/mindmesh.js";
 import { MemoryGraphStore, createMemoryVectorStore } from "./memoryStores.js";
 
@@ -44,7 +45,8 @@ export function createScriptedLlm() {
 	};
 }
 
-export function createTestServices({ mode = "auto" } = {}) {
+// `adminPassword` enables the admin panel (its hash goes into config.admin.passwordHash).
+export function createTestServices({ mode = "auto", adminPassword = "" } = {}) {
 	const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mindmesh-test-"));
 	const schemaPath = path.join(directory, "graphSchema.json");
 	const prompt = (name) => path.join(ROOT, "prompts", name);
@@ -59,7 +61,8 @@ export function createTestServices({ mode = "auto" } = {}) {
 		},
 		ingestion: { mode, hitlDefaultUserName: "test-user", contextEnabled: true, contextTopK: 5, contextDepth: 1 },
 		rag: { topK: 5, depth: 1, memory: { enabled: false, maxMessages: 12, maxMessageChars: 2000 } },
-		logging: { enabled: false },
+		logging: { enabled: false, directory },
+		admin: { passwordHash: adminPassword ? hashPassword(adminPassword) : "" },
 	};
 	const writeSchema = (schema = TEST_SCHEMA) => fs.writeFileSync(schemaPath, `${JSON.stringify(schema, null, "\t")}\n`);
 	writeSchema();
@@ -72,6 +75,7 @@ export function createTestServices({ mode = "auto" } = {}) {
 	return {
 		...services,
 		schemaPath,
+		directory,
 		readSchema: () => JSON.parse(fs.readFileSync(schemaPath, "utf8")),
 		reset() {
 			graphStore.reset();

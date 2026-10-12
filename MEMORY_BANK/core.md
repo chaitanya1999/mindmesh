@@ -6,7 +6,7 @@ Compressed briefing for coding agents. Behavior details live in `README.md`; cod
 
 MindMesh is a HITL-gated, schema-governed knowledge graph for institutional knowledge, not a generic RAG pipeline. Contract: **LLMs suggest, humans approve, schema enforces.** Extracted facts become HITL proposals that a reviewer approves, edits, or regenerates with notes before they reach the graph; `auto` mode applies only clean creates and updates.
 
-Implemented: hybrid vector + graph RAG (Ask), retrieval-augmented extraction (Ingest), HITL review with reviewer notes and LLM regeneration, an editable schema, an MCP server for external coding agents, and two on-demand graph jobs (scanner, nugget).
+Implemented: hybrid vector + graph RAG (Ask), retrieval-augmented extraction (Ingest), HITL review with reviewer notes and LLM regeneration, an editable schema, an MCP server for external coding agents, a password-protected admin panel (maintenance, query console, backup), and two on-demand graph jobs (scanner, nugget).
 
 Not implemented (do not assume they exist): scheduled/CRON jobs, knowledge synthesis, decay detection.
 
@@ -16,13 +16,13 @@ Not implemented (do not assume they exist): scheduled/CRON jobs, knowledge synth
 - Ask: question -> Chroma entry nodes -> Neo4j expansion -> graph context -> LLM answer.
 - HITL: pending proposal -> edit / reviewer notes + regenerate -> approve (merge schema types, apply graph, index vectors) or reject.
 - MCP: the agent does the reasoning; MindMesh returns context and prompts and stores the results through the same proposal/apply path.
-- Web UI: Express APIs + Preact frontend on `/`, `/hitl`, `/schema`, `/jobs`.
+- Web UI: Express APIs + Preact frontend on `/`, `/hitl`, `/schema`, `/jobs`, `/admin`.
 
 Stack: Node.js ES modules, Express, Preact (NeoVis and Sigma graph renderers), Neo4j 5.23+ (tested on Community 5.26 and Enterprise 2026.04), ChromaDB, pluggable LLM and embedding providers, MCP over stdio.
 
 ## Hard Rules
 
-- Every graph write goes through HITL approval, a direct reviewer edit, or `auto` mode. No silent mutations.
+- Every graph write goes through HITL approval, a direct reviewer edit, or `auto` mode. No silent mutations. The only exception is maintenance (wipe, reindex, vector repair, proposal cleanup), and only from the password-protected admin panel (password re-entry, confirmation word, audit log) or the CLIs; it still goes through `GraphWriteService` / `HitlService`.
 - `auto` mode applies only clean creates and updates. Schema violations, `AMBIGUITY:` / `CONTRADICTION:` signals, and any delete force a HITL proposal; web ingest and MCP share one rule (`reviewReasons()`).
 - Neo4j is the source of truth. Chroma node/relation vectors are derived and rebuildable (`npm run kg:reindex-vectors`); HITL proposals live only in Chroma and are not rebuildable.
 - Keep graph writes and vector indexing in sync; index what Neo4j stored, not what was sent. All graph writes go through `GraphWriteService`; nothing else calls store write methods (`test/writeGate.test.js` enforces it).

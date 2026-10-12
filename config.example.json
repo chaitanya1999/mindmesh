@@ -104,5 +104,9 @@
 	},
 	"mcp": {
 		"allowReviewDecisions": false
+	},
+	"admin": {
+		"passwordHash": "",
+		"sessionMinutes": 30
 	}
 }

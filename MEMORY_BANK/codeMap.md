@@ -101,13 +101,13 @@ README: Graph Schema.
 
 README: Neo4j Schema (Identity and uniqueness, Write behavior), Commands (reindex).
 
-- Write gate: `src/graph/graphWriteService.js` is the only caller of store write methods (`applyPayload`, `writeNode`, `deleteNode`, `writeRelation`, `deleteRelation`); `test/writeGate.test.js` lists the allowed exceptions.
+- Write gate: `src/graph/graphWriteService.js` is the only caller of store write methods (`applyPayload`, `writeNode`, `deleteNode`, `writeRelation`, `deleteRelation`, and the maintenance methods `wipeGraph`, `clearGraphVectors`, `reindexVectors`, `repairVectorIndex`); `test/writeGate.test.js` lists the allowed exceptions.
 - Ids: built in `src/ingestion/graphPayload.js` (normalization) and `normalizeManualNode()` / `normalizeManualRelation()` in `src/hitl/hitlService.js` (manual and reviewer edits).
 - Constraints: `Neo4jGraphStore.ensureConstraints()` in `src/graph/neo4jGraphStore.js`, called by `applyGraph`, `upsertNode`, `upsertRelation`.
 - Rename guard: `normalizeManualNode()` (HitlService) and `isNameLocked` in `components/entity/NodeForm.js`.
 - Relation re-id on edit: `HitlService.editRelation()` -> `GraphWriteService.writeRelation(relation, { replaceId })` -> `Neo4jGraphStore.upsertRelation()` (one transaction).
 - Vector documents: `nodeDocument()` / `relationDocument()` / `upsertGraphIndex()` in `src/vector/chromaVectorStore.js`.
-- Reindex: `src/cli/reindexVectors.js` (`--fresh` -> `ChromaVectorStore.clearGraphIndex()`); full wipe: `src/cli/clearChroma.js`.
+- Reindex: `src/cli/reindexVectors.js` and the admin panel -> `GraphWriteService.reindexVectors()` (`fresh` -> `ChromaVectorStore.clearGraphIndex()`); repair of missing/orphan vectors: `GraphWriteService.repairVectorIndex()`; graph wipe: `GraphWriteService.wipeGraph()` (`Neo4jGraphStore.deleteAllKnowledge()` + `clearGraphIndex()`); full Chroma wipe: `src/cli/clearChroma.js`.
 
 ## Providers
 
@@ -130,7 +130,7 @@ README: Configuration, Debug Logging.
 README: Web UI.
 
 - Server: `src/server/server.js` (HTTP only: routes, uploads, static files; `createApp(services)`; port from `KG_WEB_PORT` / `PORT`). Tests: `test/webIngest.test.js`, `test/webHitl.test.js`.
-- Frontend (`src/server/public`): `app.js` (App state, handlers, routes); `components/common`, `graph` (`NeoVisGraphPreview` default, `GraphPreview` Sigma, `graphStyle.js`), `chat`, `entity`, `hitl`, `schema`, `jobs`; `lib/` (`api.js`, `graphData.js`, `utils.js`, `hitlProposal.js`); `styles.css`.
+- Frontend (`src/server/public`): `app.js` (App state, handlers, routes; `/admin` renders `AdminApp` instead); `components/common`, `graph` (`NeoVisGraphPreview` default, `GraphPreview` Sigma, `graphStyle.js`), `chat`, `entity`, `hitl`, `schema`, `jobs`, `admin`; `lib/` (`api.js`, `graphData.js`, `utils.js`, `hitlProposal.js`); `styles.css`.
 - Build: `npm run kg:web:build` -> `app.bundle.js` (gitignored; `npm run kg:web` builds it on start).
 
 ## MCP Server
@@ -139,6 +139,29 @@ README: MCP Server.
 
 - `src/mcp/server.js`: `createMcpServer(services)`; `registerTool()` / `readTool()` helpers; tools grouped as graph reads (`search_context` -> `HybridRagService.retrieveContext`; `search_nodes`, `search_relations`, `get_node`, `explore_graph`, `find_paths`, `query_cypher`, `get_schema` -> `src/graph/graphReadService.js` -> `Neo4jGraphStore.expandFromNodes` / `findPaths` / `runReadOnlyQuery`), proposal reads (`search_proposals`, `list_proposals`, `get_proposal`, `get_node` pending changes -> `HitlService`), proposing (`get_ingest_prompt` -> `IngestionService.retrieveExistingContext` + `buildExtractionPrompt`, `retrievalQuality()`; `submit_ingest` -> `HitlService.submitRecords`; `get_regenerate_prompt` -> `IngestionService.buildHitlRegenerationPrompt`; `submit_regeneration` -> `HitlService.storeRegeneration`; `save_reviewer_notes`), and review decisions behind `config.mcp.allowReviewDecisions` (`approve_proposal`, `reject_proposal`); resources `mindmesh://schema`, `mindmesh://graph`, `mindmesh://hitl/notes`, `mindmesh://nodes/{nodeId}`, `mindmesh://relations/{relationId}`. `main()` sends console output to stderr. Tests: `test/mcpServer.test.js` (in-memory transport).
 - Smoke test: `src/mcp/smokeTest.js` (throwaway nodes; `cleanUp()` removes the created proposal or nodes).
+
+## Admin Panel
+
+README: Admin Panel.
+
+```text
+/admin UI                                          components/admin/AdminApp.js (status, login, tabs; a 401 returns to login)
+  -> /api/admin/*                                  src/server/adminRoutes.js: registerAdminRoutes() (session middleware,
+                                                   requireConfirmation(): password again + CONFIRM_WORDS, audited())
+       -> AdminService                             src/admin/adminService.js
+            overview()                             Neo4jGraphStore.getDatabaseInfo(), GraphReadService.getSchemaOverview(),
+                                                   ChromaVectorStore.listCollectionsWithCounts(), describeRuntime()
+            consistency() / repairVectorIndex()    listIds() vs listIndexIds() -> GraphWriteService.repairVectorIndex()
+            wipe(target) / reindexVectors()        GraphWriteService.wipeGraph() / clearGraphVectors() / reindexVectors(),
+                                                   HitlService.clearAllProposals()
+            backup()                               getGraphSnapshot() + HitlService.exportProposals()
+            previewProposalCleanup / cleanUpProposals  HitlService.findProposalsForCleanup() / deleteProposals()
+            queryCypher() / vectorMatch()          GraphReadService.queryCypher(), ChromaVectorStore.queryCollections()
+```
+
+- Auth: `src/admin/adminAuth.js` (`hashPassword`, `verifyPassword`, `AdminSessions`); audit log `src/admin/auditLog.js`; password CLI `src/cli/adminPassword.js` (`npm run kg:admin:password`).
+- Frontend: `components/admin/` (`AdminOverview`, `AdminMaintenance`, `AdminQueryConsole`, `AdminDangerZone`, `AdminAuditLog`, `AdminConfirm`); `app.js` renders `AdminApp` on `/admin`.
+- Tests: `test/admin.test.js` (`createTestServices({ adminPassword })`; a separate app with `adminRouteOptions.sessions` for the lockout).
 
 ## Jobs
 

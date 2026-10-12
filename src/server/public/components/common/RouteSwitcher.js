@@ -4,6 +4,7 @@ const APP_ROUTES = [
 	{ href: "/hitl", label: "HITL" },
 	{ href: "/jobs", label: "Jobs" },
 	{ href: "/schema", label: "Schema" },
+	{ href: "/admin", label: "Admin" },
 ];
 function normalizedRoutePath(pathname = window.location.pathname) {
 	return pathname.replace(/\/+$/, "") || "/";

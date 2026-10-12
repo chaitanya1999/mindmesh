@@ -2588,3 +2588,227 @@ button:focus-visible {
 		right: 78px;
 	}
 }
+
+/* Admin panel (/admin) */
+.admin-page {
+	display: flex;
+	flex-direction: column;
+	margin: 14px;
+	height: calc(100% - 28px);
+	overflow: hidden;
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	background: var(--panel);
+	box-shadow: var(--shadow);
+}
+.admin-tabs {
+	grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+.admin-body {
+	flex: 1;
+	overflow: auto;
+	padding: 16px 18px 28px;
+}
+.admin-stack {
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+}
+.admin-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+	gap: 14px;
+}
+.admin-card {
+	padding: 14px 16px;
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	background: var(--panel-raised);
+}
+.admin-card h3 {
+	margin: 0 0 10px;
+	font-size: 1rem;
+}
+.admin-card h4 {
+	margin: 12px 0 6px;
+	font-size: 0.9rem;
+}
+.admin-narrow {
+	max-width: 460px;
+	margin: 40px auto;
+}
+.admin-danger {
+	border-color: rgba(251, 113, 133, 0.38);
+}
+.admin-danger h3 {
+	color: var(--danger);
+}
+.admin-form,
+.admin-confirm {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+.admin-confirm {
+	margin-top: 8px;
+}
+.admin-confirm > button,
+.admin-form > button {
+	align-self: flex-start;
+	padding: 0 16px;
+}
+.admin-confirm-fields,
+.admin-filter-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+	gap: 10px;
+}
+.admin-toolbar {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+.admin-toolbar button {
+	padding: 0 16px;
+}
+.admin-stats {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+	gap: 10px;
+}
+.admin-stats > div {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding: 12px 14px;
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	background: var(--panel-raised);
+}
+.admin-stats span {
+	color: var(--muted);
+	font-size: 0.8rem;
+}
+.admin-stats strong {
+	font-size: 1.5rem;
+}
+.admin-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 0.85rem;
+}
+.admin-table th,
+.admin-table td {
+	padding: 6px 8px;
+	border-bottom: 1px solid var(--line);
+	text-align: left;
+	vertical-align: top;
+	overflow-wrap: anywhere;
+}
+.admin-table th {
+	color: var(--muted);
+	font-weight: 600;
+}
+.admin-number {
+	text-align: right !important;
+	white-space: nowrap;
+}
+.admin-scroll {
+	overflow: auto;
+	max-height: 480px;
+}
+.admin-facts {
+	display: grid;
+	grid-template-columns: max-content 1fr;
+	gap: 6px 14px;
+	margin: 0 0 10px;
+	font-size: 0.85rem;
+}
+.admin-facts dt {
+	color: var(--muted);
+}
+.admin-facts dd {
+	margin: 0;
+	overflow-wrap: anywhere;
+}
+.admin-role {
+	display: inline-block;
+	padding: 1px 8px;
+	border-radius: 999px;
+	font-size: 0.75rem;
+	background: var(--accent-soft);
+}
+.admin-role.role-other {
+	background: rgba(152, 167, 186, 0.18);
+}
+.admin-role.role-proposals {
+	background: rgba(246, 173, 85, 0.2);
+}
+.admin-ok {
+	color: var(--accent);
+}
+.admin-warning {
+	color: var(--warm);
+}
+.admin-bad {
+	color: var(--danger);
+}
+.admin-checks {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+	gap: 8px;
+	margin-bottom: 10px;
+}
+.admin-check {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding: 10px 12px;
+	border: 1px solid var(--line);
+	border-radius: 8px;
+}
+.admin-check.problem {
+	border-color: rgba(246, 173, 85, 0.5);
+}
+.admin-check strong {
+	font-size: 1.2rem;
+}
+.admin-check code {
+	color: var(--muted);
+	font-size: 0.75rem;
+	overflow-wrap: anywhere;
+}
+.admin-code {
+	font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+	font-size: 0.85rem;
+}
+pre.admin-code {
+	padding: 10px 12px;
+	border-radius: 8px;
+	background: #101720;
+}
+.admin-collections {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+	gap: 6px;
+}
+.admin-checkbox {
+	display: grid;
+	grid-template-columns: auto 1fr;
+	align-items: center;
+	gap: 2px 8px;
+	padding: 8px 10px;
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	cursor: pointer;
+}
+.admin-checkbox input {
+	width: auto;
+	grid-row: span 2;
+}
+.admin-checkbox small {
+	color: var(--muted);
+}
+.admin-vector-result {
+	margin-top: 12px;
+}

@@ -11,14 +11,13 @@ const SRC = path.join(ROOT, "src");
 
 // Stores are always referenced as `...Store` (graphStore, vectorStore, this.graphStore, ...); GraphWriteService
 // has methods with the same names, so only calls on a store object count.
-const WRITE_CALL = /[sS]tore\.(applyGraph|upsertNode|deleteNode|upsertRelation|deleteRelation|upsertGraphIndex|deleteNodes|deleteRelations|deleteRelationsForNodes|clearGraphIndex)\(/g;
+const WRITE_CALL = /[sS]tore\.(applyGraph|upsertNode|deleteNode|upsertRelation|deleteRelation|upsertGraphIndex|deleteNodes|deleteRelations|deleteRelationsForNodes|clearGraphIndex|deleteAllKnowledge|deleteCollections)\(/g;
 
 // Files allowed to write directly, each with the reason.
 const ALLOWED = new Map([
 	["src/graph/graphWriteService.js", "the gate itself"],
 	["src/graph/neo4jGraphStore.js", "the Neo4j store implementation"],
 	["src/vector/chromaVectorStore.js", "the Chroma store implementation"],
-	["src/cli/reindexVectors.js", "rebuilds vectors from Neo4j; it writes no graph data"],
 	["src/cli/clearChroma.js", "maintenance command that wipes Chroma collections"],
 	["src/mcp/smokeTest.js", "removes its own throwaway smoke-test nodes"],
 	["src/cli/testParser.js", "unit tests that call fake stores"],
