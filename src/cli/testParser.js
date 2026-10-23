@@ -37,9 +37,9 @@ const customGraphWithDelimitedNoise = [
 ].join("\n");
 const customGraphWithMutations = [
 	"<start#$#$>",
-	"NODE_UPDATE|xyz_screen|XYZ Screen|screen|Created primarily due to a request from John Smith.|",
-	"NODE_CREATE|john_smith|John Smith|person||AMBIGUITY:full identity not confirmed",
-	"RELATION_CREATE|xyz_screen|john_smith|requested_by|primary request source||",
+	"NODE_UPDATE|xyz_screen|XYZ Screen|screen|Created primarily due to a request from John Smith.||",
+	"NODE_CREATE|john_smith|John Smith|person|||AMBIGUITY:full identity not confirmed",
+	"RELATION_CREATE|xyz_screen|john_smith|requested_by|primary request source|||",
 	"RELATION_DELETE|xyz_screen|old_owner|owned_by|CONTRADICTION:owner changed",
 	"NODE_DELETE|old_owner|AMBIGUITY:old owner identity unclear",
 	"NODE_TYPE_SUGGESTION|person|A human individual.|The input names a person but no approved person node type fits.",
@@ -103,19 +103,19 @@ const switchedPayload = normalizeGraphPayload(parseGraphExtraction(customGraph))
 assert(switchedPayload.nodes[0].id === "node:ekyc_screen", "Parser failed.");
 
 // Escaped field tests
-const escapedNewline = extractCustomGraph("NODE_CREATE|abc|ABC|screen|Line one\\nLine two|");
+const escapedNewline = extractCustomGraph("NODE_CREATE|abc|ABC|screen|Line one\\nLine two||");
 assert(escapedNewline.nodes[0].description === "Line one\nLine two", "Escaped newline decode failed.");
 
-const escapedPipe = extractCustomGraph("NODE_CREATE|abc|ABC|screen|Uses value A\\|B|");
+const escapedPipe = extractCustomGraph("NODE_CREATE|abc|ABC|screen|Uses value A\\|B||");
 assert(escapedPipe.nodes[0].description === "Uses value A|B", "Escaped pipe decode failed.");
 
-const escapedBackslash = extractCustomGraph("NODE_CREATE|abc|ABC|screen|Has \\\\ slash|");
+const escapedBackslash = extractCustomGraph("NODE_CREATE|abc|ABC|screen|Has \\\\ slash||");
 assert(escapedBackslash.nodes[0].description === "Has \\ slash", "Escaped backslash decode failed.");
 
-const escapedLiteralBackslashN = extractCustomGraph("NODE_CREATE|abc|ABC|screen|Literal \\\\n text|");
+const escapedLiteralBackslashN = extractCustomGraph("NODE_CREATE|abc|ABC|screen|Literal \\\\n text||");
 assert(escapedLiteralBackslashN.nodes[0].description === "Literal \\n text", "Escaped literal backslash-n decode failed.");
 
-const escapedRelationFields = extractCustomGraph("RELATION_CREATE|abc|xyz|uses|Line one\\nLine two|Description with A\\|B|");
+const escapedRelationFields = extractCustomGraph("RELATION_CREATE|abc|xyz|uses|Line one\\nLine two|Description with A\\|B||");
 assert(escapedRelationFields.relations[0].information === "Line one\nLine two", "Escaped relation information decode failed.");
 assert(escapedRelationFields.relations[0].description === "Description with A|B", "Escaped relation description decode failed.");
 
@@ -205,7 +205,7 @@ assert(pendingSuggestionPayload.schemaSuggestions.nodeTypes[0].name === "journey
 assert(pendingSuggestionPayload.schemaViolations[0]?.kind === "nodeType", "Implicit node suggestion must still require schema approval.");
 
 // Relations never create nodes, and there are no fallback types.
-const relationOnlyPayload = normalizeGraphPayload(extractCustomGraph("RELATION_CREATE|ekyc_screen|pan_api|uses|||"), { schema });
+const relationOnlyPayload = normalizeGraphPayload(extractCustomGraph("RELATION_CREATE|ekyc_screen|pan_api|uses||||"), { schema });
 assert(relationOnlyPayload.nodes.length === 0, "A relation must not create endpoint nodes.");
 assert(relationOnlyPayload.relations[0].sourceId === "node:ekyc_screen" && relationOnlyPayload.relations[0].targetId === "node:pan_api", "Relation endpoints should reference nodes by id.");
 assert(relationOnlyPayload.schemaViolations.length === 0, "A relation with an approved type should pass schema normalization.");
@@ -213,7 +213,7 @@ assert(relationOnlyPayload.schemaViolations.length === 0, "A relation with an ap
 const untypedPayload = normalizeGraphPayload(extractCustomGraph([
 	"NODE_CREATE|abc|ABC||",
 	"NODE_CREATE|xyz|XYZ|screen|",
-	"RELATION_CREATE|abc|xyz||||",
+	"RELATION_CREATE|abc|xyz|||||",
 ].join("\n")), { schema });
 assert(untypedPayload.nodes.find((node) => node.name === "abc")?.type === "", "A blank node type must stay blank, not become a fallback.");
 assert(untypedPayload.relations[0].relation === "", "A blank relation type must stay blank, not become a fallback.");
@@ -365,7 +365,7 @@ const pendingContextService = new IngestionService({
 				userName: "Frontend User",
 				llmResponse: [
 					"<start#$#$>",
-					"NODE_CREATE|sales_journey_flow|Sales Journey Flow|flow||",
+					"NODE_CREATE|sales_journey_flow|Sales Journey Flow|flow|||",
 					"</end#$#$>",
 				].join("\n"),
 			}];
@@ -506,7 +506,7 @@ const syncFailureService = new IngestionService({
 let syncFailure = null;
 try {
 	await hitlFor(syncFailureService).graphWriter.applyPayload(
-		normalizeGraphPayload(extractCustomGraph("NODE_CREATE|sync_screen|Sync Screen|screen||"), { schema }),
+		normalizeGraphPayload(extractCustomGraph("NODE_CREATE|sync_screen|Sync Screen|screen|||"), { schema }),
 		{ source: "test", debugLogger: { log() {} } },
 	);
 } catch (error) {
@@ -774,9 +774,9 @@ const duplicatePendingHitlService = new IngestionService({
 			return {
 				rawResponse: [
 					"<start#$#$>",
-					"NODE_CREATE|sales_journey_flow|Sales Journey Flow|screen|Duplicate create emitted by model.|",
-					"NODE_CREATE|apple_stage|Apple Stage|screen||",
-					"RELATION_CREATE|sales_journey_flow|apple_stage|contains|||",
+					"NODE_CREATE|sales_journey_flow|Sales Journey Flow|screen|Duplicate create emitted by model.||",
+					"NODE_CREATE|apple_stage|Apple Stage|screen|||",
+					"RELATION_CREATE|sales_journey_flow|apple_stage|contains||||",
 					"</end#$#$>",
 				].join("\n"),
 				graph: {
@@ -813,7 +813,7 @@ const duplicatePendingHitlService = new IngestionService({
 				userName: "Frontend User",
 				llmResponse: [
 					"<start#$#$>",
-					"NODE_CREATE|sales_journey_flow|Sales Journey Flow|screen||",
+					"NODE_CREATE|sales_journey_flow|Sales Journey Flow|screen|||",
 					"</end#$#$>",
 				].join("\n"),
 			}];
@@ -851,7 +851,7 @@ assert(referenceResolution.graphPayload.schemaViolations.length === 0, "Existing
 assert(referenceResolution.graphPayload.nodes.length === 0, "Existing relation endpoints must never be written.");
 assert(referenceResolution.changed === false, "A valid relation-only payload should not be rewritten.");
 
-const typoPayload = normalizeGraphPayload(extractCustomGraph("RELATION_CREATE|ekyc_scren|pan_api|uses|||"), { schema });
+const typoPayload = normalizeGraphPayload(extractCustomGraph("RELATION_CREATE|ekyc_scren|pan_api|uses||||"), { schema });
 const typoResolution = await resolveGraphPayload(typoPayload, resolverGraphStore);
 assert(typoResolution.graphPayload.schemaViolations.some((violation) => violation.kind === "relationEndpoint" && violation.message.includes("\"ekyc_scren\" does not exist")), "A relation to a missing node must be a violation.");
 assert(typoResolution.graphPayload.nodes.length === 0, "A relation to a missing node must not create it.");
@@ -859,15 +859,15 @@ assert(countReviewSignals(typoResolution.graphPayload).ambiguityCount === 1, "A 
 
 const deletedEndpointResolution = await resolveGraphPayload(normalizeGraphPayload(extractCustomGraph([
 	"NODE_DELETE|pan_api|",
-	"RELATION_CREATE|ekyc_screen|pan_api|uses|||",
+	"RELATION_CREATE|ekyc_screen|pan_api|uses||||",
 ].join("\n")), { schema }), resolverGraphStore);
 assert(deletedEndpointResolution.graphPayload.schemaViolations.some((violation) => violation.message.includes("is deleted by this proposal")), "A relation to a node deleted by the same payload must be a violation.");
 
-const existingCreateResolution = await resolveGraphPayload(normalizeGraphPayload(extractCustomGraph("NODE_CREATE|ekyc_screen|EKYC Screen|screen|New detail.|"), { schema }), resolverGraphStore);
+const existingCreateResolution = await resolveGraphPayload(normalizeGraphPayload(extractCustomGraph("NODE_CREATE|ekyc_screen|EKYC Screen|screen|New detail.||"), { schema }), resolverGraphStore);
 assert(existingCreateResolution.graphPayload.nodes[0].operation === "update", "NODE_CREATE for an existing node should be applied as an update.");
 assert(existingCreateResolution.changed === true, "A converted create should mark the payload as changed.");
 assert(countReviewSignals(existingCreateResolution.graphPayload).ambiguityCount === 1, "A converted create should carry an ambiguity review signal.");
-assert(formatGraphRecords(existingCreateResolution.graphPayload).includes("NODE_UPDATE|ekyc_screen|EKYC Screen|screen|New detail.|AMBIGUITY:"), "The stored proposal should show the converted update and its signal.");
+assert(formatGraphRecords(existingCreateResolution.graphPayload).includes("NODE_UPDATE|ekyc_screen|EKYC Screen|screen|New detail.||AMBIGUITY:"), "The stored proposal should show the converted update and its signal.");
 
 let rejectedApplyTouchedGraph = false;
 const applyGuardService = new IngestionService({

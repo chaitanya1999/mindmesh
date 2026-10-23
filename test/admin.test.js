@@ -181,7 +181,7 @@ describe("admin access", () => {
 describe("admin overview", () => {
 	it("reports Neo4j counts, Chroma collections with roles, pending proposals, and schema health", async () => {
 		await seedGraph({ nodes: [node("a_screen", "screen"), node("b_api", "api"), node("w", "gadget")], relations: [relation("a_screen", "uses", "b_api")] });
-		await propose("something new", "NODE_CREATE|c_screen|C|screen||");
+		await propose("something new", "NODE_CREATE|c_screen|C|screen|||");
 		await (await services.vectorStore.client.getOrCreateCollection({ name: "old_smoke_leftover" })).upsert({ ids: ["x"], documents: ["x"] });
 
 		const { body } = await http.get("/api/admin/overview");
@@ -202,7 +202,7 @@ describe("admin overview", () => {
 describe("admin destructive actions", () => {
 	beforeEach(async () => {
 		await seedGraph({ nodes: [node("a_screen", "screen"), node("b_api", "api")], relations: [relation("a_screen", "uses", "b_api")] });
-		await propose("keep me", "NODE_CREATE|c_screen|C|screen||");
+		await propose("keep me", "NODE_CREATE|c_screen|C|screen|||");
 	});
 
 	it("refuse without the password, with a wrong password, or without the confirmation word", async () => {
@@ -277,7 +277,7 @@ describe("admin maintenance", () => {
 
 	it("backup downloads the graph and every pending proposal", async () => {
 		await seedGraph({ nodes: [node("a_screen", "screen")] });
-		await propose("pending input", "NODE_CREATE|c_screen|C|screen||");
+		await propose("pending input", "NODE_CREATE|c_screen|C|screen|||");
 
 		const backup = await http.get("/api/admin/backup");
 
@@ -292,7 +292,7 @@ describe("admin maintenance", () => {
 	it("query console runs read-only Cypher and vector matches across selected collections", async () => {
 		services.graphStore.readQueryHandler = async (cypher) => ({ columns: ["n"], rows: [{ n: cypher.length }], truncated: false });
 		await seedGraph({ nodes: [node("a_screen", "screen", "A Screen")] });
-		await propose("pending text", "NODE_CREATE|c_screen|C|screen||");
+		await propose("pending text", "NODE_CREATE|c_screen|C|screen|||");
 
 		const cypher = await http.post("/api/admin/query/cypher", { cypher: "MATCH (n) RETURN count(n)" });
 		assert.equal(cypher.body.rows[0].n, "MATCH (n) RETURN count(n)".length);

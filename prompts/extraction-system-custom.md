@@ -26,12 +26,12 @@ RELATION_TYPE_SUGGESTION
 
 OUTPUT SYNTAX:
 <start#$#$>
-NODE_CREATE|name|label|type|description|metadata
-NODE_UPDATE|name|label|type|description|metadata
+NODE_CREATE|name|label|type|description|scope|metadata
+NODE_UPDATE|name|label|type|description|scope|metadata
 NODE_DELETE|name|metadata
 
-RELATION_CREATE|source_name|target_name|relation|information|description|metadata
-RELATION_UPDATE|source_name|target_name|relation|information|description|metadata
+RELATION_CREATE|source_name|target_name|relation|information|description|scope|metadata
+RELATION_UPDATE|source_name|target_name|relation|information|description|scope|metadata
 RELATION_DELETE|source_name|target_name|relation|metadata
 
 NODE_TYPE_SUGGESTION|type_name|description|reason
@@ -111,6 +111,17 @@ EXTRACTION RULES:
 - Description / Information must not be redundant for example information on relation must not re-state what the relation itself implicitly denotes.
 
 
+SCOPE RULES:
+- scope lists the business units a node or relation belongs to, comma-separated, using only the allowed values in the field guidance. Empty means not specified.
+- A business-unit specific concept (a screen, section, field, rule, or process of one unit) gets the unit as a name prefix and as its scope, for example NODE_CREATE|uc_qde_screen|QDE Screen|screen||uc|. Keep the prefix out of the label.
+- The same concept in two units is two different nodes (uc_qde_screen and nc_qde_screen). Never reuse an existing node that is prefixed or scoped for another unit, even when its label matches.
+- Shared technical artefacts (Apex classes, Aura and LWC components, flows, objects, custom metadata, labels, settings, APIs) keep their exact API name without a prefix. Leave their scope empty unless the input states which units use them.
+- Use common only when the input says every unit shares the item. Never combine common with other values.
+- Leave relation scope empty unless the input says the relation applies only to specific units while its endpoints are shared.
+- In NODE_UPDATE and RELATION_UPDATE, leave scope empty to keep the stored scope. Fill it only to change the scope, and then give the complete new scope.
+- Use the selected scope (below, next to the new user input) as the business unit of the input, unless the input explicitly names another unit for a concept.
+
+
 METADATA RULES:
 - Metadata is optional unless ambiguity or contradiction applies.
 - Leave metadata empty when not needed.
@@ -182,9 +193,9 @@ Metadata placement:
 
 Metadata examples:
 
-NODE_UPDATE|rajat|Rajat|person||AMBIGUITY:multiple users match
-RELATION_CREATE|xyz_screen|pan_api|uses|||CONTRADICTION:existing graph differs
-RELATION_CREATE|abc_screen|mango_api|invokes|||AMBIGUITY:source name ABC could refer to multiple existing nodes
+NODE_UPDATE|rajat|Rajat|person|||AMBIGUITY:multiple users match
+RELATION_CREATE|xyz_screen|pan_api|uses||||CONTRADICTION:existing graph differs
+RELATION_CREATE|abc_screen|mango_api|invokes||||AMBIGUITY:source name ABC could refer to multiple existing nodes
 NODE_DELETE|rajat|AMBIGUITY:multiple Rajat nodes match
 RELATION_DELETE|qde_screen|finnone_api|invokes|CONTRADICTION:latest input says QDE only invokes LOGICRULE API
 
@@ -192,10 +203,10 @@ RELATION_DELETE|qde_screen|finnone_api|invokes|CONTRADICTION:latest input says Q
 INVALID OUTPUT EXAMPLES:
 Thought process - User is asking for node and relations extraction......
 Here are the extracted nodes:
-NODE_CREATE|abc|ABC|sync_api||
-NODE_CREATE|xyz|XYZ|async_api||
-NODE_CREATE|rajat|Rajat|person|A person named Rajat.|
-RELATION_CREATE|varun|rajat|manages|Varun manages Rajat.||
+NODE_CREATE|abc|ABC|sync_api|||
+NODE_CREATE|xyz|XYZ|async_api|||
+NODE_CREATE|rajat|Rajat|person|A person named Rajat.||
+RELATION_CREATE|varun|rajat|manages|Varun manages Rajat.|||
 
 Reason:
 Thought process, explanations and low-value descriptions are forbidden.
@@ -203,9 +214,9 @@ Thought process, explanations and low-value descriptions are forbidden.
 
 VALID OUTPUT EXAMPLE:
 <start#$#$>
-NODE_CREATE|ekyc_screen|EKYC Screen|screen|Screen that captures identity verification details.|
-NODE_CREATE|pan_api|PAN API|api|API used to verify PAN details.|
-RELATION_CREATE|ekyc_screen|pan_api|uses|for verification|Triggered during identity verification.|
+NODE_CREATE|uc_ekyc_screen|EKYC Screen|screen|Screen that captures identity verification details.|uc|
+NODE_CREATE|pan_api|PAN API|api|API used to verify PAN details.||
+RELATION_CREATE|uc_ekyc_screen|pan_api|uses|for verification|Triggered during identity verification.||
 </end#$#$>
 
 
@@ -218,9 +229,9 @@ and New user input says:
 
 Output:
 <start#$#$>
-NODE_UPDATE|xyz_screen|XYZ Screen|screen|Created primarily due to a request from John Smith.|
-NODE_CREATE|john_smith|John Smith|person||
-RELATION_CREATE|xyz_screen|john_smith|requested_by|primary request source||
+NODE_UPDATE|xyz_screen|XYZ Screen|screen|Created primarily due to a request from John Smith.||
+NODE_CREATE|john_smith|John Smith|person|||
+RELATION_CREATE|xyz_screen|john_smith|requested_by|primary request source|||
 NODE_TYPE_SUGGESTION|person|A human individual.|The input names a person but no approved person node type fits.
 RELATION_TYPE_SUGGESTION|requested_by|Source exists or changed because of a request from target.|No approved relationship type captures request origin.
 </end#$#$>
@@ -235,9 +246,11 @@ and New user input says:
 
 Output (both nodes already exist and the input adds nothing about them, so no node records):
 <start#$#$>
-RELATION_CREATE|ekyc_screen|pan_api|invokes|||
+RELATION_CREATE|ekyc_screen|pan_api|invokes||||
 </end#$#$>
 
+
+{{INGEST_SCOPE}}
 
 New user input:
 {{USER_INPUT}}

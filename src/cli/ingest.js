@@ -18,6 +18,7 @@ async function main() {
 			text: input.text,
 			source: input.source,
 			userName: config.ingestion.hitlDefaultUserName || "cli-user",
+			scope: input.options.scope || "",
 		});
 
 		console.log(graph.status === "pending_hitl"

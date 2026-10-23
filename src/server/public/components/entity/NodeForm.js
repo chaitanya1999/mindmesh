@@ -1,5 +1,7 @@
 import { useEffect, useState } from "preact/hooks";
 import { Field } from "../common/Field.js";
+import { ScopeField } from "../common/ScopeField.js";
+import { parseScope } from "../../lib/scope.js";
 import { toSnakeCase, displayText } from "../../lib/utils.js";
 
 export function createNodeDraft(node) {
@@ -8,6 +10,7 @@ export function createNodeDraft(node) {
 		name: node?.name ?? "",
 		type: node?.type ?? "",
 		description: displayText(node?.description),
+		scope: parseScope(node?.scope),
 	};
 }
 
@@ -21,6 +24,7 @@ export function NodeForm({
 	onDraftChange,
 	onSave,
 	saveLabel = "Save node",
+	nodeScopeValues = [],
 }) {
 	const isControlled = Boolean(controlledDraft && onDraftChange);
 	// The id is node:<name>, so nodes already in the graph keep their name. Pending items without an
@@ -68,6 +72,9 @@ export function NodeForm({
 					))}
 				</datalist>
 				<input list="node-type-options" value={draft.type} onInput={(event) => updateField("type", event.currentTarget.value)} placeholder="Choose a schema type" required />
+			</Field>
+			<Field label="Scope">
+				<ScopeField value={draft.scope ?? []} scopeValues={nodeScopeValues} onChange={(scope) => updateField("scope", scope)} />
 			</Field>
 			<Field label="Description">
 				<textarea rows="4" value={draft.description} onInput={(event) => updateField("description", event.currentTarget.value)} />

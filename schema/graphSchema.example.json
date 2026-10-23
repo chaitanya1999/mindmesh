@@ -7,7 +7,8 @@
 			"type"
 		],
 		"optional": [
-			"description"
+			"description",
+			"scope"
 		],
 		"fields": [
 			{
@@ -29,6 +30,13 @@
 			{
 				"name": "description",
 				"description": "Optional free-text context or rationale not modeled as separate nodes; prefer structured graph facts when possible."
+			},
+			{
+				"name": "scope",
+				"description": "Business units the node belongs to, comma-separated (for example uc or uc,nc). Set it for business-unit specific concepts and when the input states which units use the node; otherwise leave it empty. Use common only when the input says every unit shares the node; never combine common with other values.",
+				"constraints": {
+					"allowedValues": ["uc", "nc", "tw", "cv", "tr", "common"]
+				}
 			}
 		]
 	},
@@ -40,7 +48,8 @@
 		],
 		"optional": [
 			"information",
-			"description"
+			"description",
+			"scope"
 		],
 		"fields": [
 			{
@@ -72,6 +81,13 @@
 			{
 				"name": "description",
 				"description": "Optional longer rationale or operational notes about the relation; use sparingly."
+			},
+			{
+				"name": "scope",
+				"description": "Business units the relation applies to, comma-separated. Leave it empty in almost all cases; set it only when the input says the relation applies to specific units while its endpoints are shared.",
+				"constraints": {
+					"allowedValues": ["uc", "nc", "tw", "cv", "tr", "common"]
+				}
 			},
 			{
 				"name": "metadata",

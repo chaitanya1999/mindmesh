@@ -2812,3 +2812,90 @@ pre.admin-code {
 .admin-vector-result {
 	margin-top: 12px;
 }
+/* Scope: picker (Ask / Ingest), form toggles, chips, HITL checklist */
+.scope-picker {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 14px 0;
+	color: var(--muted);
+	font-size: 0.78rem;
+}
+
+.scope-picker select {
+	min-width: 110px;
+	padding: 4px 8px;
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	color: var(--ink);
+	background: var(--panel-raised);
+	font: inherit;
+}
+
+.scope-field,
+.scope-chips {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+}
+
+.scope-chip {
+	display: inline-flex;
+	align-items: center;
+	padding: 2px 9px;
+	border: 1px solid var(--line);
+	border-radius: 999px;
+	color: var(--muted);
+	background: transparent;
+	font-size: 0.74rem;
+	font-weight: 800;
+	text-transform: uppercase;
+}
+
+button.scope-chip {
+	cursor: pointer;
+}
+
+.scope-chip.active {
+	color: var(--ink);
+	border-color: var(--accent-strong);
+	background: var(--accent-soft);
+}
+
+.scope-chip.muted {
+	text-transform: none;
+	font-weight: 600;
+}
+
+.scope-hint {
+	color: var(--muted);
+	font-size: 0.74rem;
+}
+
+.note-tag.scope {
+	color: #99f6e4;
+	background: var(--accent-soft);
+	text-transform: uppercase;
+}
+
+.hitl-review-checklist {
+	margin: 4px 0 10px;
+	padding: 8px 12px;
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	background: var(--panel-raised);
+	font-size: 0.8rem;
+}
+
+.hitl-review-checklist summary {
+	cursor: pointer;
+	font-weight: 700;
+}
+
+.hitl-review-checklist ul {
+	margin: 8px 0 0;
+	padding-left: 18px;
+	color: var(--muted);
+	line-height: 1.45;
+}

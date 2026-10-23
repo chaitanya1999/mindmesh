@@ -6,7 +6,7 @@ Compressed briefing for coding agents. Behavior details live in `README.md`; cod
 
 MindMesh is a HITL-gated, schema-governed knowledge graph for institutional knowledge, not a generic RAG pipeline. Contract: **LLMs suggest, humans approve, schema enforces.** Extracted facts become HITL proposals that a reviewer approves, edits, or regenerates with notes before they reach the graph; `auto` mode applies only clean creates and updates.
 
-Implemented: hybrid vector + graph RAG (Ask), retrieval-augmented extraction (Ingest), HITL review with reviewer notes and LLM regeneration, an editable schema, an MCP server for external coding agents, a password-protected admin panel (maintenance, query console, backup), and two on-demand graph jobs (scanner, nugget).
+Implemented: hybrid vector + graph RAG (Ask), retrieval-augmented extraction (Ingest), HITL review with reviewer notes and LLM regeneration, an editable schema, scope (business-unit) tagging and filtering, an MCP server for external coding agents, a password-protected admin panel (maintenance, query console, backup), and two on-demand graph jobs (scanner, nugget).
 
 Not implemented (do not assume they exist): scheduled/CRON jobs, knowledge synthesis, decay detection.
 
@@ -29,6 +29,7 @@ Stack: Node.js ES modules, Express, Preact (NeoVis and Sigma graph renderers), N
 - Ids are canonical and shared by Neo4j and Chroma: `node:<name>`, `rel:<hash of source:relation:target>`, unique in Neo4j. Never rename an existing node's `name`; recompute a relation's id when its type or endpoints change.
 - Record `metadata` holds HITL review signals (`AMBIGUITY:` / `CONTRADICTION:`) and exists only in proposals. Never persist it to the graph.
 - Relations never create or rewrite nodes. Every endpoint must exist in the graph or have a node record in the same payload; an existing endpoint is only referenced. There are no fallback types: a blank type is a schema violation.
+- Scope is a list on nodes and relations, curated by people: empty means not curated and matches every filter; it is never derived from a node's name, never stamped automatically from the ingest scope, and an ingest or agent submission that changes an existing node's non-empty scope always reaches review. Allowed values come only from the schema's `scope` descriptor.
 - Approved types live only in the schema's `nodeTypes`/`relationshipTypes`. Type suggestions stay in proposals and are merged on approval; never auto-promote them.
 - The MCP server never creates an LLM provider. Approve and reject over MCP exist only when `mcp.allowReviewDecisions` is true (default false). `query_cypher` stays read-only, enforced by Neo4j (`EXPLAIN` query type `r`, read transaction), never by keyword checks alone. The MCP process writes nothing but protocol messages to stdout.
 - Config comes from `config.json` with `{{KEY}}` placeholders resolved from `config.replacements.json` (both local and gitignored); no env-var settings except the web port. Never commit real secrets. Placeholders are replaced in parsed string values, never in raw JSON text.

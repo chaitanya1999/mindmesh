@@ -1,5 +1,7 @@
 import { useEffect, useState } from "preact/hooks";
 import { Field } from "../common/Field.js";
+import { ScopeField } from "../common/ScopeField.js";
+import { parseScope } from "../../lib/scope.js";
 import { toSnakeCase, displayText } from "../../lib/utils.js";
 
 export function createRelationDraft(relation) {
@@ -9,6 +11,7 @@ export function createRelationDraft(relation) {
 		relation: relation?.relation ?? "",
 		information: displayText(relation?.information),
 		description: displayText(relation?.description),
+		scope: parseScope(relation?.scope),
 	};
 }
 
@@ -23,6 +26,7 @@ export function RelationForm({
 	onSave,
 	relation,
 	saveLabel = "Save relation",
+	relationScopeValues = [],
 }) {
 	const isControlled = Boolean(controlledDraft && onDraftChange);
 	const [localDraft, setLocalDraft] = useState(() => createRelationDraft(relation));
@@ -70,6 +74,10 @@ export function RelationForm({
 			</Field>
 			<Field label="Description">
 				<textarea rows="4" value={draft.description} onInput={(event) => updateField("description", event.currentTarget.value)} />
+			</Field>
+			<Field label="Scope">
+				<ScopeField value={draft.scope ?? []} scopeValues={relationScopeValues} onChange={(scope) => updateField("scope", scope)} />
+				<small class="scope-hint">Leave empty unless this relation applies only to some scopes.</small>
 			</Field>
 			<div class="form-actions">
 				<button type="submit" class="primary">{saveLabel}</button>

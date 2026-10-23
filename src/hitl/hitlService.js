@@ -5,6 +5,7 @@ import { resolveGraphPayload } from "../ingestion/graphResolution.js";
 import { countReviewSignals, reviewReasons } from "../ingestion/reviewSignals.js";
 import { createDebugLogger, errorDetails, logStep } from "../logging/debugLogger.js";
 import { buildApprovalSchema, loadGraphSchema, mergeSchemaTypes } from "../schema/graphSchema.js";
+import { normalizeScopeFilter, parseScope, scopeAllowedValues, scopeProblems } from "../schema/scope.js";
 
 // Human-in-the-loop: decides whether a change may enter the graph, and keeps the proposals for the ones that
 // need a reviewer. Owns the proposal lifecycle (submit, list, preview, reviewer notes, regenerate, approve,
@@ -93,7 +94,7 @@ function proposalRecords(graphPayload) {
 }
 
 function nodeFields(node) {
-	return { name: node.name, label: node.label, type: node.type, description: node.description ?? "" };
+	return { name: node.name, label: node.label, type: node.type, description: node.description ?? "", scope: parseScope(node.scope) };
 }
 
 function relationFields(relation) {
@@ -103,6 +104,7 @@ function relationFields(relation) {
 		targetId: relation.targetId,
 		information: relation.information ?? "",
 		description: relation.description ?? "",
+		scope: parseScope(relation.scope),
 	};
 }
 
@@ -118,8 +120,8 @@ function changesTouchingNode(graphPayload, nodeId) {
 }
 
 // List filters. signal: "ambiguity" | "contradiction"; operation: "create" | "update" | "delete";
-// author / source: case-insensitive exact match.
-function matchesProposalFilter(item, { signal, operation, author, source }) {
+// author / source / scope (the proposal's ingest scope): case-insensitive exact match.
+function matchesProposalFilter(item, { signal, operation, author, source, scope }) {
 	if (signal === "ambiguity" && !(item.ambiguityCount > 0)) {
 		return false;
 	}
@@ -142,6 +144,9 @@ function matchesProposalFilter(item, { signal, operation, author, source }) {
 		return false;
 	}
 	if (source && !same(item.source, source)) {
+		return false;
+	}
+	if (scope && !same(item.scope, scope)) {
 		return false;
 	}
 
@@ -167,6 +172,7 @@ function normalizeManualNode(body, existingId = "") {
 		name,
 		type: requireString(toSnakeCase(body?.type), "Node type"),
 		description: String(body?.description ?? "").trim(),
+		scope: parseScope(body?.scope),
 	};
 }
 
@@ -188,6 +194,7 @@ function normalizeManualRelation(body, existingId = "") {
 		relation,
 		information: String(body?.information ?? "").trim(),
 		description: String(body?.description ?? "").trim(),
+		scope: parseScope(body?.scope),
 	};
 }
 
@@ -211,11 +218,17 @@ function approvedSnapshot(existing) {
 	return existing.pendingHitl ? existing.approved : existing;
 }
 
+// A blank scope in a proposal keeps the stored one, so the preview shows the scope that will be kept.
+function previewScope(item, existing) {
+	return parseScope(item.scope).length > 0 ? parseScope(item.scope) : parseScope(existing?.scope);
+}
+
 function mergePendingNode(nodeMap, node, note, operation) {
 	const existing = nodeMap.get(node.id);
 	nodeMap.set(node.id, {
 		...(existing ?? {}),
 		...node,
+		scope: previewScope(node, existing),
 		...pendingMarker(note, operation || node.operation),
 		approved: approvedSnapshot(existing),
 	});
@@ -226,6 +239,7 @@ function mergePendingRelation(relationMap, relation, note, operation) {
 	relationMap.set(relation.id, {
 		...(existing ?? {}),
 		...relation,
+		scope: previewScope(relation, existing),
 		...pendingMarker(note, operation || relation.operation),
 		approved: approvedSnapshot(existing),
 	});
@@ -356,6 +370,19 @@ export class HitlService {
 		}
 	}
 
+	// Form edits: an invalid scope is the user's typo, not something a reviewer could approve, so it is a 400.
+	requireValidScope(record, kind) {
+		const schema = this.currentSchema();
+		const allowed = kind === "relation"
+			? scopeAllowedValues(schema, "relation") ?? scopeAllowedValues(schema, "node")
+			: scopeAllowedValues(schema, "node");
+		const problems = scopeProblems(record.scope, allowed);
+		if (problems.length > 0) {
+			throw httpError(`Invalid scope: ${problems.join("; ")}.`, 400);
+		}
+		return record;
+	}
+
 	// Parses proposal text and normalizes it against the current schema (graph-blind; see resolveGraphPayload).
 	parseRecords(llmResponse) {
 		try {
@@ -392,6 +419,7 @@ export class HitlService {
 				userName: note.userName,
 				ingestedBy: note.userName,
 				source: note.source,
+				scope: note.scope || "",
 				createdAt: note.createdAt,
 				inputPreview: note.inputPreview,
 				llmPreview: note.llmPreview,
@@ -490,6 +518,7 @@ export class HitlService {
 			status: note.status,
 			userName: note.userName,
 			source: note.source,
+			scope: note.scope || "",
 			createdAt: note.createdAt,
 			userInput: note.userInput,
 			llmResponse: note.llmResponse,
@@ -648,20 +677,22 @@ export class HitlService {
 	// ---------------------------------------------------------------------------------------------------
 
 	// Text ingestion: IngestionService extracts, then submit() decides between applying and proposing.
-	async ingestText({ text, source, userName }) {
+	async ingestText({ text, source, userName, scope = "" }) {
 		return this.ingestionService.ingestText({
 			text,
 			source,
 			userName,
+			scope,
 			submit: (prepared) => this.submit(prepared),
 		});
 	}
 
 	// Records an external agent extracted (MCP apply-ingestion). Prepared exactly like a text ingestion,
 	// including reconciliation with pending proposals.
-	async submitRecords({ graphRecords, text, userName, source, debugLogger }) {
+	async submitRecords({ graphRecords, text, userName, source, scope: requestedScope = "", debugLogger }) {
 		const graphSchema = this.currentSchema();
-		const pendingHitl = await this.ingestionService.retrievePendingHitlContext({ text, graphSchema });
+		const scope = normalizeScopeFilter(requestedScope, graphSchema);
+		const pendingHitl = await this.ingestionService.retrievePendingHitlContext({ text, graphSchema, scope });
 		const { graphPayload, proposalText } = await this.ingestionService.prepareExtraction({
 			extractedGraph: parseGraphExtraction(graphRecords),
 			rawResponse: graphRecords,
@@ -669,11 +700,12 @@ export class HitlService {
 			graphSchema,
 		});
 
-		return this.submit({ text, source, userName, graphPayload, proposalText, debugLogger });
+		return this.submit({ text, source, userName, scope, graphPayload, proposalText, debugLogger });
 	}
 
 	// Auto mode applies only clean creates and updates; hitl mode, or any review reason, stores a proposal.
-	async submit({ text, source, userName, graphPayload, proposalText, debugLogger = null, startedAt = Date.now() }) {
+	// `scope` is the ingest scope; it is stored on a proposal so regeneration uses the same scope.
+	async submit({ text, source, userName, scope = "", graphPayload, proposalText, debugLogger = null, startedAt = Date.now() }) {
 		const pendingReasons = reviewReasons(graphPayload);
 		if (this.mode === "hitl" || pendingReasons.length > 0) {
 			logStep(debugLogger, this.mode === "hitl"
@@ -683,6 +715,7 @@ export class HitlService {
 				text,
 				source,
 				userName: userName || this.defaultUserName,
+				scope,
 				proposalText,
 				graphPayload,
 				debugLogger,
@@ -706,7 +739,7 @@ export class HitlService {
 		return storedGraph;
 	}
 
-	async storeProposal({ text, source, userName, proposalText, graphPayload, debugLogger = null }) {
+	async storeProposal({ text, source, userName, scope = "", proposalText, graphPayload, debugLogger = null }) {
 		if (typeof this.vectorStore.upsertHitlNote !== "function") {
 			throw new Error("The configured vector store does not support HITL notes.");
 		}
@@ -726,6 +759,7 @@ export class HitlService {
 			status: "pending",
 			userName: userName || this.defaultUserName,
 			source,
+			scope,
 			createdAt: new Date().toISOString(),
 			userInput: text,
 			llmResponse: proposalText,
@@ -874,6 +908,7 @@ export class HitlService {
 			text: note.userInput,
 			graphSchema: schema,
 			excludeNoteIds: [note.id],
+			scope: note.scope || "",
 		});
 		const { graphPayload, proposalText } = await this.ingestionService.prepareExtraction({
 			extractedGraph: parsedGraph,
@@ -938,7 +973,7 @@ export class HitlService {
 	}
 
 	async proposeNode({ body, nodeId = "", userName }) {
-		const node = normalizeManualNode(body, nodeId);
+		const node = this.requireValidScope(normalizeManualNode(body, nodeId), "node");
 		const user = requireUserName(userName);
 		return this.proposeRecords({
 			records: { nodes: [{ ...node, operation: nodeId ? "update" : "create" }] },
@@ -960,7 +995,7 @@ export class HitlService {
 
 	// An edit of an existing relation is proposed as a delete of the old relation plus a create of the new one.
 	async proposeRelation({ body, relationId = "", userName }) {
-		const relation = normalizeManualRelation(body, relationId);
+		const relation = this.requireValidScope(normalizeManualRelation(body, relationId), "relation");
 		const user = requireUserName(userName);
 		await this.requireExistingEndpoints(relation);
 		const existingRelation = relationId ? await this.graphStore.getRelation(relationId) : null;
@@ -1001,7 +1036,7 @@ export class HitlService {
 	async editNode({ body, nodeId = "", reviewedBy }) {
 		this.requireDirectEditSupport();
 		const reviewer = requireString(reviewedBy, "reviewedBy");
-		const node = normalizeManualNode(body, nodeId);
+		const node = this.requireValidScope(normalizeManualNode(body, nodeId), "node");
 		const pending = await this.proposalIfSchemaInvalid({
 			records: { nodes: [{ ...node, operation: nodeId ? "update" : "create" }] },
 			userInput: `${reviewer} requested node ${nodeId ? "update" : "creation"} for ${node.label}.`,
@@ -1025,7 +1060,7 @@ export class HitlService {
 	async editRelation({ body, relationId = "", reviewedBy }) {
 		this.requireDirectEditSupport();
 		const reviewer = requireString(reviewedBy, "reviewedBy");
-		const relation = normalizeManualRelation(body);
+		const relation = this.requireValidScope(normalizeManualRelation(body), "relation");
 		await this.requireExistingEndpoints(relation);
 		const pending = await this.proposalIfSchemaInvalid({
 			records: { relations: [{ ...relation, operation: relationId ? "update" : "create" }] },

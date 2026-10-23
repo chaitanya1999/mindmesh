@@ -3,7 +3,10 @@
 // - a relation never creates a node: each endpoint must have a node record in the payload or already
 //   exist in the graph (and must not be deleted by the same payload);
 // - an endpoint that already exists is only a reference and is never written;
-// - NODE_CREATE for a node that already exists is applied as NODE_UPDATE and flagged for review.
+// - NODE_CREATE for a node that already exists is applied as NODE_UPDATE and flagged for review;
+// - a record that replaces the non-empty scope of an existing node is flagged for review (a blank scope keeps it).
+
+import { formatScope, parseScope } from "../schema/scope.js";
 
 function graphNameFromId(value) {
 	return String(value ?? "").replace(/^node:/i, "");
@@ -28,19 +31,35 @@ export async function resolveGraphPayload(graphPayload, graphStore) {
 	const endpointIds = (graphPayload.relations ?? []).flatMap((relation) => [relation.sourceId, relation.targetId]);
 	const lookupIds = [...new Set([...payloadNodeIds, ...endpointIds])].filter(Boolean);
 	const existingNodeIds = new Set(lookupIds.length > 0 ? await graphStore.getExistingNodeIds(lookupIds) : []);
+	const scopedNodeIds = (graphPayload.nodes ?? [])
+		.filter((node) => parseScope(node.scope).length > 0 && existingNodeIds.has(node.id))
+		.map((node) => node.id);
+	const storedScopes = new Map(scopedNodeIds.length > 0 && typeof graphStore.getNodesByIds === "function"
+		? (await graphStore.getNodesByIds(scopedNodeIds)).map((node) => [node.id, formatScope(node.scope)])
+		: []);
 	let changed = false;
 
 	const nodes = (graphPayload.nodes ?? []).map((node) => {
-		if (node.operation !== "create" || !existingNodeIds.has(node.id)) {
-			return node;
+		let next = node;
+		if (node.operation === "create" && existingNodeIds.has(node.id)) {
+			next = {
+				...next,
+				operation: "update",
+				metadata: appendSignal(next.metadata, `AMBIGUITY: "${node.name}" already exists in the graph, so NODE_CREATE is applied as NODE_UPDATE. Confirm it is the same entity.`),
+			};
 		}
-
-		changed = true;
-		return {
-			...node,
-			operation: "update",
-			metadata: appendSignal(node.metadata, `AMBIGUITY: "${node.name}" already exists in the graph, so NODE_CREATE is applied as NODE_UPDATE. Confirm it is the same entity.`),
-		};
+		const storedScope = storedScopes.get(node.id);
+		const proposedScope = formatScope(node.scope);
+		if (storedScope && proposedScope && storedScope !== proposedScope) {
+			next = {
+				...next,
+				metadata: appendSignal(next.metadata, `AMBIGUITY: scope of "${node.name}" changes from ${storedScope} to ${proposedScope}. Confirm the new scope.`),
+			};
+		}
+		if (next !== node) {
+			changed = true;
+		}
+		return next;
 	});
 
 	const violations = [];

@@ -72,7 +72,7 @@ MCP agent (no MindMesh LLM)
 ## Important Files
 
 - `src/config.js`: central config loader. Reads repo-root `config.json`, applies optional `{{KEY}}` placeholders from `config.replacements.json` or caller-supplied replacements, and returns the parsed runtime config.
-- `src/input/readInput.js`: shared CLI argument parser for `--file`, `--interactive`, `--provider`, and positional text.
+- `src/input/readInput.js`: shared CLI argument parser for `--file`, `--interactive`, `--provider`, `--scope`, and positional text.
 - `src/cli/ingest.js`: ingestion entry point with a large fallback sample graph text.
 - `src/cli/ask.js`: question-answering entry point.
 - `src/cli/testConnections.js`: Neo4j and Chroma connectivity plus write/query smoke tests.
@@ -229,6 +229,16 @@ In `auto` mode only clean creates and updates are applied directly. An extractio
 
 Web/CLI ingest and MCP `submit_ingest` use the same rule and return the reasons as `reviewReasons`. Severity levels per signal (auto-applying only low-severity ones) are planned, not implemented.
 
+### Scope (business units)
+
+Nodes and relations can carry a `scope`: a list of values saying which parts of the organisation they belong to. For the LOS project the values are the business units `uc`, `nc`, `tw`, `cv`, `tr`, plus `common` for things every unit shares. The allowed values are the `constraints.allowedValues` of the `scope` field descriptor in `nodeProperties.fields` (and `relationshipProperties.fields` for relations, which falls back to the node list); without a descriptor any value is accepted. The rules are in `src/schema/scope.js`. An existing local `schema/graphSchema.json` needs the two `scope` descriptors copied from `graphSchema.example.json`; the picker and the validation read the values from there.
+
+- An empty scope means "not curated, or not needed" and is the normal state for shared technical artefacts. `common` cannot be combined with other values. An unknown value or `common` with other values is a `scope` schema violation, so the record goes to review.
+- Business-unit specific concepts are named with the unit as a prefix (`uc_qde_screen`, `nc_qde_screen`), because the same concept in two units is two nodes. MindMesh never derives the scope from the name.
+- Filtering with one value `f` (ingest context, Ask, MCP reads): a blank filter matches everything; `f = uc` matches items whose scope contains `uc` or `common`, and unscoped items; `f = common` matches `common` and unscoped items. Items scoped only to other values are left out. Graph expansion does not follow a neighbour or a relation that fails the filter.
+- Writes: in a payload apply (ingest, approval) a blank scope keeps the stored value and a filled one replaces it, like `description`. Direct reviewer edits set the scope exactly as submitted (an empty selection clears it). A record that replaces the non-empty scope of an existing node gets an `AMBIGUITY:` signal (`scope of "x" changes from uc to nc`), so auto mode sends it to review.
+- The ingest scope (web picker, MCP `scope`, CLI `--scope`) filters the retrieved context, is named in the prompt through `{{INGEST_SCOPE}}`, and is stored on the proposal; regeneration reuses it. It does not stamp a scope on records: the model (or reviewer) sets record scopes, following the SCOPE RULES in the extraction prompt.
+
 ### Property Descriptors (Schema-Driven Field Guidance)
 
 `schema/graphSchema.json` supports per-property descriptor objects in `nodeProperties.fields` and `relationshipProperties.fields`. Each descriptor includes:
@@ -332,32 +342,33 @@ stdout carries the MCP protocol, so the server sends all of its console output t
 
 - Tool names are `verb_noun` in snake_case. Descriptions carry the workflow; the agent needs no extra setup.
 - `node`, `from`, and `to` accept a node id (`node:ekyc_screen`) or a bare name (`ekyc_screen`); `ref` accepts a proposal id or a short ref (`#d964db`).
-- One node shape (`id`, `name`, `label`, `type`, `description`) and one relation shape (`id`, `relation`, `sourceId`, `targetId`, `information`, `description`). Semantic results come from Chroma, but records are always read from Neo4j; vectors whose node is gone are skipped.
+- One node shape (`id`, `name`, `label`, `type`, `description`, `scope`) and one relation shape (`id`, `relation`, `sourceId`, `targetId`, `information`, `description`, `scope`).
+- `scope` arguments take one value (allowed values listed in the argument description, from the schema when the server starts). On the read tools it is an optional filter (see Scope). On `get_ingest_prompt` and `submit_ingest` it is required, and the description tells the agent to ask the user for it when they have not said; `""` means no scope. Semantic results come from Chroma, but records are always read from Neo4j; vectors whose node is gone are skipped.
 - Pending proposals are unverified: every pending item carries `verified: false` and a `ref`.
 - Read tools are marked `readOnlyHint`; `submit_regeneration` and the review decisions are marked `destructiveHint` (and `submit_ingest` too in `auto` mode, where it can apply updates).
 - Errors for bad input or unknown ids are `InvalidParams`; an unknown node points the agent to `search_nodes`.
 
 ### Approved graph (read-only)
 
-- `search_context` — `{ query, includePending?, depth? }`. MindMesh's Ask retrieval without an answer prompt: closest nodes by meaning, expanded `depth` hops (0..4, default the server setting), formatted as context, plus the entry nodes with their distance. `includePending` adds pending proposals as unverified knowledge.
-- `search_nodes` — `{ query, match?, type?, limit? }`. `match: "semantic"` (default) ranks by meaning over the node vectors; `match: "text"` is a case-insensitive match on id, label, name, type, and description in Neo4j, exact label/name matches first. `type` filters by node type. `limit` 1..50, default 10.
-- `search_relations` — `{ query, relationType?, limit? }`. Semantic search over the relation vectors; each result also has its `source` and `target` node (`id`, `label`, `type`).
+- `search_context` — `{ query, includePending?, depth?, scope? }`. MindMesh's Ask retrieval without an answer prompt: closest nodes by meaning, expanded `depth` hops (0..4, default the server setting), formatted as context, plus the entry nodes with their distance. `includePending` adds pending proposals as unverified knowledge.
+- `search_nodes` — `{ query, match?, type?, scope?, limit? }`. `match: "semantic"` (default) ranks by meaning over the node vectors; `match: "text"` is a case-insensitive match on id, label, name, type, and description in Neo4j, exact label/name matches first. `type` filters by node type. `limit` 1..50, default 10.
+- `search_relations` — `{ query, relationType?, scope?, limit? }`. Semantic search over the relation vectors; each result also has its `source` and `target` node (`id`, `label`, `type`).
 - `get_node` — `{ node, includePending? }`. The node, `relationCount`, and its relations grouped as `outgoing` / `incoming` by relation type. `includePending` (default true) adds `pendingChanges`: pending proposals that would change the node or a relation using it.
-- `explore_graph` — `{ from, depth?, direction?, relationTypes?, nodeTypes?, limit? }`. Breadth-first walk from one node, 1..4 hops (default 1). `direction: "out"` follows relations the node starts (what it uses), `"in"` relations pointing at it (what uses it), `"both"` (default) all. Each node carries its hop `distance`; `truncated` is true when `limit` (default 100, max 500) cut the result.
+- `explore_graph` — `{ from, depth?, direction?, relationTypes?, nodeTypes?, scope?, limit? }`. Breadth-first walk from one node, 1..4 hops (default 1). `direction: "out"` follows relations the node starts (what it uses), `"in"` relations pointing at it (what uses it), `"both"` (default) all. Each node carries its hop `distance`; `truncated` is true when `limit` (default 100, max 500) cut the result.
 - `find_paths` — `{ from, to, maxDepth?, relationTypes?, limit? }`. Shortest paths in either direction, up to `maxDepth` relations (1..6, default 4); each path has a readable `summary` (`A -[uses]-> B <-[contains]- C`), its nodes, and its relations.
 - `query_cypher` — `{ cypher, params?, limit? }`. One read-only Cypher query for answers the fixed tools would need many calls for. Neo4j's `EXPLAIN` must report the query as read-only (`r`), it runs in a read transaction with a 10 second timeout, and at most `limit` rows (default 100, max 500) are returned, with `truncated`. `LOAD CSV`, `dbms.*`, `apoc.*`, and `SHOW` commands other than `SHOW INDEXES` / `SHOW CONSTRAINTS` are refused. Values come back as plain JSON (integers as numbers, nodes and relationships as their properties).
-- `get_schema` — `{}`. Approved node and relation types with descriptions and how many nodes or relations use each, `totals`, `unapprovedTypesInGraph` (types still in the graph but no longer in the schema), and the field guidance.
+- `get_schema` — `{}`. Approved node and relation types with descriptions and how many nodes or relations use each, `totals`, `unapprovedTypesInGraph` (types still in the graph but no longer in the schema), `scopeValues` (allowed scope values, or null), and the field guidance.
 
 ### Pending proposals (read-only, unverified)
 
 - `search_proposals` — `{ query, limit? }`. Semantic search over pending proposals; short summaries (`ref`, author, source, counts, signals, reviewer notes, distance).
-- `list_proposals` — `{ signal?, operation?, author?, source?, limit? }`. The review queue, oldest first, with `total`. Filters (`signal`: `ambiguity` / `contradiction`; `operation`: `create` / `update` / `delete`; `author`; `source`) apply to every pending proposal before `limit` (default 20).
+- `list_proposals` — `{ signal?, operation?, author?, source?, scope?, limit? }`. The review queue, oldest first, with `total`. Filters (`signal`: `ambiguity` / `contradiction`; `operation`: `create` / `update` / `delete`; `author`; `source`; `scope`, the proposal's ingest scope) apply to every pending proposal before `limit` (default 20).
 - `get_proposal` — `{ ref }`. The proposal detail (input, pipe text, parsed `records`) and `changes`: one entry per record with `proposed` and `current` values (`current` is null for a new record, `proposed` is null for a delete) and its review signal.
 
 ### Proposing knowledge
 
-- `get_ingest_prompt` — `{ text }`. Runs MindMesh's default retrieval and returns `extractionSystemPrompt` (the exact extraction prompt: record format, schema types, field guidance, retrieved context, the text), `retrievedNodes`, `pendingNodes`, `retrievalQuality` (entry-node count, closest distance, and a note), `ingestionMode`, and `instructions`.
-- `submit_ingest` — `{ records, text, author?, source? }`. Submits the agent's record block. It is prepared exactly like a web ingestion (reconciled with pending proposals, normalized, checked against the graph), then applied in `auto` mode when clean or stored as a proposal (see Graph Schema for the review reasons). Returns `status`, `applied`, `ref` and `id` when pending, `reviewReasons`, `counts`, `nodeIds`, `relationIds`, `schemaViolations`, and `schemaWarnings`.
+- `get_ingest_prompt` — `{ text, scope }`. Runs MindMesh's default retrieval, filtered by `scope`, and returns `extractionSystemPrompt` (the exact extraction prompt: record format, schema types, field guidance, retrieved context, the text), `retrievedNodes`, `pendingNodes`, `retrievalQuality` (entry-node count, closest distance, and a note), `ingestionMode`, `scope`, and `instructions`.
+- `submit_ingest` — `{ records, text, scope, author?, source? }`. `scope` is stored on the proposal and filters the pending-proposal reconciliation. Submits the agent's record block. It is prepared exactly like a web ingestion (reconciled with pending proposals, normalized, checked against the graph), then applied in `auto` mode when clean or stored as a proposal (see Graph Schema for the review reasons). Returns `status`, `applied`, `ref` and `id` when pending, `reviewReasons`, `counts`, `nodeIds`, `relationIds`, `schemaViolations`, and `schemaWarnings`.
 - `get_regenerate_prompt` — `{ ref, notes? }`. The extraction prompt plus the reviewer-revision section for one proposal. `notes` from chat win over notes saved in the HITL UI; one of them is required. Also returns the original text, the previous proposal, `retrievedNodes`, and `instructions`. The proposal itself is excluded from pending context.
 - `submit_regeneration` — `{ ref, records, notes?, author? }`. Overwrites the pending proposal with the revised records, saves the notes, and marks it regenerated with origin `agent`. A block with no records is rejected and the proposal is left unchanged.
 - `save_reviewer_notes` — `{ ref, notes }`. Saves (replaces) the reviewer notes on a proposal.
@@ -382,7 +393,7 @@ Registered only when `mcp.allowReviewDecisions` is `true` in `config.json` (defa
 The tool descriptions, the `instructions` returned by the prompt tools, and the server instructions describe these; the user configures nothing.
 
 - Question: `search_context` first; then `search_nodes`, `get_node`, `explore_graph`, `find_paths`, or `query_cypher` when it misses something. Cite node and relation ids; keep pending knowledge separate.
-- Ingestion: `get_ingest_prompt` → check every entity in the text against `retrievedNodes` / `pendingNodes` and look up the missing ones (`search_nodes` text, then semantic; `get_node` to confirm) → extract, reusing exact names → `submit_ingest` → report the outcome and `ref`.
+- Ingestion: ask the user for the scope if not given → `get_ingest_prompt` → check every entity in the text against `retrievedNodes` / `pendingNodes` and look up the missing ones (`search_nodes` text, then semantic; `get_node` to confirm) → extract, reusing exact names → `submit_ingest` → report the outcome and `ref`.
 - Regeneration: `get_regenerate_prompt` → apply the notes, keeping unchanged records → `submit_regeneration` → report the `ref`.
 - Review: `list_proposals` / `search_proposals` → `get_proposal` → `save_reviewer_notes`; approval by a person in the HITL UI, or with `approve_proposal` / `reject_proposal` when enabled and the user explicitly asks.
 
@@ -513,6 +524,13 @@ Ingest via runtime input:
 
 ```powershell
 npm run kg:ingest -- --interactive
+```
+
+Ingest or ask for one scope (see Scope):
+
+```powershell
+npm run kg:ingest -- --scope uc "The UC QDE screen calls the PAN API."
+npm run kg:ask -- --scope uc "What does the QDE screen call?"
 ```
 
 Ask with the hardcoded fallback question:
@@ -665,11 +683,11 @@ Priority order:
 3. `--interactive` or `-i`: prompts on stdin.
 4. Fallback text/question supplied by the caller.
 
-`--provider <name>` is parsed by the shared input helper and passed only to the LLM provider factory.
+`--provider <name>` is parsed by the shared input helper and passed only to the LLM provider factory. `--scope <value>` sets the ingest scope (`kg:ingest`) or the scope filter (`kg:ask`).
 
 ## Graph Extraction Contract
 
-The ingestion pipeline now uses a single, custom line-oriented extraction format. Extraction prompt files are templates. Ingestion renders `{{GRAPH_SCHEMA}}`, `{{FIELD_GUIDANCE}}`, `{{EXISTING_GRAPH_CONTEXT}}`, `{{USER_INPUT}}`, and `{{REVIEWER_REVISION}}` into the custom extraction prompt before calling the LLM. `{{REVIEWER_REVISION}}` is empty for normal ingestion; when a HITL proposal is regenerated it holds the reviewer notes and the previous proposal (see HITL Regeneration). Existing graph context is retrieved from Chroma and expanded through Neo4j; pending HITL context is also retrieved from the Chroma HITL collection. Both context sources are intended for identity resolution, node-name reuse, disambiguation, and avoiding duplicate facts. New graph facts should still come from `{{USER_INPUT}}`.
+The ingestion pipeline now uses a single, custom line-oriented extraction format. Extraction prompt files are templates. Ingestion renders `{{GRAPH_SCHEMA}}`, `{{FIELD_GUIDANCE}}`, `{{EXISTING_GRAPH_CONTEXT}}`, `{{INGEST_SCOPE}}` (the selected scope, see Scope), `{{USER_INPUT}}`, and `{{REVIEWER_REVISION}}` into the custom extraction prompt before calling the LLM. `{{REVIEWER_REVISION}}` is empty for normal ingestion; when a HITL proposal is regenerated it holds the reviewer notes and the previous proposal (see HITL Regeneration). Existing graph context is retrieved from Chroma and expanded through Neo4j; pending HITL context is also retrieved from the Chroma HITL collection. Both context sources are intended for identity resolution, node-name reuse, disambiguation, and avoiding duplicate facts. New graph facts should still come from `{{USER_INPUT}}`.
 
 Records are one-per-line using `|` as an unescaped field separator. To include special characters inside a field you must use backslash escapes: `\n` for newline, `\r` for carriage return, `\t` for tab, `\|` for a literal pipe, and `\\` for a literal backslash. The parser decodes these escapes into their runtime characters.
 
@@ -677,13 +695,13 @@ The custom extraction prompt asks the model to wrap records in explicit demarcat
 
 ```text
 <start#$#$>
-NODE|name|label|type|description
-RELATION|source_name|target_name|relation|information|description
-NODE_CREATE|name|label|type|description|metadata
-NODE_UPDATE|name|label|type|description|metadata
+NODE|name|label|type|description|scope
+RELATION|source_name|target_name|relation|information|description|scope
+NODE_CREATE|name|label|type|description|scope|metadata
+NODE_UPDATE|name|label|type|description|scope|metadata
 NODE_DELETE|name|metadata
-RELATION_CREATE|source_name|target_name|relation|information|description|metadata
-RELATION_UPDATE|source_name|target_name|relation|information|description|metadata
+RELATION_CREATE|source_name|target_name|relation|information|description|scope|metadata
+RELATION_UPDATE|source_name|target_name|relation|information|description|scope|metadata
 RELATION_DELETE|source_name|target_name|relation|metadata
 NODE_TYPE_SUGGESTION|type_name|description|reason
 RELATION_TYPE_SUGGESTION|relation_name|description|reason
@@ -694,13 +712,15 @@ Example:
 
 ```text
 <start#$#$>
-NODE|ekyc_screen|EKYC Screen|screen|Screen that captures identity verification details.
-NODE|pan_api|PAN API|api|API used to verify PAN details.
-RELATION|ekyc_screen|pan_api|uses|during identity verification|Triggered during identity verification.
+NODE|uc_ekyc_screen|EKYC Screen|screen|Screen that captures identity verification details.|uc
+NODE|pan_api|PAN API|api|API used to verify PAN details.|
+RELATION|uc_ekyc_screen|pan_api|uses|during identity verification|Triggered during identity verification.|
 </end#$#$>
 ```
 
 A relation endpoint is either a node created in the same output or an existing node referenced by its exact name. The prompt tells the model not to emit `NODE_UPDATE` for an existing endpoint unless the input adds or changes information about it, so a relation on its own never rewrites an existing node's type or label. Nodes that exist only in pending HITL context still get a `NODE_UPDATE` record, because they are not in the graph yet.
+
+`scope` is a comma-separated list (`uc` or `nc,uc`; empty for none), always the field before `metadata` (see Scope). There is no compatibility with the older format without the scope column.
 
 The trailing `metadata` field only carries HITL review signals (`AMBIGUITY:<reason>` or `CONTRADICTION:<reason>`). It exists only inside proposals, where it drives review-signal counts, filters and badges, and is never persisted to Neo4j or Chroma when a proposal is applied.
 
@@ -741,6 +761,7 @@ Node properties:
 - `name`
 - `type`
 - `description`
+- `scope` (list of strings; absent when unscoped)
 - `createdAt`
 - `updatedAt`
 
@@ -754,6 +775,7 @@ Relationship properties:
 - `relation`
 - `information`
 - `description`
+- `scope` (list of strings; absent when unscoped)
 - `createdAt`
 - `updatedAt`
 
@@ -771,7 +793,7 @@ MindMesh uses its own `id` property, never Neo4j's internal element id. The same
 
 ### Write behavior
 
-`applyGraph()` applies a whole payload in one Neo4j transaction, in this order: relation deletes, node deletes, node upserts, relation upserts. Either all of it is committed or none of it. Deletes of items that are already gone are no-ops, so applying the same payload again is safe. Upserts use `MERGE` by node `id` and relationship `id`. Re-ingesting the same normalized fact updates properties and preserves `createdAt`. In this path an empty `description` (and empty relation `information`) keeps the stored value instead of clearing it, so passing mentions do not wipe existing text. `label`, `name`, and `type` are always overwritten. Direct HITL edits (`upsertNode()`, `upsertRelation()`) set fields exactly as submitted, so clearing a description is done through the edit form.
+`applyGraph()` applies a whole payload in one Neo4j transaction, in this order: relation deletes, node deletes, node upserts, relation upserts. Either all of it is committed or none of it. Deletes of items that are already gone are no-ops, so applying the same payload again is safe. Upserts use `MERGE` by node `id` and relationship `id`. Re-ingesting the same normalized fact updates properties and preserves `createdAt`. In this path an empty `description` (and empty relation `information`, and an empty `scope`) keeps the stored value instead of clearing it, so passing mentions do not wipe existing text. `label`, `name`, and `type` are always overwritten. Direct HITL edits (`upsertNode()`, `upsertRelation()`) set fields exactly as submitted, so clearing a description is done through the edit form.
 
 `applyGraph()` returns the nodes and relationships as Neo4j stored them, plus the deleted node and relation ids, and the vector index is built from that result. Ingestion and `kg:reindex-vectors` therefore produce identical vector documents. Endpoints are checked before apply; if one disappears in the meantime, `applyGraph()` fails with status 409 and rolls back the whole transaction, including its deletes.
 
@@ -809,6 +831,7 @@ Node metadata:
 - `name`
 - `type`
 - `description`
+- `scope` (text, `nc,uc`), `scoped` (false when unscoped), and one flag per value (`scope_uc: true`), because Chroma metadata holds no lists. Scope filters query these flags; vectors written before scope existed have no `scoped` flag and are missed by scope filters until `npm run kg:reindex-vectors`.
 
 Relationship documents concatenate:
 
@@ -828,12 +851,14 @@ Relationship metadata:
 - `relation`
 - `information`
 - `description`
+- the same scope fields as nodes
 
 Node and relationship vectors share their ids with Neo4j and are derived from it; `npm run kg:reindex-vectors` rebuilds them (see Commands).
 
 HITL note documents contain the pending proposal status, user/source metadata, original input, and LLM proposed graph mutations. Their metadata includes:
 
 - counts for proposed node/relation upserts, deletions, schema suggestions, ambiguity signals, and contradiction signals
+- `scope`: the ingest scope (empty for none); pending-context retrieval and `queryHitlNotes` with a scope filter keep proposals of that scope, `common`, or none
 - `reviewerNotes`: the latest reviewer notes, saved from the HITL UI or by an agent
 - `regenerated`, `regeneratedBy`, `regeneratedAt`, `regenerationOrigin` (`ui` or `agent`): set when the proposal was regenerated. The proposal is overwritten and no history is kept.
 
@@ -845,13 +870,13 @@ The current RAG flow queries only `kg_nodes`; relationship vectors are indexed f
 
 ## Ingestion Context Flow
 
-`HitlService.ingestText({ text, source, userName })` runs `IngestionService.ingestText()`, which performs retrieval-augmented extraction and then hands the prepared payload to `HitlService.submit()`:
+`HitlService.ingestText({ text, source, userName, scope })` runs `IngestionService.ingestText()`, which performs retrieval-augmented extraction and then hands the prepared payload to `HitlService.submit()`:
 
-1. Query Chroma node collection with `ingestion.contextTopK`.
+1. Query Chroma node collection with `ingestion.contextTopK`. With an ingest scope, every retrieval step uses the scope filter (see Scope).
 2. Expand Neo4j graph from returned node IDs with `ingestion.contextDepth`.
 3. Query/list pending HITL notes and parse their proposed mutations as unverified pending context.
 4. Format approved graph and pending HITL context as human-readable node/fact lists while preserving exact `node:*` IDs.
-5. Render the extraction prompt template with schema, existing graph context, and new user input.
+5. Render the extraction prompt template with schema, existing graph context, the ingest scope, and new user input.
 6. Ask the selected LLM to extract graph records from the new input while using existing/pending context for identity resolution only.
 7. Prepare the response (`prepareExtraction()`): reconcile creates for pending nodes into updates, normalize it into upserts, deletes, suggestions, warnings, and violations, and check it against the graph. MCP `submit_ingest` prepares an agent's records the same way.
 8. `HitlService.submit()` stores a pending HITL proposal when `ingestion.mode` is `hitl` or `reviewReasons()` finds a reason (see Graph Schema); otherwise `GraphWriteService` applies the mutations and syncs Chroma vectors.
@@ -866,7 +891,7 @@ A reviewer can regenerate a pending proposal with instructions instead of editin
 Behavior:
 
 1. The original user input is extracted again with the normal extraction prompt plus the `{{REVIEWER_REVISION}}` section (`formatReviewerRevision()` in `src/prompts/promptRegistry.js`). That section contains the reviewer notes as top-priority instructions and the previous proposal as the baseline to keep unless the notes ask for a change. The web UI sends the current draft, including unsaved manual edits, as that baseline.
-2. Graph context is retrieved again, with this note excluded from the pending HITL context. Otherwise its own previous creates would be reconciled into updates.
+2. Graph context is retrieved again with the proposal's stored ingest scope, with this note excluded from the pending HITL context. Otherwise its own previous creates would be reconciled into updates.
 3. The response must contain at least one record. The parser returns an empty graph for unparseable text, so an empty result is rejected and the proposal is left unchanged.
 4. The proposal is overwritten (no history), counts are recomputed, the notes are saved, and the regeneration fields are set. The original submitter and creation time are kept, and the proposal stays pending for approval.
 
@@ -874,7 +899,7 @@ If ingestion context config is omitted, `contextTopK` and `contextDepth` fall ba
 
 ## RAG Flow
 
-`HybridRagService.answer({ query, source })` performs:
+`HybridRagService.answer({ query, source, scope })` performs (with `scope`, steps 3, 5, and 6 use the scope filter; see Scope):
 
 1. Normalize optional browser-session memory messages.
 2. Build a retrieval query from the current question plus recent memory. There is no LLM query rewriting (it would need an extra LLM call, which the MCP path cannot make).
@@ -892,6 +917,7 @@ The result object includes:
 - `graph`
 - `context`
 - `depth`
+- `scope`
 - `sessionId`
 - `retrievalQuery`
 - `unverifiedNotes`
@@ -914,17 +940,20 @@ Layout and behavior:
 - Mobile: graph preview stacks above the side panel.
 - The graph preview has two renderers, toggled in the graph header: NeoVis (default) and Graphology + Sigma with force-layout positioning. Both support pan/zoom, hover focus, click-to-select focus, and compact relationship labels.
 - The graph panel includes instant client-side search over the loaded preview and full Neo4j search on submit. Search results focus a loaded node or fetch its neighborhood.
-- The main workspace side panel has **Ask** and **Ingest** tabs.
+- The main workspace side panel has **Ask** and **Ingest** tabs, with one **Scope** picker for both (None plus the schema's scope values, kept for the browser session): Ask answers from that scope, `common`, and unscoped knowledge; Ingest sends it as the ingest scope.
+- Node and relation forms (main page and HITL) have a Scope field with one toggle per allowed value; `common` clears the other values. The NeoVis hover tooltip shows the scope; the Sigma renderer has no tooltip.
 - Clicking a node or relation opens a details modal to edit or delete it. The Name field is read-only for nodes that already exist in the graph, because the name is part of the node id; change the label instead.
 - Graph action buttons open modals to create nodes and relationships manually. Node and relation forms start with an empty type, which must be filled with a schema type; the Name placeholder shows the name derived from the label, which becomes the permanent id if Name is left empty.
 - On `/`, manual node and relationship mutations create HITL proposals. On `/hitl`, reviewer mutations apply directly when schema-valid, or update the open proposal draft when one is selected.
 - The HITL workspace previews pending proposals over the approved graph, allows reviewer edits, and applies approved graph/schema mutations.
-  - Submission cards show per-operation counts, e.g. `12N (8C 3U 1D) 5R (5C) 2NT 1RT` (N nodes, R relations, NT/RT node/relation type suggestions; C/U/D create/update/delete, zero counts omitted). They are parsed client-side with the same parser as the detail view. Cards also show the short `#ref` and Regenerated/Notes tags.
+  - Submission cards show per-operation counts, e.g. `12N (8C 3U 1D) 5R (5C) 2NT 1RT` (N nodes, R relations, NT/RT node/relation type suggestions; C/U/D create/update/delete, zero counts omitted). They are parsed client-side with the same parser as the detail view. Cards also show the short `#ref`, the ingest scope, and Regenerated/Notes tags.
   - The proposal detail is a collapsible tree: Nodes and Relations each split into Create, Update, and Delete; Schema suggestions split into Node types and Relation types; then Review signals.
   - Update and delete rows compare Current against the approved DB version: preview graph items carry an `approved` snapshot because the preview merges the proposal over the DB item.
+  - Rows show scope chips; Current vs Proposed shows both scopes, or "Scope unchanged" when the record leaves it blank. The preview shows the stored scope for such records.
+  - The detail shows the ingest scope and a collapsible Review checklist (names and prefixes, scopes, reuse across units, relations, signals).
   - The detail shows the full proposal id with a copy button, a Reviewer notes box with **Save notes** and **Regenerate** (see HITL Regeneration), and a copy button on the raw piped response for backups before regenerating.
 - Direct HITL reviewer graph edits update Neo4j first and then sync the corresponding Chroma vector documents.
-- Node vector documents include label, name, type, and description. Relationship vector documents include relation, information, description, source ID, and target ID.
+- Node vector documents include label, name, type, and description (scope is vector metadata only). Relationship vector documents include relation, information, description, source ID, and target ID.
 - The chat tab supports asking, ingesting text, and ingesting uploaded PDF/DOCX/DOC files.
 - Browser chat messages are local UI state. Recent messages can be sent as request memory for follow-up resolution, but they are not persisted server-side.
 - Frontend source lives in `src/server/public`: `app.js` holds the `App` component (state, handlers, routes) and the entry point; components are one per file under `components/` (`common`, `graph`, `chat`, `entity`, `hitl`, `schema`, `jobs`); shared helpers are in `lib/`. `npm run kg:web:build` bundles everything from `app.js` into `app.bundle.js`. The bundle is gitignored; `npm run kg:web` rebuilds it every time it starts the server, so run that (not `node src/server/server.js` directly) after pulling UI changes.
@@ -941,8 +970,8 @@ API endpoints:
 - `POST /api/relations`: creates a pending HITL relation-create proposal. Relation create/update routes (here and under `/api/hitl/relations`) require a relation type and return 400 unless both endpoints already exist; endpoints accept a node id or a bare node name.
 - `PUT /api/relations/:id`: creates a pending HITL relation-update proposal.
 - `DELETE /api/relations/:id`: creates a pending HITL relation-delete proposal.
-- `POST /api/ask`: accepts `{ "text": "question", "sessionId": "...", "memoryMessages": [], "includeUnverifiedKnowledge": false }` and returns `{ answer, entryNodes, graph, depth, sessionId }`.
-- `POST /api/ingest`: accepts multipart `text`, `userName`, and up to 10 `file`/`files` uploads, or JSON/form text; returns applied or pending HITL graph mutation details.
+- `POST /api/ask`: accepts `{ "text": "question", "sessionId": "...", "memoryMessages": [], "includeUnverifiedKnowledge": false, "scope": "" }` and returns `{ answer, entryNodes, graph, depth, scope, sessionId }`. An unknown scope is a 400.
+- `POST /api/ingest`: accepts multipart `text`, `userName`, `scope` (optional ingest scope), and up to 10 `file`/`files` uploads, or JSON/form text; returns applied or pending HITL graph mutation details.
 - `POST /api/jobs/scanner`: runs the scanner job over a selected/random graph neighborhood.
 - `POST /api/jobs/nugget`: runs the nugget job over a selected/random graph neighborhood.
 - `GET /api/schema`: returns the editable graph schema.

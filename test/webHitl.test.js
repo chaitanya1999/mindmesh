@@ -31,8 +31,8 @@ const approve = (id, body = {}) => http.post(noteUrl(id, "/approve"), { reviewed
 
 describe("GET /api/hitl/notes", () => {
 	it("lists pending proposals oldest first with counts and the total", async () => {
-		const first = await propose("NODE_CREATE|a_screen|A|screen||");
-		const second = await propose("NODE_CREATE|b_screen|B|screen||", "NODE_DELETE|old_screen|");
+		const first = await propose("NODE_CREATE|a_screen|A|screen|||");
+		const second = await propose("NODE_CREATE|b_screen|B|screen|||", "NODE_DELETE|old_screen|");
 
 		const { body } = await http.get("/api/hitl/notes");
 
@@ -44,7 +44,7 @@ describe("GET /api/hitl/notes", () => {
 	});
 
 	it("returns the parsed records next to the proposal text", async () => {
-		const id = await propose("NODE_CREATE|a_screen|A|screen||", "NODE_DELETE|old_screen|");
+		const id = await propose("NODE_CREATE|a_screen|A|screen|||", "NODE_DELETE|old_screen|");
 
 		const list = (await http.get("/api/hitl/notes")).body;
 		const detail = (await http.get(noteUrl(id))).body.note;
@@ -61,7 +61,7 @@ describe("GET /api/hitl/notes", () => {
 
 describe("POST /api/hitl/notes/:id/approve", () => {
 	it("applies the proposal, indexes vectors, and removes the note", async () => {
-		const id = await propose("NODE_CREATE|a_screen|A Screen|screen||", "NODE_CREATE|b_api|B API|api||", "RELATION_CREATE|a_screen|b_api|uses|||");
+		const id = await propose("NODE_CREATE|a_screen|A Screen|screen|||", "NODE_CREATE|b_api|B API|api|||", "RELATION_CREATE|a_screen|b_api|uses||||");
 
 		const response = await approve(id);
 
@@ -73,16 +73,16 @@ describe("POST /api/hitl/notes/:id/approve", () => {
 	});
 
 	it("applies the reviewer's edited records instead of the stored ones", async () => {
-		const id = await propose("NODE_CREATE|a_screen|A Screen|screen||");
+		const id = await propose("NODE_CREATE|a_screen|A Screen|screen|||");
 
-		await approve(id, { llmResponse: records("NODE_CREATE|edited_screen|Edited|screen||") });
+		await approve(id, { llmResponse: records("NODE_CREATE|edited_screen|Edited|screen|||") });
 
 		assert.ok(await services.graphStore.getNode("node:edited_screen"));
 		assert.equal(await services.graphStore.getNode("node:a_screen"), null);
 	});
 
 	it("merges the proposal's type suggestions into the schema", async () => {
-		const id = await propose("NODE_CREATE|flow_x|Flow X|flow||", "NODE_TYPE_SUGGESTION|flow|A business flow.|No type fits.");
+		const id = await propose("NODE_CREATE|flow_x|Flow X|flow|||", "NODE_TYPE_SUGGESTION|flow|A business flow.|No type fits.");
 
 		const response = await approve(id);
 
@@ -107,7 +107,7 @@ describe("POST /api/hitl/notes/:id/approve", () => {
 	});
 
 	it("refuses a relation to a missing node and keeps the note and schema unchanged", async () => {
-		const id = await propose("RELATION_CREATE|a_screen|ghost|uses|||", "NODE_TYPE_SUGGESTION|flow|A flow.|reason");
+		const id = await propose("RELATION_CREATE|a_screen|ghost|uses||||", "NODE_TYPE_SUGGESTION|flow|A flow.|reason");
 
 		const response = await approve(id);
 
@@ -119,7 +119,7 @@ describe("POST /api/hitl/notes/:id/approve", () => {
 	});
 
 	it("refuses unknown types without a suggestion", async () => {
-		const id = await propose("NODE_CREATE|w|Widget|gadget||");
+		const id = await propose("NODE_CREATE|w|Widget|gadget|||");
 
 		const response = await approve(id);
 
@@ -128,7 +128,7 @@ describe("POST /api/hitl/notes/:id/approve", () => {
 	});
 
 	it("reports a vector sync failure as saved-but-unsynced, and an approve retry repairs it", async () => {
-		const id = await propose("NODE_CREATE|a_screen|A Screen|screen||");
+		const id = await propose("NODE_CREATE|a_screen|A Screen|screen|||");
 		services.vectorStore.failNext("test_nodes", "upsert", "chroma down");
 
 		const failed = await approve(id);
@@ -148,7 +148,7 @@ describe("POST /api/hitl/notes/:id/approve", () => {
 	});
 
 	it("requires a reviewer name", async () => {
-		const id = await propose("NODE_CREATE|a_screen|A|screen||");
+		const id = await propose("NODE_CREATE|a_screen|A|screen|||");
 		const response = await http.post(noteUrl(id, "/approve"), {});
 		assert.equal(response.status, 400);
 	});
@@ -156,7 +156,7 @@ describe("POST /api/hitl/notes/:id/approve", () => {
 
 describe("DELETE /api/hitl/notes/:id", () => {
 	it("rejects the proposal without touching the graph", async () => {
-		const id = await propose("NODE_CREATE|a_screen|A|screen||");
+		const id = await propose("NODE_CREATE|a_screen|A|screen|||");
 
 		const response = await http.del(noteUrl(id));
 
@@ -168,7 +168,7 @@ describe("DELETE /api/hitl/notes/:id", () => {
 
 describe("Reviewer notes and regeneration", () => {
 	it("saves reviewer notes on the proposal", async () => {
-		const id = await propose("NODE_CREATE|a_screen|A|screen||");
+		const id = await propose("NODE_CREATE|a_screen|A|screen|||");
 
 		const response = await http.put(noteUrl(id, "/reviewer-notes"), { reviewerNotes: "Use the api type." });
 
@@ -177,8 +177,8 @@ describe("Reviewer notes and regeneration", () => {
 	});
 
 	it("regenerates the proposal from the original input with the reviewer notes", async () => {
-		const id = await propose("NODE_CREATE|a_screen|A|screen||");
-		services.llmProvider.nextResponse = records("NODE_CREATE|a_api|A|api||");
+		const id = await propose("NODE_CREATE|a_screen|A|screen|||");
+		services.llmProvider.nextResponse = records("NODE_CREATE|a_api|A|api|||");
 
 		const response = await http.post(noteUrl(id, "/regenerate"), { reviewedBy: "reviewer", reviewerNotes: "It is an API." });
 
@@ -192,7 +192,7 @@ describe("Reviewer notes and regeneration", () => {
 	});
 
 	it("keeps the proposal when the regenerated output has no records", async () => {
-		const id = await propose("NODE_CREATE|a_screen|A|screen||");
+		const id = await propose("NODE_CREATE|a_screen|A|screen|||");
 		services.llmProvider.nextResponse = "no records here";
 
 		const response = await http.post(noteUrl(id, "/regenerate"), { reviewedBy: "reviewer", reviewerNotes: "x" });
@@ -205,7 +205,7 @@ describe("Reviewer notes and regeneration", () => {
 describe("HITL previews", () => {
 	it("marks pending items and keeps the approved version for comparison", async () => {
 		services.graphStore.seed({ nodes: [node("a_screen", "screen", "A", "Old.")] });
-		const id = await propose("NODE_UPDATE|a_screen|A|screen|New.|", "NODE_CREATE|b_api|B|api||", "RELATION_CREATE|a_screen|b_api|uses|||");
+		const id = await propose("NODE_UPDATE|a_screen|A|screen|New.||", "NODE_CREATE|b_api|B|api|||", "RELATION_CREATE|a_screen|b_api|uses||||");
 
 		const { body } = await http.get(noteUrl(id, "/graph"));
 
@@ -220,7 +220,7 @@ describe("HITL previews", () => {
 
 	it("overlays every pending proposal on the approved graph", async () => {
 		services.graphStore.seed({ nodes: [node("a_screen", "screen")] });
-		await propose("NODE_CREATE|b_api|B|api||");
+		await propose("NODE_CREATE|b_api|B|api|||");
 
 		const { body } = await http.get("/api/hitl/graph");
 
@@ -243,7 +243,7 @@ describe("Manual proposals from the main page", () => {
 
 		const response = await http.post("/api/nodes", { name: "a_screen", label: "A", type: "screen", userName: "author" });
 
-		assert.match(response.body.hitlNote.document, /NODE_UPDATE\|a_screen\|A\|screen\|\|AMBIGUITY:/);
+		assert.match(response.body.hitlNote.document, /NODE_UPDATE\|a_screen\|A\|screen\|\|\|AMBIGUITY:/);
 	});
 
 	it("requires a node type", async () => {

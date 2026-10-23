@@ -3,6 +3,7 @@ import {
 	displayNameFromIdentifier,
 	relationLabel,
 } from "../../lib/hitlProposal.js";
+import { parseScope } from "../../lib/scope.js";
 
 function operationLabel(operation) {
 	if (operation === "delete") {
@@ -41,6 +42,19 @@ function findCurrentRelation(graph, record) {
 	)) ?? null;
 }
 
+// Scope chips for a record; "unscoped" only where the reader needs to see that it is empty.
+function ScopeChips({ scope, showEmpty = false }) {
+	const values = parseScope(scope);
+	if (values.length === 0) {
+		return showEmpty ? <span class="scope-chips"><span class="scope-chip muted">unscoped</span></span> : null;
+	}
+	return (
+		<span class="scope-chips">
+			{values.map((value) => <span class="scope-chip active" key={value}>{value}</span>)}
+		</span>
+	);
+}
+
 function ReviewSignals({ signals }) {
 	if (!signals?.length) {
 		return null;
@@ -74,11 +88,13 @@ function CurrentProposed({ current: previewItem, proposed, type }) {
 				<div>
 					<span>Current</span>
 					<strong>{relationLabel(current.relation)}</strong>
+					<ScopeChips scope={current.scope} showEmpty />
 					<small class="multiline-text">{displayPipelineText(current.information || current.description) || "No extra detail."}</small>
 				</div>
 				<div>
 					<span>Proposed</span>
 					<strong>{relationLabel(proposed.relation)}</strong>
+					{parseScope(proposed.scope).length > 0 ? <ScopeChips scope={proposed.scope} /> : <small class="muted-copy">Scope unchanged</small>}
 					<small class="multiline-text">{displayPipelineText(proposed.information || proposed.description || proposed.metadata) || "No extra detail."}</small>
 				</div>
 			</div>
@@ -90,11 +106,13 @@ function CurrentProposed({ current: previewItem, proposed, type }) {
 			<div>
 				<span>Current</span>
 				<strong>{current.label || displayNameFromIdentifier(current.name || current.id)}</strong>
+				<ScopeChips scope={current.scope} showEmpty />
 				<small class="multiline-text">{displayPipelineText(current.description) || "No description."}</small>
 			</div>
 			<div>
 				<span>Proposed</span>
 				<strong>{nodeLabel(proposed)}</strong>
+				{parseScope(proposed.scope).length > 0 ? <ScopeChips scope={proposed.scope} /> : <small class="muted-copy">Scope unchanged</small>}
 				<small class="multiline-text">{displayPipelineText(proposed.description || proposed.metadata) || "No description."}</small>
 			</div>
 		</div>
@@ -249,6 +267,7 @@ export function HitlProposalSummary({
 			>
 				<strong>{nodeLabel(record)}</strong>
 				{record.type && <small>{record.type}</small>}
+				<ScopeChips scope={record.scope} showEmpty={record.operation === "create"} />
 				{record.description && <small class="multiline-text">{displayPipelineText(record.description)}</small>}
 				{record.metadata && <small class="proposal-row-warning multiline-text">{displayPipelineText(record.metadata)}</small>}
 			</ProposalRow>
@@ -268,6 +287,7 @@ export function HitlProposalSummary({
 				type="relation"
 			>
 				<strong>{relationFact(record)}</strong>
+				<ScopeChips scope={record.scope} />
 				{record.operation !== "delete" && (
 					<small class="multiline-text">{displayPipelineText(record.information || record.description) || "No extra detail."}</small>
 				)}

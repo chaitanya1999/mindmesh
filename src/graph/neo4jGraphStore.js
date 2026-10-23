@@ -1,4 +1,5 @@
 import neo4j from "neo4j-driver";
+import { parseScope, scopeMatchValues } from "../schema/scope.js";
 
 // Upper bound on nodes returned by one expansion.
 const EXPANSION_NODE_LIMIT = 2000;
@@ -46,6 +47,7 @@ function formatNode(node) {
 		name: node.properties.name,
 		type: node.properties.type,
 		description: node.properties.description ?? "",
+		scope: parseScope(node.properties.scope),
 		createdAt: node.properties.createdAt,
 		updatedAt: node.properties.updatedAt,
 	};
@@ -59,6 +61,7 @@ function formatRelationship(relationship) {
 		relation: relationship.properties.relation,
 		information: relationship.properties.information ?? "",
 		description: relationship.properties.description ?? "",
+		scope: parseScope(relationship.properties.scope),
 		createdAt: relationship.properties.createdAt,
 		updatedAt: relationship.properties.updatedAt,
 	};
@@ -74,6 +77,12 @@ function formatRelationshipWithEndpoints(relationship, sourceId, targetId) {
 
 function compactString(value) {
 	return String(value ?? "").trim();
+}
+
+// Cypher condition for the scope filter on node `n` (or relation) bound to `variable`: unscoped items
+// always match. Pass $scopeValues from scopeMatchValues(); an empty list disables the filter.
+function scopeCondition(variable) {
+	return `(size($scopeValues) = 0 OR coalesce(size(${variable}.scope), 0) = 0 OR any(s IN ${variable}.scope WHERE s IN $scopeValues))`;
 }
 
 function sessionOptions(config) {
@@ -188,12 +197,14 @@ export class Neo4jGraphStore {
 								n.name = $name,
 								n.type = $type,
 								n.description = CASE WHEN $description = "" THEN coalesce(n.description, "") ELSE $description END,
+								n.scope = CASE WHEN size($scope) = 0 THEN n.scope ELSE $scope END,
 								n.updatedAt = $now
 						RETURN n
 						`,
 						{
 							...node,
 							description: compactString(node.description),
+							scope: parseScope(node.scope),
 							now,
 						},
 					);
@@ -212,6 +223,7 @@ export class Neo4jGraphStore {
 								r.relation = $relation,
 								r.information = CASE WHEN $information = "" THEN coalesce(r.information, "") ELSE $information END,
 								r.description = CASE WHEN $description = "" THEN coalesce(r.description, "") ELSE $description END,
+								r.scope = CASE WHEN size($scope) = 0 THEN r.scope ELSE $scope END,
 								r.updatedAt = $now
 						RETURN r, source.id AS sourceId, target.id AS targetId
 						`,
@@ -219,6 +231,7 @@ export class Neo4jGraphStore {
 							...relation,
 							information: compactString(relation.information),
 							description: compactString(relation.description),
+							scope: parseScope(relation.scope),
 							now,
 						},
 					);
@@ -248,8 +261,9 @@ export class Neo4jGraphStore {
 	// Breadth-first expansion: one query per hop, so the cost follows the size of the neighbourhood instead of
 	// the number of paths (a variable-length path query explodes on dense graphs). Returns the start nodes,
 	// every node within `depth` hops (each with its hop `distance`), and every relation traversed.
-	// Options (explore_graph): direction "both" | "out" | "in", relationTypes, nodeTypes, limit (max nodes).
-	async expandFromNodes(nodeIds, depth, { direction = "both", relationTypes = [], nodeTypes = [], limit = EXPANSION_NODE_LIMIT } = {}) {
+	// Options (explore_graph): direction "both" | "out" | "in", relationTypes, nodeTypes, limit (max nodes),
+	// scope (a scope filter value: neighbours and relations scoped only to other values are not followed).
+	async expandFromNodes(nodeIds, depth, { direction = "both", relationTypes = [], nodeTypes = [], limit = EXPANSION_NODE_LIMIT, scope = "" } = {}) {
 		const safeDepth = Math.max(0, Math.min(Number(depth) || 0, 8));
 		const ids = [...new Set((nodeIds ?? []).filter(Boolean))];
 		const pattern = direction === "out"
@@ -281,9 +295,11 @@ export class Neo4jGraphStore {
 						MATCH ${pattern}
 						WHERE (size($relationTypes) = 0 OR r.relation IN $relationTypes)
 							AND (size($nodeTypes) = 0 OR m.type IN $nodeTypes)
+							AND ${scopeCondition("m")}
+							AND ${scopeCondition("r")}
 						RETURN r, startNode(r).id AS sourceId, endNode(r).id AS targetId, m
 						`,
-						{ frontier, relationTypes, nodeTypes },
+						{ frontier, relationTypes, nodeTypes, scopeValues: scopeMatchValues(scope) },
 					),
 				);
 				const next = [];
@@ -476,7 +492,7 @@ export class Neo4jGraphStore {
 	}
 
 	// Case-insensitive substring match on id, label, name, type, and description; exact label/name matches first.
-	async searchNodes(query, limit = 20, { type = "" } = {}) {
+	async searchNodes(query, limit = 20, { type = "", scope = "" } = {}) {
 		const session = this.driver.session(this.sessionOptions);
 		const text = compactString(query).toLowerCase();
 		const safeLimit = Math.max(1, Math.min(Number(limit) || 20, 100));
@@ -491,6 +507,7 @@ export class Neo4jGraphStore {
 					`
 					MATCH (n:KnowledgeNode)
 					WHERE ($type = "" OR n.type = $type)
+						AND ${scopeCondition("n")}
 						AND (toLower(coalesce(n.id, "")) CONTAINS $query
 						OR toLower(coalesce(n.label, "")) CONTAINS $query
 						OR toLower(coalesce(n.name, "")) CONTAINS $query
@@ -508,7 +525,7 @@ export class Neo4jGraphStore {
 						n.label ASC
 					LIMIT $limit
 					`,
-					{ query: text, type: compactString(type), limit: neo4j.int(safeLimit) },
+					{ query: text, type: compactString(type), scopeValues: scopeMatchValues(scope), limit: neo4j.int(safeLimit) },
 				),
 			);
 
@@ -752,6 +769,7 @@ export class Neo4jGraphStore {
 							n.name = $name,
 							n.type = $type,
 							n.description = $description,
+							n.scope = CASE WHEN size($scope) = 0 THEN null ELSE $scope END,
 							n.updatedAt = $now
 					RETURN n
 					`,
@@ -761,6 +779,7 @@ export class Neo4jGraphStore {
 						name: compactString(node.name),
 						type: compactString(node.type),
 						description: compactString(node.description),
+						scope: parseScope(node.scope),
 						now,
 					},
 				),
@@ -826,6 +845,7 @@ export class Neo4jGraphStore {
 						relation: $relation,
 						information: $information,
 						description: $description,
+						scope: CASE WHEN size($scope) = 0 THEN null ELSE $scope END,
 						createdAt: createdAt,
 						updatedAt: $now
 					}]->(target)
@@ -838,6 +858,7 @@ export class Neo4jGraphStore {
 						relation: compactString(relation.relation),
 						information: compactString(relation.information),
 						description: compactString(relation.description),
+						scope: parseScope(relation.scope),
 						replaceIds,
 						now,
 					},

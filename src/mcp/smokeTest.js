@@ -102,7 +102,7 @@ async function main() {
 		const schemaParsed = await callTool("get_schema", {});
 		console.log("get_schema OK: node types =", schemaParsed.nodeTypes?.length ?? 0, "totals =", JSON.stringify(schemaParsed.totals));
 
-		const ingestParsed = await callTool("get_ingest_prompt", { text: "EKYC Screen uses PAN Verification API." });
+		const ingestParsed = await callTool("get_ingest_prompt", { scope: "", text: "EKYC Screen uses PAN Verification API." });
 		console.log("get_ingest_prompt OK: extractionSystemPrompt length =", ingestParsed.extractionSystemPrompt?.length ?? 0);
 		console.log("get_ingest_prompt OK: retrievedNodes =", ingestParsed.retrievedNodes?.length ?? 0, "ingestionMode =", ingestParsed.ingestionMode);
 
@@ -116,12 +116,13 @@ async function main() {
 			arguments: {
 				records: [
 					"<start#$#$>",
-					`NODE_CREATE|${SMOKE_SOURCE_NAME}|MCP Smoke Test Node|screen|A node created by the MCP smoke test.|`,
-					`NODE_CREATE|${SMOKE_TARGET_NAME}|MCP Smoke Test Target|screen|A node created by the MCP smoke test.|`,
-					`RELATION_CREATE|${SMOKE_SOURCE_NAME}|${SMOKE_TARGET_NAME}|uses|created for smoke test|`,
+					`NODE_CREATE|${SMOKE_SOURCE_NAME}|MCP Smoke Test Node|screen|A node created by the MCP smoke test.||`,
+					`NODE_CREATE|${SMOKE_TARGET_NAME}|MCP Smoke Test Target|screen|A node created by the MCP smoke test.||`,
+					`RELATION_CREATE|${SMOKE_SOURCE_NAME}|${SMOKE_TARGET_NAME}|uses|created for smoke test|||`,
 					"</end#$#$>",
 				].join("\n"),
 				text: "MCP smoke test node uses the MCP smoke test target.",
+				scope: "",
 				author: "mcp-smoke-test",
 				source: "mcp-smoke-test",
 			},

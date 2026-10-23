@@ -1,5 +1,7 @@
 import { formatGraphContext } from "./graphContext.js";
 import { createDebugLogger } from "../logging/debugLogger.js";
+import { loadGraphSchema } from "../schema/graphSchema.js";
+import { normalizeScopeFilter } from "../schema/scope.js";
 
 function formatConversationHistory(messages) {
 	return messages
@@ -148,13 +150,21 @@ export class HybridRagService {
 		return retrievalQuery;
 	}
 	
-	// `depth` overrides the configured expansion depth for this call (clamped to 0..4).
+	// A scope filter value from a request ("" for none); unknown values are a 400 error.
+	scopeFilter(scope) {
+		return normalizeScopeFilter(scope, loadGraphSchema({ schema: this.prompts.graphSchema }));
+	}
+
+	// `depth` overrides the configured expansion depth for this call (clamped to 0..4). `scope` leaves out
+	// nodes, relations, and proposals scoped only to other values.
 	async retrieveContext({
 		query,
 		memoryMessages: incomingMemoryMessages = [],
 		includeUnverifiedKnowledge = false,
 		depth: requestedDepth,
+		scope: requestedScope = "",
 	}) {
+		const scope = this.scopeFilter(requestedScope);
 		const depth = requestedDepth === undefined ? this.depth : Math.max(0, Math.min(Number(requestedDepth) || 0, 4));
 		// Retrieval-only variant of answer(): returns the formatted context plus
 		// the metadata needed for it, without invoking any LLM. This is used by
@@ -172,16 +182,16 @@ export class HybridRagService {
 			debugLogger: createDebugLogger({ ...this.logging, name: "ask" }),
 		});
 		
-		const entryNodes = await this.vectorStore.queryNodes(retrievalQuery, this.topK);
+		const entryNodes = await this.vectorStore.queryNodes(retrievalQuery, this.topK, { scope });
 		const nodeIds = [...new Set(entryNodes.map((node) => node.id).filter(Boolean))];
 		
 		let unverifiedNotes = [];
 		if (includeUnverifiedKnowledge && typeof this.vectorStore.queryHitlNotes === "function") {
-			unverifiedNotes = await this.vectorStore.queryHitlNotes(retrievalQuery, this.topK);
+			unverifiedNotes = await this.vectorStore.queryHitlNotes(retrievalQuery, this.topK, { scope });
 		}
 		
 		const graph = nodeIds.length > 0
-		? await this.graphStore.expandFromNodes(nodeIds, depth)
+		? await this.graphStore.expandFromNodes(nodeIds, depth, { scope })
 		: { nodes: [], relations: [] };
 		
 		return {
@@ -194,6 +204,7 @@ export class HybridRagService {
 			unverifiedNotes,
 			unverifiedContext: formatUnverifiedKnowledgeContext(unverifiedNotes),
 			depth,
+			scope,
 		};
 	}
 	
@@ -203,8 +214,10 @@ export class HybridRagService {
 		sessionId,
 		memoryMessages: incomingMemoryMessages = [],
 		includeUnverifiedKnowledge = false,
+		scope: requestedScope = "",
 	}) {
 		const startedAt = Date.now();
+		const scope = this.scopeFilter(requestedScope);
 		const debugLogger = createDebugLogger({
 			...this.logging,
 			name: "ask",
@@ -225,7 +238,7 @@ export class HybridRagService {
 				logAsk(debugLogger, `[ask] Session: ${sessionId}`);
 			}
 			logAsk(debugLogger, `[ask] Loaded ${memoryMessages.length} browser session message(s).`);
-			logAsk(debugLogger, `[ask] Retrieval settings: topK=${this.topK}, depth=${this.depth}`);
+			logAsk(debugLogger, `[ask] Retrieval settings: topK=${this.topK}, depth=${this.depth}, scope=${scope || "none"}`);
 			
 			debugLogger.section("Runtime", {
 				source,
@@ -234,6 +247,7 @@ export class HybridRagService {
 				depth: this.depth,
 				memoryMessages: memoryMessages.length,
 				includeUnverifiedKnowledge,
+				scope,
 			});
 			debugLogger.section("User Query", query);
 			if (conversation) {
@@ -251,7 +265,7 @@ export class HybridRagService {
 			}
 			
 			logAsk(debugLogger, "[ask] Querying vector store for entry nodes...");
-			const entryNodes = await this.vectorStore.queryNodes(retrievalQuery, this.topK);
+			const entryNodes = await this.vectorStore.queryNodes(retrievalQuery, this.topK, { scope });
 			const nodeIds = [...new Set(entryNodes.map((node) => node.id).filter(Boolean))];
 			debugLogger.json("Vector Entry Nodes", entryNodes);
 			logAsk(debugLogger, `[ask] Vector search returned ${entryNodes.length} result(s), ${nodeIds.length} unique node id(s).`);
@@ -260,7 +274,7 @@ export class HybridRagService {
 			if (includeUnverifiedKnowledge) {
 				if (typeof this.vectorStore.queryHitlNotes === "function") {
 					logAsk(debugLogger, "[ask] Querying pending HITL notes for unverified knowledge...");
-					unverifiedNotes = await this.vectorStore.queryHitlNotes(retrievalQuery, this.topK);
+					unverifiedNotes = await this.vectorStore.queryHitlNotes(retrievalQuery, this.topK, { scope });
 					debugLogger.json("Unverified HITL Notes", unverifiedNotes);
 					logAsk(debugLogger, `[ask] Unverified knowledge search returned ${unverifiedNotes.length} pending note(s).`);
 				} else {
@@ -272,7 +286,7 @@ export class HybridRagService {
 				? `[ask] Expanding graph from entry nodes: ${nodeIds.join(", ")}`
 				: "[ask] No vector entry nodes found; using empty graph context.");
 				const graph = nodeIds.length > 0
-				? await this.graphStore.expandFromNodes(nodeIds, this.depth)
+				? await this.graphStore.expandFromNodes(nodeIds, this.depth, { scope })
 				: { nodes: [], relations: [] };
 				debugLogger.json("Expanded Graph Summary", {
 					entryNodeIds: nodeIds,
@@ -315,6 +329,7 @@ export class HybridRagService {
 					graph,
 					context,
 					depth: this.depth,
+					scope,
 					sessionId,
 				};
 			} catch (error) {

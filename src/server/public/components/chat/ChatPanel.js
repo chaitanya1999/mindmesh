@@ -1,6 +1,7 @@
 import { Composer } from "./Composer.js";
 import { MessageList } from "./MessageList.js";
 import { RouteSwitcher } from "../common/RouteSwitcher.js";
+import { ScopePicker } from "../common/ScopePicker.js";
 
 const INGEST_FILE_ACCEPT = ".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 export function ChatPanel({
@@ -22,6 +23,9 @@ export function ChatPanel({
 	onIncludeUnverifiedKnowledgeChange,
 	onIngest,
 	onTab,
+	onScopeChange,
+	scope = "",
+	scopeValues = [],
 	statusMessage,
 	userName,
 	onChangeUserName,
@@ -51,6 +55,7 @@ export function ChatPanel({
 					</button>
 				))}
 			</div>
+			<ScopePicker disabled={isBusy || workspaceLocked} onChange={onScopeChange} scopeValues={scopeValues} value={scope} />
 			{statusMessage && <div class="status-line">{statusMessage}</div>}
 			{activeTab === "ask" && (
 				<>

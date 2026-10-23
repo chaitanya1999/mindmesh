@@ -22,9 +22,9 @@ const pendingNotes = async () => (await http.get("/api/hitl/notes")).body;
 describe("POST /api/ingest in auto mode", () => {
 	it("applies clean creates to the graph and the vector index", async () => {
 		services.llmProvider.nextResponse = records(
-			"NODE_CREATE|ekyc_screen|EKYC Screen|screen|Captures identity details.|",
-			"NODE_CREATE|pan_api|PAN API|api||",
-			"RELATION_CREATE|ekyc_screen|pan_api|uses|during onboarding||",
+			"NODE_CREATE|ekyc_screen|EKYC Screen|screen|Captures identity details.||",
+			"NODE_CREATE|pan_api|PAN API|api|||",
+			"RELATION_CREATE|ekyc_screen|pan_api|uses|during onboarding|||",
 		);
 
 		const response = await ingest("EKYC screen uses the PAN API.");
@@ -53,9 +53,9 @@ describe("POST /api/ingest in auto mode", () => {
 	for (const [label, lines, reason] of [
 		["a node delete", ["NODE_DELETE|old_screen|"], "node delete"],
 		["a relation delete", ["RELATION_DELETE|a|b|uses|"], "relation delete"],
-		["an ambiguity signal", ["NODE_CREATE|rajat|Rajat|person||AMBIGUITY:two users match"], "ambiguity"],
-		["a contradiction signal", ["NODE_CREATE|rajat|Rajat|person||CONTRADICTION:graph differs"], "contradiction"],
-		["an unknown type", ["NODE_CREATE|widget|Widget|gadget||"], "schema violation"],
+		["an ambiguity signal", ["NODE_CREATE|rajat|Rajat|person|||AMBIGUITY:two users match"], "ambiguity"],
+		["a contradiction signal", ["NODE_CREATE|rajat|Rajat|person|||CONTRADICTION:graph differs"], "contradiction"],
+		["an unknown type", ["NODE_CREATE|widget|Widget|gadget|||"], "schema violation"],
 	]) {
 		it(`stores a HITL proposal instead of applying ${label}`, async () => {
 			services.llmProvider.nextResponse = records(...lines);
@@ -72,7 +72,7 @@ describe("POST /api/ingest in auto mode", () => {
 	}
 
 	it("rejects a relation to a node that does not exist, without creating it", async () => {
-		services.llmProvider.nextResponse = records("RELATION_CREATE|ekyc_screen|ghost_api|uses|||");
+		services.llmProvider.nextResponse = records("RELATION_CREATE|ekyc_screen|ghost_api|uses||||");
 		services.graphStore.seed({ nodes: [node("ekyc_screen", "screen")] });
 
 		const response = await ingest();
@@ -84,20 +84,20 @@ describe("POST /api/ingest in auto mode", () => {
 
 	it("turns NODE_CREATE for an existing node into a flagged NODE_UPDATE proposal", async () => {
 		services.graphStore.seed({ nodes: [node("ekyc_screen", "screen", "EKYC Screen", "Original.")] });
-		services.llmProvider.nextResponse = records("NODE_CREATE|ekyc_screen|EKYC Screen|screen|Guessed.|");
+		services.llmProvider.nextResponse = records("NODE_CREATE|ekyc_screen|EKYC Screen|screen|Guessed.||");
 
 		const response = await ingest();
 
 		assert.equal(response.body.status, "pending_hitl");
 		const [note] = (await pendingNotes()).notes;
-		assert.match(note.llmResponse, /NODE_UPDATE\|ekyc_screen\|EKYC Screen\|screen\|Guessed\.\|AMBIGUITY:/);
+		assert.match(note.llmResponse, /NODE_UPDATE\|ekyc_screen\|EKYC Screen\|screen\|Guessed\.\|\|AMBIGUITY:/);
 		assert.equal(note.ambiguityCount, 1);
 		assert.equal((await services.graphStore.getNode("node:ekyc_screen")).description, "Original.");
 	});
 
 	it("references an existing endpoint without rewriting it", async () => {
 		services.graphStore.seed({ nodes: [node("ekyc_screen", "screen", "EKYC Screen"), node("pan_api", "api", "PAN API")] });
-		services.llmProvider.nextResponse = records("RELATION_CREATE|ekyc_screen|pan_api|invokes|||");
+		services.llmProvider.nextResponse = records("RELATION_CREATE|ekyc_screen|pan_api|invokes||||");
 
 		const response = await ingest();
 
@@ -111,7 +111,7 @@ describe("POST /api/ingest in auto mode", () => {
 describe("POST /api/ingest in hitl mode", () => {
 	it("stores even a clean extraction as a proposal, keeping the model's exact output", async () => {
 		services.ingestionService.ingestion.mode = "hitl";
-		const output = records("NODE_CREATE|ekyc_screen|EKYC Screen|screen||");
+		const output = records("NODE_CREATE|ekyc_screen|EKYC Screen|screen|||");
 		services.llmProvider.nextResponse = output;
 
 		const response = await ingest("EKYC screen exists.");

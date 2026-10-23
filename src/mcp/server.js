@@ -8,6 +8,7 @@ import { createDebugLogger } from "../logging/debugLogger.js";
 import { createMindMesh, isMainModule } from "../mindmesh.js";
 import { buildExtractionPrompt } from "../prompts/promptRegistry.js";
 import { readEditableGraphSchema } from "../schema/graphSchema.js";
+import { normalizeScopeFilter, scopeAllowedValues } from "../schema/scope.js";
 
 // MCP server for coding agents. The agent does all reasoning: MindMesh retrieves context, hands out its
 // extraction prompts, and stores the agent's records through the same HITL path as the web UI. Transport only:
@@ -51,6 +52,7 @@ function proposalSummary(item) {
 		verified: false,
 		author: item.userName,
 		source: item.source,
+		scope: item.scope || "",
 		createdAt: item.createdAt,
 		inputPreview: item.inputPreview,
 		counts: {
@@ -67,7 +69,7 @@ function proposalSummary(item) {
 }
 
 function compactNode(node) {
-	return { id: node.id, label: node.label, type: node.type };
+	return { id: node.id, label: node.label, type: node.type, scope: node.scope ?? [] };
 }
 
 function payloadCounts(graphPayload) {
@@ -114,11 +116,12 @@ function resolveReviewerNotes(notes, note) {
 }
 
 const INGEST_INSTRUCTIONS = [
+	"0. The scope you passed filtered the retrieved context and is named in the prompt; pass the same `scope` to `submit_ingest`.",
 	"1. Treat `extractionSystemPrompt` as your extraction instructions and follow its record format exactly.",
 	"2. The text is the only source of new facts. `retrievedNodes`, `pendingNodes`, and the context inside the prompt are only for recognising entities that already exist.",
 	"3. Before extracting, check every entity the text mentions against `retrievedNodes` and `pendingNodes` (see `retrievalQuality`). For each one that is missing, call `search_nodes` (match \"text\" with its name, then \"semantic\" with a short description) and `get_node` to confirm; reuse the exact existing name. Create a node only when nothing matches.",
 	"4. Write the complete record block between <start#$#$> and </end#$#$>.",
-	"5. Call `submit_ingest` with `records` (the whole block), `text` (the original text), and `author` (the user, if known).",
+	"5. Call `submit_ingest` with `records` (the whole block), `text` (the original text), `scope` (the same as here), and `author` (the user, if known).",
 	"6. Tell the user the outcome: applied, or pending with its ref and review reasons.",
 ].join("\n");
 
@@ -134,7 +137,8 @@ const REGENERATE_INSTRUCTIONS = [
 
 const QUERY_CYPHER_DESCRIPTION = [
 	"Runs one read-only Cypher query on the approved graph, for questions the other tools would need many calls for (for example every screen with its sections and their fields). ",
-	"Graph model: (:KnowledgeNode {id, name, label, type, description, createdAt, updatedAt})-[:RELATES_TO {id, relation, sourceId, targetId, information, description}]->(:KnowledgeNode). ",
+	"Graph model: (:KnowledgeNode {id, name, label, type, description, scope, createdAt, updatedAt})-[:RELATES_TO {id, relation, sourceId, targetId, information, description, scope}]->(:KnowledgeNode). ",
+	"`scope` is a list of strings, or absent when unscoped; for example WHERE 'uc' IN n.scope OR 'common' IN n.scope OR n.scope IS NULL. ",
 	"Every node has the label KnowledgeNode and every relationship the type RELATES_TO; the meaning is in the `type` and `relation` properties. Node ids are \"node:<name>\". ",
 	"Example: MATCH (s:KnowledgeNode {type: 'screen'})-[:RELATES_TO {relation: 'contains'}]->(x:KnowledgeNode) RETURN s.label, collect(x.label). ",
 	"Neo4j checks that the query only reads; writes, schema changes, LOAD CSV, dbms.* and apoc.* are refused. 10 second timeout, at most `limit` rows. Pending proposals are not in Neo4j.",
@@ -156,6 +160,12 @@ export function createMcpServer(services) {
 		openWorldHint: false,
 	};
 
+	// Scope arguments take one value; the allowed values are read from the schema when the server is built.
+	const scopeValues = scopeAllowedValues(hitlService.currentSchema(), "node");
+	const scopeChoices = scopeValues ? ` Allowed values: ${scopeValues.join(", ")}.` : "";
+	const scopeFilter = z.string().optional().describe(`Scope filter: only items in this scope, items scoped common, and unscoped items. Omit for no filter.${scopeChoices}`);
+	const ingestScope = z.string().describe(`The scope (business unit) the text belongs to.${scopeChoices} Required: if the user has not said which scope the text is for, ask them before calling; pass "" only when they say it has no scope.`);
+
 	const server = new McpServer(
 		{
 			name: "mindmesh",
@@ -171,7 +181,8 @@ export function createMcpServer(services) {
 				"MindMesh is a human-reviewed knowledge graph (Neo4j + Chroma). Approved facts are in the graph; new knowledge becomes a pending proposal that a person reviews.",
 				"",
 				"Questions: start with `search_context`; use `search_nodes`, `search_relations`, `get_node`, `explore_graph`, `find_paths`, and `query_cypher` to go deeper. Cite node and relation ids. Pending proposals (`search_proposals`, includePending) are unverified: keep them separate from approved facts.",
-				"Ingestion: `get_ingest_prompt` with the user's text, look up any entity it did not retrieve, extract records, then `submit_ingest`.",
+				"Ingestion: `get_ingest_prompt` with the user's text and its scope (ask the user for the scope if they did not give it), look up any entity it did not retrieve, extract records, then `submit_ingest` with the same scope.",
+				"Scope: nodes and relations can carry a scope, a list such as [\"uc\"]; unscoped items are shared or not classified yet. When the user works on one scope, pass it as `scope` to the search tools.",
 				"Reviewing: `list_proposals` and `get_proposal`; `save_reviewer_notes`; regenerate with `get_regenerate_prompt` then `submit_regeneration`.",
 				allowReviewDecisions
 					? "Decisions: `approve_proposal` and `reject_proposal` are enabled. Use them only when the user explicitly asks for that proposal."
@@ -213,12 +224,14 @@ export function createMcpServer(services) {
 			query: z.string().describe("The question or topic to build context for."),
 			includePending: z.boolean().optional().describe("Also include pending (unapproved) proposals as unverified knowledge. Default false."),
 			depth: z.number().int().min(0).max(4).optional().describe("How many relation hops to expand from the closest nodes. Default: the server setting."),
+			scope: scopeFilter,
 		},
-		async ({ query, includePending = false, depth }) => {
-			const result = await ragService.retrieveContext({ query, includeUnverifiedKnowledge: includePending, depth });
+		async ({ query, includePending = false, depth, scope }) => {
+			const result = await ragService.retrieveContext({ query, includeUnverifiedKnowledge: includePending, depth, scope });
 			return {
 				query,
 				depth: result.depth,
+				scope: result.scope,
 				context: result.context,
 				entryNodes: result.entryNodes.map((entry) => ({
 					id: entry.id,
@@ -248,9 +261,10 @@ export function createMcpServer(services) {
 			query: z.string().describe("Name, phrase, or description to search for."),
 			match: z.enum(["semantic", "text"]).optional().describe("semantic (default) or text."),
 			type: z.string().optional().describe("Only nodes of this node type (see get_schema)."),
+			scope: scopeFilter,
 			limit: z.number().int().min(1).max(50).optional().describe("Maximum results. Default 10."),
 		},
-		async ({ query, match, type, limit }) => graphReadService.searchNodes({ query, match, type, limit }),
+		async ({ query, match, type, scope, limit }) => graphReadService.searchNodes({ query, match, type, scope, limit }),
 	);
 
 	readTool(
@@ -260,9 +274,10 @@ export function createMcpServer(services) {
 		{
 			query: z.string().describe("The fact or relationship to search for."),
 			relationType: z.string().optional().describe("Only relations of this type (see get_schema)."),
+			scope: scopeFilter,
 			limit: z.number().int().min(1).max(50).optional().describe("Maximum results. Default 10."),
 		},
-		async ({ query, relationType, limit }) => graphReadService.searchRelations({ query, relationType, limit }),
+		async ({ query, relationType, scope, limit }) => graphReadService.searchRelations({ query, relationType, scope, limit }),
 	);
 
 	readTool(
@@ -293,9 +308,10 @@ export function createMcpServer(services) {
 			direction: z.enum(["both", "out", "in"]).optional().describe("both (default), out, or in."),
 			relationTypes: z.array(z.string()).optional().describe("Only follow relations of these types."),
 			nodeTypes: z.array(z.string()).optional().describe("Only reach nodes of these types."),
+			scope: scopeFilter,
 			limit: z.number().int().min(1).max(500).optional().describe("Maximum nodes. Default 100."),
 		},
-		async ({ from, depth, direction, relationTypes, nodeTypes, limit }) => graphReadService.exploreGraph({ from, depth, direction, relationTypes, nodeTypes, limit }),
+		async ({ from, depth, direction, relationTypes, nodeTypes, scope, limit }) => graphReadService.exploreGraph({ from, depth, direction, relationTypes, nodeTypes, scope, limit }),
 	);
 
 	readTool(
@@ -358,10 +374,11 @@ export function createMcpServer(services) {
 			operation: z.enum(["create", "update", "delete"]).optional().describe("Only proposals containing this kind of change."),
 			author: z.string().optional().describe("Only proposals by this user."),
 			source: z.string().optional().describe("Only proposals from this source (for example web, mcp, manual)."),
+			scope: z.string().optional().describe("Only proposals ingested with this scope."),
 			limit: z.number().int().min(1).max(100).optional().describe("Maximum results. Default 20."),
 		},
-		async ({ signal, operation, author, source, limit = 20 }) => {
-			const { notes, total } = await hitlService.listProposals({ limit, filter: { signal, operation, author, source } });
+		async ({ signal, operation, author, source, scope, limit = 20 }) => {
+			const { notes, total } = await hitlService.listProposals({ limit, filter: { signal, operation, author, source, scope } });
 			return { total, results: notes.map(proposalSummary) };
 		},
 	);
@@ -388,19 +405,24 @@ export function createMcpServer(services) {
 		"Get Ingest Prompt",
 		[
 			"Step 1 of adding knowledge from the user's text. Runs MindMesh's own retrieval and returns its exact extraction prompt (record format, schema types, field guidance, retrieved context), the retrieved and pending nodes, a retrieval quality note, and instructions. ",
-			"MindMesh's retrieval is one search over the whole text and can miss entities named differently: check every entity the text mentions against retrievedNodes and pendingNodes, and look up the missing ones with search_nodes / get_node before extracting. Then call submit_ingest.",
+			"MindMesh's retrieval is one search over the whole text and can miss entities named differently: check every entity the text mentions against retrievedNodes and pendingNodes, and look up the missing ones with search_nodes / get_node (with the same scope) before extracting. Then call submit_ingest. ",
+			"The scope is required: if the user has not said which scope (business unit) the text is for, ask them first.",
 		].join(""),
 		{
 			text: z.string().describe("The text to add to the knowledge graph."),
+			scope: ingestScope,
 		},
-		async ({ text }) => {
+		async ({ text, scope: requestedScope }) => {
 			const graphSchema = hitlService.currentSchema();
-			const existingContext = await ingestionService.retrieveExistingContext({ text, graphSchema });
+			const scope = normalizeScopeFilter(requestedScope, graphSchema);
+			const existingContext = await ingestionService.retrieveExistingContext({ text, graphSchema, scope });
 			return {
+				scope,
 				extractionSystemPrompt: buildExtractionPrompt(prompts.extractionSystemTemplate, {
 					graphSchema,
 					existingGraphContext: existingContext.context,
 					userInput: text,
+					scope,
 				}),
 				retrievedNodes: existingContext.graph.nodes.map(compactNode),
 				pendingNodes: existingContext.pendingHitl.graph.nodes.map((node) => ({
@@ -427,13 +449,15 @@ export function createMcpServer(services) {
 		{
 			records: z.string().describe(`The extracted records: ${RECORD_BLOCK}.`),
 			text: z.string().describe("The original text the records were extracted from."),
+			scope: ingestScope,
 			author: z.string().optional().describe("Who provided the text. Default mcp-agent."),
 			source: z.string().optional().describe("Short source label. Default mcp."),
 		},
-		async ({ records, text, author, source }) => {
+		async ({ records, text, scope, author, source }) => {
 			const result = await hitlService.submitRecords({
 				graphRecords: records,
 				text,
+				scope,
 				userName: String(author || "mcp-agent").trim() || "mcp-agent",
 				source: String(source || "mcp").trim() || "mcp",
 				debugLogger: createDebugLogger({ ...config.logging, name: "ingest" }),
@@ -480,6 +504,7 @@ export function createMcpServer(services) {
 				reviewerNotes,
 				notesSource,
 				originalText: note.userInput,
+				scope: note.scope || "",
 				previousProposal: note.llmResponse,
 				extractionSystemPrompt: extractionPrompt,
 				retrievedNodes: existingContext.graph.nodes.map(compactNode),

@@ -1,5 +1,6 @@
 import { toSnakeCase } from "../ingestion/graphPayload.js";
 import { formatFieldGuidance, loadGraphSchema } from "../schema/graphSchema.js";
+import { normalizeScopeFilter, scopeAllowedValues } from "../schema/scope.js";
 
 // Read-only views of the approved graph for agents (MCP). Chroma finds candidates by meaning; the records
 // returned are always read from Neo4j, the source of truth. Pending proposals are HitlService's business.
@@ -38,6 +39,7 @@ export function nodeView(node) {
 		label: node.label,
 		type: node.type,
 		description: node.description ?? "",
+		scope: node.scope ?? [],
 	};
 }
 
@@ -50,6 +52,7 @@ export function relationView(relation) {
 		targetId: relation.targetId,
 		information: relation.information ?? "",
 		description: relation.description ?? "",
+		scope: relation.scope ?? [],
 	};
 }
 
@@ -76,21 +79,28 @@ export class GraphReadService {
 		return text.startsWith("node:") ? text : `node:${toSnakeCase(text)}`;
 	}
 
+	// A scope filter value ("" for none); unknown values are a 400 error.
+	scopeFilter(scope) {
+		return normalizeScopeFilter(scope, loadGraphSchema(this.schemaConfig));
+	}
+
 	async nodesById(ids) {
 		const nodes = await this.graphStore.getNodesByIds(ids);
 		return new Map(nodes.map((node) => [node.id, node]));
 	}
 
 	// match "semantic" ranks by meaning (Chroma); "text" is a case-insensitive name/text match (Neo4j).
-	async searchNodes({ query, match = "semantic", type = "", limit }) {
+	// `scope` keeps nodes in that scope, common nodes, and unscoped nodes.
+	async searchNodes({ query, match = "semantic", type = "", scope = "", limit }) {
 		const count = safeLimit(limit);
 		const nodeType = toSnakeCase(type);
+		const scopeFilter = this.scopeFilter(scope);
 		if (match === "text") {
-			const nodes = await this.graphStore.searchNodes(query, count, { type: nodeType });
+			const nodes = await this.graphStore.searchNodes(query, count, { type: nodeType, scope: scopeFilter });
 			return { match, results: nodes.map(nodeView) };
 		}
 
-		const hits = await this.vectorStore.queryNodes(query, count, { type: nodeType });
+		const hits = await this.vectorStore.queryNodes(query, count, { type: nodeType, scope: scopeFilter });
 		const byId = await this.nodesById(hits.map((hit) => hit.id));
 		return {
 			match: "semantic",
@@ -99,8 +109,8 @@ export class GraphReadService {
 		};
 	}
 
-	async searchRelations({ query, relationType = "", limit }) {
-		const hits = await this.vectorStore.queryRelations(query, safeLimit(limit), { relation: toSnakeCase(relationType) });
+	async searchRelations({ query, relationType = "", scope = "", limit }) {
+		const hits = await this.vectorStore.queryRelations(query, safeLimit(limit), { relation: toSnakeCase(relationType), scope: this.scopeFilter(scope) });
 		const relations = await this.graphStore.getRelationsByIds(hits.map((hit) => hit.id));
 		const relationById = new Map(relations.map((relation) => [relation.id, relation]));
 		const endpoints = await this.nodesById(relations.flatMap((relation) => [relation.sourceId, relation.targetId]));
@@ -159,7 +169,7 @@ export class GraphReadService {
 
 	// Walks out from one node, `depth` hops (1..4). Nodes carry their hop `distance`; `truncated` is true when
 	// `limit` cut the result.
-	async exploreGraph({ from, depth = 1, direction = "both", relationTypes = [], nodeTypes = [], limit = 100 }) {
+	async exploreGraph({ from, depth = 1, direction = "both", relationTypes = [], nodeTypes = [], scope = "", limit = 100 }) {
 		const start = await this.requireNode(from);
 		const hops = Math.max(1, Math.min(Number(depth) || 1, 4));
 		const result = await this.graphStore.expandFromNodes([start.id], hops, {
@@ -167,6 +177,7 @@ export class GraphReadService {
 			relationTypes: relationTypes.map(toSnakeCase).filter(Boolean),
 			nodeTypes: nodeTypes.map(toSnakeCase).filter(Boolean),
 			limit: Math.max(1, Math.min(Number(limit) || 100, 500)),
+			scope: this.scopeFilter(scope),
 		});
 
 		return {
@@ -239,6 +250,8 @@ export class GraphReadService {
 				nodes: counts.nodeTypes.reduce((sum, row) => sum + row.count, 0),
 				relations: counts.relationTypes.reduce((sum, row) => sum + row.count, 0),
 			},
+			// Allowed scope values (null: any value); unscoped items match every scope filter.
+			scopeValues: scopeAllowedValues(schema, "node"),
 			fieldGuidance: formatFieldGuidance(schema),
 		};
 	}

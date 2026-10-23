@@ -14,7 +14,7 @@ async function main() {
 	const services = createMindMesh(config, { llmProviderName: input.options.provider });
 
 	try {
-		const result = await services.ragService.answer({ query: input.text, source: input.source });
+		const result = await services.ragService.answer({ query: input.text, source: input.source, scope: input.options.scope || "" });
 
 		console.log("MindMesh answer complete.");
 		console.log(JSON.stringify({

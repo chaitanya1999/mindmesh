@@ -1,3 +1,5 @@
+import { parseScope } from "./scope.js";
+
 const START_MARKERS = new Set(["<start#$#$>", "start#$#$"]);
 const END_MARKERS = new Set(["</end#$#$>", "<end#$#$>", "end#$#$"]);
 
@@ -197,7 +199,8 @@ function parseNodeRecord(parts, line, index, errors) {
 		label: parts[2] || displayNameFromIdentifier(name),
 		type: toSnakeCase(parts[3]),
 		description: parts[4] || "",
-		metadata: parts[5] || "",
+		scope: parseScope(parts[5]),
+		metadata: parts[6] || "",
 		line,
 		lineNumber: index + 1,
 	};
@@ -250,7 +253,8 @@ function parseRelationRecord(parts, line, index, errors) {
 		relation,
 		information: parts[4] || "",
 		description: parts[5] || "",
-		metadata: parts[6] || "",
+		scope: parseScope(parts[6]),
+		metadata: parts[7] || "",
 		line,
 		lineNumber: index + 1,
 	};
@@ -525,3 +529,4 @@ export function proposalOperationCounts(proposal) {
 export function noteOperationCounts(note) {
 	return note?.llmResponse ? proposalOperationCounts(parseHitlProposal(note.llmResponse)) : null;
 }
+

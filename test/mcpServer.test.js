@@ -56,7 +56,7 @@ async function seedGraph({ nodes = [], relations = [] }) {
 // Stores a proposal through submit_ingest in hitl mode and returns its tool result.
 async function propose(...lines) {
 	services.ingestionService.ingestion.mode = "hitl";
-	return callTool("submit_ingest", { records: records(...lines), text: `input: ${lines[0]}`, author: "author" });
+	return callTool("submit_ingest", { scope: "", records: records(...lines), text: `input: ${lines[0]}`, author: "author" });
 }
 
 describe("MCP tools", () => {
@@ -74,14 +74,14 @@ describe("MCP tools", () => {
 
 	it("get_ingest_prompt returns the prompt, retrieved nodes, pending nodes, and a retrieval quality note", async () => {
 		await seedGraph({ nodes: [node("ekyc_screen", "screen", "EKYC Screen")] });
-		await propose("NODE_CREATE|pan_api|PAN API|api||");
+		await propose("NODE_CREATE|pan_api|PAN API|api|||");
 		services.ingestionService.ingestion.mode = "auto";
 
-		const result = await callTool("get_ingest_prompt", { text: "EKYC screen calls PAN." });
+		const result = await callTool("get_ingest_prompt", { scope: "", text: "EKYC screen calls PAN." });
 
 		assert.match(result.extractionSystemPrompt, /EKYC screen calls PAN\./);
 		assert.match(result.extractionSystemPrompt, /node:ekyc_screen/);
-		assert.deepEqual(result.retrievedNodes, [{ id: "node:ekyc_screen", label: "EKYC Screen", type: "screen" }]);
+		assert.deepEqual(result.retrievedNodes, [{ id: "node:ekyc_screen", label: "EKYC Screen", type: "screen", scope: [] }]);
 		assert.equal(result.pendingNodes[0].id, "node:pan_api");
 		assert.equal(result.pendingNodes[0].verified, false);
 		assert.equal(result.retrievalQuality.entryNodeCount, 1);
@@ -91,7 +91,7 @@ describe("MCP tools", () => {
 	});
 
 	it("get_ingest_prompt tells the agent to look everything up when nothing was retrieved", async () => {
-		const result = await callTool("get_ingest_prompt", { text: "Brand new things." });
+		const result = await callTool("get_ingest_prompt", { scope: "", text: "Brand new things." });
 
 		assert.equal(result.retrievalQuality.entryNodeCount, 0);
 		assert.match(result.retrievalQuality.note, /retrieved no existing nodes/);
@@ -99,8 +99,9 @@ describe("MCP tools", () => {
 
 	it("submit_ingest applies clean creates in auto mode", async () => {
 		const result = await callTool("submit_ingest", {
-			records: records("NODE_CREATE|a_screen|A|screen||", "NODE_CREATE|b_api|B|api||", "RELATION_CREATE|a_screen|b_api|uses|||"),
+			records: records("NODE_CREATE|a_screen|A|screen|||", "NODE_CREATE|b_api|B|api|||", "RELATION_CREATE|a_screen|b_api|uses||||"),
 			text: "A uses B.",
+			scope: "",
 		});
 
 		assert.equal(result.status, "applied");
@@ -114,7 +115,7 @@ describe("MCP tools", () => {
 	it("submit_ingest stores a proposal for a delete and returns the reasons", async () => {
 		services.graphStore.seed({ nodes: [node("a_screen", "screen")] });
 
-		const result = await callTool("submit_ingest", { records: records("NODE_DELETE|a_screen|"), text: "Remove A.", author: "agent" });
+		const result = await callTool("submit_ingest", { scope: "", records: records("NODE_DELETE|a_screen|"), text: "Remove A.", author: "agent" });
 
 		assert.equal(result.status, "pending_hitl");
 		assert.match(result.ref, /^#[0-9a-f]{6}$/);
@@ -124,16 +125,16 @@ describe("MCP tools", () => {
 	});
 
 	it("submit_ingest reconciles with pending proposals like web ingest", async () => {
-		await propose("NODE_CREATE|sales_flow|Sales Flow|screen||");
+		await propose("NODE_CREATE|sales_flow|Sales Flow|screen|||");
 
-		const second = await propose("NODE_CREATE|sales_flow|Sales Flow|screen|More detail.|");
+		const second = await propose("NODE_CREATE|sales_flow|Sales Flow|screen|More detail.||");
 
 		const note = await services.hitlService.getProposal(second.id);
 		assert.match(note.llmResponse, /NODE_UPDATE\|sales_flow/, "a create for a node that is already pending becomes an update");
 	});
 
 	it("regenerates a proposal by short ref: prompt with the notes, then the overwrite", async () => {
-		const stored = await propose("NODE_CREATE|a_screen|A|screen||");
+		const stored = await propose("NODE_CREATE|a_screen|A|screen|||");
 
 		const prompt = await callTool("get_regenerate_prompt", { ref: stored.ref, notes: "A is an API." });
 
@@ -144,7 +145,7 @@ describe("MCP tools", () => {
 		assert.match(prompt.previousProposal, /NODE_CREATE\|a_screen/);
 		assert.match(prompt.instructions, /submit_regeneration/);
 
-		const regenerated = await callTool("submit_regeneration", { ref: stored.ref, records: records("NODE_CREATE|a_api|A|api||"), notes: "A is an API." });
+		const regenerated = await callTool("submit_regeneration", { ref: stored.ref, records: records("NODE_CREATE|a_api|A|api|||"), notes: "A is an API." });
 
 		assert.equal(regenerated.status, "pending_hitl");
 		assert.equal(regenerated.counts.nodes, 1);
@@ -155,7 +156,7 @@ describe("MCP tools", () => {
 	});
 
 	it("get_regenerate_prompt uses saved notes, and requires notes when none are saved", async () => {
-		const stored = await propose("NODE_CREATE|a_screen|A|screen||");
+		const stored = await propose("NODE_CREATE|a_screen|A|screen|||");
 
 		assert.match(await callToolError("get_regenerate_prompt", { ref: stored.ref }), /has no saved reviewer notes/);
 
@@ -167,7 +168,7 @@ describe("MCP tools", () => {
 	});
 
 	it("submit_regeneration leaves the proposal unchanged when the records are empty", async () => {
-		const stored = await propose("NODE_CREATE|a_screen|A|screen||");
+		const stored = await propose("NODE_CREATE|a_screen|A|screen|||");
 
 		assert.match(await callToolError("submit_regeneration", { ref: stored.ref, records: "nothing", notes: "x" }), /no graph records/);
 		assert.match((await services.hitlService.getProposal(stored.id)).llmResponse, /NODE_CREATE\|a_screen/);
@@ -191,7 +192,7 @@ describe("MCP review decisions (config.mcp.allowReviewDecisions)", () => {
 	});
 
 	it("approve_proposal applies the proposal and removes it", async () => {
-		const stored = await propose("NODE_CREATE|a_screen|A Screen|screen||");
+		const stored = await propose("NODE_CREATE|a_screen|A Screen|screen|||");
 
 		const result = await callTool("approve_proposal", { ref: stored.ref, reviewer: "owner" }, decisionClient);
 
@@ -202,23 +203,23 @@ describe("MCP review decisions (config.mcp.allowReviewDecisions)", () => {
 	});
 
 	it("approve_proposal can approve edited records", async () => {
-		const stored = await propose("NODE_CREATE|a_screen|A Screen|screen||");
+		const stored = await propose("NODE_CREATE|a_screen|A Screen|screen|||");
 
-		await callTool("approve_proposal", { ref: stored.ref, reviewer: "owner", records: records("NODE_CREATE|edited_screen|Edited|screen||") }, decisionClient);
+		await callTool("approve_proposal", { ref: stored.ref, reviewer: "owner", records: records("NODE_CREATE|edited_screen|Edited|screen|||") }, decisionClient);
 
 		assert.ok(await services.graphStore.getNode("node:edited_screen"));
 		assert.equal(await services.graphStore.getNode("node:a_screen"), null);
 	});
 
 	it("approve_proposal refuses a proposal that breaks the schema, keeping it pending", async () => {
-		const stored = await propose("NODE_CREATE|w|Widget|gadget||");
+		const stored = await propose("NODE_CREATE|w|Widget|gadget|||");
 
 		assert.match(await callToolError("approve_proposal", { ref: stored.ref, reviewer: "owner" }, decisionClient), /Schema validation failed/);
 		assert.equal((await services.hitlService.listProposals({ limit: 10 })).total, 1);
 	});
 
 	it("reject_proposal deletes the proposal without touching the graph, and needs a reason", async () => {
-		const stored = await propose("NODE_CREATE|a_screen|A|screen||");
+		const stored = await propose("NODE_CREATE|a_screen|A|screen|||");
 
 		const missingReason = await decisionClient.callTool({ name: "reject_proposal", arguments: { ref: stored.ref, reviewer: "owner", reason: "" } });
 		assert.equal(missingReason.isError, true);
@@ -230,7 +231,7 @@ describe("MCP review decisions (config.mcp.allowReviewDecisions)", () => {
 	});
 
 	it("the default server cannot approve or reject", async () => {
-		const stored = await propose("NODE_CREATE|a_screen|A|screen||");
+		const stored = await propose("NODE_CREATE|a_screen|A|screen|||");
 
 		const result = await client.callTool({ name: "approve_proposal", arguments: { ref: stored.ref, reviewer: "owner" } });
 
@@ -247,7 +248,7 @@ describe("MCP read tools", () => {
 			nodes: [node("a_screen", "screen", "A Screen"), node("b_api", "api", "B API")],
 			relations: [relation("a_screen", "uses", "b_api")],
 		});
-		await propose("NODE_CREATE|c_screen|C Screen|screen||");
+		await propose("NODE_CREATE|c_screen|C Screen|screen|||");
 
 		const plain = await callTool("search_context", { query: "A screen" });
 		assert.match(plain.context, /node:a_screen/);
@@ -304,7 +305,7 @@ describe("MCP read tools", () => {
 			nodes: [node("a_screen", "screen", "A Screen"), node("b_api", "api", "B API"), node("c_flow", "screen", "C Flow")],
 			relations: [relation("a_screen", "uses", "b_api"), relation("c_flow", "uses", "a_screen")],
 		});
-		await propose("NODE_UPDATE|a_screen|A Screen|screen|New detail.|");
+		await propose("NODE_UPDATE|a_screen|A Screen|screen|New detail.||");
 
 		const result = await callTool("get_node", { node: "a_screen" });
 
@@ -342,7 +343,7 @@ describe("MCP read tools", () => {
 	});
 
 	it("search_proposals returns unverified summaries with refs", async () => {
-		await propose("NODE_CREATE|a_screen|A|screen||");
+		await propose("NODE_CREATE|a_screen|A|screen|||");
 
 		const { results } = await callTool("search_proposals", { query: "A screen" });
 
@@ -353,8 +354,8 @@ describe("MCP read tools", () => {
 	});
 
 	it("list_proposals filters every pending proposal before the limit", async () => {
-		await propose("NODE_CREATE|a_screen|A|screen||");
-		await propose("NODE_CREATE|rajat|Rajat|person||AMBIGUITY:two users match");
+		await propose("NODE_CREATE|a_screen|A|screen|||");
+		await propose("NODE_CREATE|rajat|Rajat|person|||AMBIGUITY:two users match");
 		await propose("NODE_DELETE|old_screen|");
 
 		assert.equal((await callTool("list_proposals", {})).total, 3);
@@ -369,7 +370,7 @@ describe("MCP read tools", () => {
 
 	it("get_proposal shows every record next to its current graph value", async () => {
 		await seedGraph({ nodes: [node("a_screen", "screen", "A Screen", "Old.")] });
-		const stored = await propose("NODE_UPDATE|a_screen|A Screen|screen|New.|", "NODE_CREATE|b_api|B API|api||");
+		const stored = await propose("NODE_UPDATE|a_screen|A Screen|screen|New.||", "NODE_CREATE|b_api|B API|api|||");
 
 		const review = await callTool("get_proposal", { ref: stored.ref });
 

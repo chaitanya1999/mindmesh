@@ -18,6 +18,9 @@ export function parseArgs(argv) {
 		} else if (arg === "--file" || arg === "-f") {
 			options.file = argv[index + 1];
 			index += 1;
+		} else if (arg === "--scope") {
+			options.scope = argv[index + 1];
+			index += 1;
 		} else if (arg === "--provider") {
 			options.provider = argv[index + 1];
 			index += 1;

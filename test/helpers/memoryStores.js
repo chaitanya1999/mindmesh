@@ -1,6 +1,7 @@
 // In-memory stand-ins for Neo4j and the Chroma client, so tests run without databases.
 // MemoryGraphStore follows Neo4jGraphStore's rules; FakeChromaClient sits under the real ChromaVectorStore,
 // so its document format, HITL listing and metadata deletes are tested as they are.
+import { parseScope, scopeMatchValues } from "../../src/schema/scope.js";
 import { ChromaVectorStore } from "../../src/vector/chromaVectorStore.js";
 
 function httpError(message, status) {
@@ -11,6 +12,13 @@ function httpError(message, status) {
 
 function clone(value) {
 	return structuredClone(value);
+}
+
+// Same rule as Neo4jGraphStore's scope condition: unscoped items always match.
+function inScope(item, scope) {
+	const values = scopeMatchValues(scope);
+	const itemScope = item?.scope ?? [];
+	return values.length === 0 || itemScope.length === 0 || itemScope.some((value) => values.includes(value));
 }
 
 export class MemoryGraphStore {
@@ -34,11 +42,11 @@ export class MemoryGraphStore {
 	seed({ nodes = [], relations = [] } = {}) {
 		for (const node of nodes) {
 			const now = this.now();
-			this.nodes.set(node.id, { description: "", createdAt: now, updatedAt: now, ...node });
+			this.nodes.set(node.id, { description: "", scope: [], createdAt: now, updatedAt: now, ...node });
 		}
 		for (const relation of relations) {
 			const now = this.now();
-			this.relations.set(relation.id, { information: "", description: "", createdAt: now, updatedAt: now, ...relation });
+			this.relations.set(relation.id, { information: "", description: "", scope: [], createdAt: now, updatedAt: now, ...relation });
 		}
 	}
 
@@ -79,6 +87,7 @@ export class MemoryGraphStore {
 				name: node.name,
 				type: node.type,
 				description: description || existing?.description || "",
+				scope: parseScope(node.scope).length > 0 ? parseScope(node.scope) : existing?.scope ?? [],
 				createdAt: existing?.createdAt ?? now,
 				updatedAt: now,
 			};
@@ -99,6 +108,7 @@ export class MemoryGraphStore {
 				relation: relation.relation,
 				information: information || existing?.information || "",
 				description: description || existing?.description || "",
+				scope: parseScope(relation.scope).length > 0 ? parseScope(relation.scope) : existing?.scope ?? [],
 				createdAt: existing?.createdAt ?? now,
 				updatedAt: now,
 			};
@@ -117,7 +127,7 @@ export class MemoryGraphStore {
 	}
 
 	// Same rules as Neo4jGraphStore.expandFromNodes(): breadth-first, hop distances, filters, node limit.
-	async expandFromNodes(nodeIds, depth, { direction = "both", relationTypes = [], nodeTypes = [], limit = 2000 } = {}) {
+	async expandFromNodes(nodeIds, depth, { direction = "both", relationTypes = [], nodeTypes = [], limit = 2000, scope = "" } = {}) {
 		const distances = new Map(nodeIds.filter((id) => this.nodes.has(id)).map((id) => [id, 0]));
 		let frontier = [...distances.keys()];
 		const relationIds = new Set();
@@ -125,7 +135,7 @@ export class MemoryGraphStore {
 		for (let hop = 1; hop <= depth && frontier.length > 0; hop += 1) {
 			const next = [];
 			for (const relation of this.relations.values()) {
-				if (relationTypes.length > 0 && !relationTypes.includes(relation.relation)) {
+				if ((relationTypes.length > 0 && !relationTypes.includes(relation.relation)) || !inScope(relation, scope)) {
 					continue;
 				}
 				const steps = [];
@@ -136,7 +146,7 @@ export class MemoryGraphStore {
 					steps.push([relation.targetId, relation.sourceId]);
 				}
 				for (const [from, to] of steps) {
-					if (!frontier.includes(from) || (nodeTypes.length > 0 && !nodeTypes.includes(this.nodes.get(to)?.type))) {
+					if (!frontier.includes(from) || (nodeTypes.length > 0 && !nodeTypes.includes(this.nodes.get(to)?.type)) || !inScope(this.nodes.get(to), scope)) {
 						continue;
 					}
 					if (!distances.has(to)) {
@@ -215,10 +225,10 @@ export class MemoryGraphStore {
 		return clone([...this.nodes.values()][0] ?? null);
 	}
 
-	async searchNodes(query, limit = 20, { type = "" } = {}) {
+	async searchNodes(query, limit = 20, { type = "", scope = "" } = {}) {
 		const text = String(query ?? "").toLowerCase();
 		return clone([...this.nodes.values()]
-			.filter((node) => !type || node.type === type)
+			.filter((node) => (!type || node.type === type) && inScope(node, scope))
 			.filter((node) => [node.id, node.label, node.name, node.type, node.description].some((value) => String(value ?? "").toLowerCase().includes(text)))
 			.slice(0, limit));
 	}
@@ -286,6 +296,7 @@ export class MemoryGraphStore {
 			name: String(node.name ?? "").trim(),
 			type: String(node.type ?? "").trim(),
 			description: String(node.description ?? "").trim(),
+			scope: parseScope(node.scope),
 			createdAt: existing?.createdAt ?? now,
 			updatedAt: now,
 		};
@@ -321,6 +332,7 @@ export class MemoryGraphStore {
 			relation: String(relation.relation ?? "").trim(),
 			information: String(relation.information ?? "").trim(),
 			description: String(relation.description ?? "").trim(),
+			scope: parseScope(relation.scope),
 			createdAt,
 			updatedAt: this.now(),
 		};

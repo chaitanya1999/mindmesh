@@ -97,6 +97,19 @@ README: Graph Schema.
 - Editor: `GET`/`PUT /api/schema`, `components/schema/`.
 - File: `schema/graphSchema.json` (gitignored; template `schema/graphSchema.example.json`).
 
+## Scope
+
+README: Graph Schema (Scope).
+
+- Rules: `src/schema/scope.js` (`parseScope`, `formatScope`, `scopeAllowedValues`, `scopeProblems`, `scopeMatchValues`, `matchesScope`, `normalizeScopeFilter`); client copy for display in `src/server/public/lib/scope.js`.
+- Records and validation: scope column in `extractCustomGraph()` / `formatGraphRecords()`, `scope` violations in `normalizeGraphPayload()` (`graphPayload.js`); client parser `lib/hitlProposal.js`; draft writers `pipelineNodeLine()` / `pipelineRelationLine()` in `app.js`.
+- Scope-change signal: `resolveGraphPayload()` (`graphResolution.js`). Form edits: `HitlService.requireValidScope()`.
+- Storage: `Neo4jGraphStore` (`formatNode`/`formatRelationship`, `scopeCondition()` in `expandFromNodes` and `searchNodes`, blank-keeps in `applyGraph`); `ChromaVectorStore` (`scopeMetadata()`, `scopeWhere()`, `combineWhere()`; HITL note `scope`); `MemoryGraphStore.inScope()` in tests.
+- Ingest scope: `IngestionService.ingestText({ scope })` -> `retrieveExistingContext({ scope })` -> `formatIngestScope()` (`{{INGEST_SCOPE}}`, `promptRegistry.js`); `HitlService.submit/storeProposal({ scope })`; regeneration reads `note.scope`.
+- Read filters: `HybridRagService.scopeFilter()`, `GraphReadService.scopeFilter()`; MCP `scopeFilter` / `ingestScope` argument schemas in `src/mcp/server.js`.
+- UI: `components/common/ScopePicker.js` (in `ChatPanel`, state `workspaceScope` in `app.js`), `components/common/ScopeField.js` (in `NodeForm`, `RelationForm`), `components/hitl/HitlReviewChecklist.js`, scope chips in `HitlProposalSummary.js`, tooltip rows in `NeoVisGraphPreview.js`.
+- Tests: `test/scope.test.js`.
+
 ## Graph Identity and Vector Sync
 
 README: Neo4j Schema (Identity and uniqueness, Write behavior), Commands (reindex).

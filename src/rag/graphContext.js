@@ -1,9 +1,13 @@
+function scopeText(scope) {
+	return (scope ?? []).join(", ");
+}
+
 export function formatGraphContext(graph, prompts = {}) {
 	const nodes = graph?.nodes ?? [];
 	const relations = graph?.relations ?? [];
 	const nodeById = new Map(nodes.map((node) => [node.id, node]));
 	const nodeLines = nodes.map((node) =>
-		`- ${node.label || node.name || node.id} (${node.id}) | name: ${node.name} | type: ${node.type} | description: ${node.description || ""}`,
+		`- ${node.label || node.name || node.id} (${node.id}) | name: ${node.name} | type: ${node.type}${scopeText(node.scope) ? ` | scope: ${scopeText(node.scope)}` : ""} | description: ${node.description || ""}`,
 	);
 	const relationLines = relations.map((relation) => {
 		const source = nodeById.get(relation.sourceId);
@@ -11,7 +15,7 @@ export function formatGraphContext(graph, prompts = {}) {
 		const sourceLabel = source?.label || source?.name || relation.sourceId;
 		const targetLabel = target?.label || target?.name || relation.targetId;
 
-		return `- ${relation.id} | ${sourceLabel} (${relation.sourceId}) -[${relation.relation}]-> ${targetLabel} (${relation.targetId}) | information: ${relation.information || ""} | description: ${relation.description || ""}`;
+		return `- ${relation.id} | ${sourceLabel} (${relation.sourceId}) -[${relation.relation}]-> ${targetLabel} (${relation.targetId}) | information: ${relation.information || ""}${scopeText(relation.scope) ? ` | scope: ${scopeText(relation.scope)}` : ""} | description: ${relation.description || ""}`;
 	});
 
 	return [
@@ -53,7 +57,7 @@ export function formatExtractionGraphContext(graph) {
 	const relations = graph?.relations ?? [];
 	const nodeById = new Map(nodes.map((node) => [node.id, node]));
 	const nodeLines = nodes.map((node) => {
-		const details = [node.type ? `type: ${node.type}` : "", `name: ${node.name || node.id}`].filter(Boolean);
+		const details = [node.type ? `type: ${node.type}` : "", `name: ${node.name || node.id}`, scopeText(node.scope) ? `scope: ${scopeText(node.scope)}` : ""].filter(Boolean);
 		const description = compact(node.description);
 		return `- ${nodeReference(node, node.id)} (${details.join(", ")}).${description ? ` Detail: ${sentence(description)}` : ""}`;
 	});
@@ -64,6 +68,7 @@ export function formatExtractionGraphContext(graph) {
 		const description = compact(relation.description);
 		return [
 			`- ${nodeReference(source, relation.sourceId)} ${relationPhrase(relation.relation)} ${nodeReference(target, relation.targetId)}.`,
+			scopeText(relation.scope) ? `Scope: ${scopeText(relation.scope)}.` : "",
 			information ? `Extra: ${sentence(information)}` : "",
 			description ? `Details: ${sentence(description)}` : "",
 		].filter(Boolean).join(" ");

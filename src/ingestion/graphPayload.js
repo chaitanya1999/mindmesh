@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { formatScope, parseScope, scopeAllowedValues, scopeProblems } from "../schema/scope.js";
 
 export function toSnakeCase(value) {
 	return String(value ?? "")
@@ -92,6 +93,8 @@ function buildSchemaRules(schema) {
 		enforceSchema,
 		allowedNodeTypes,
 		allowedRelationshipTypes,
+		nodeScopeValues: scopeAllowedValues(schema, "node"),
+		relationScopeValues: scopeAllowedValues(schema, "relation") ?? scopeAllowedValues(schema, "node"),
 	};
 }
 
@@ -128,6 +131,7 @@ function mergeRelation(existingRelation, nextRelation) {
 		...existingRelation,
 		information: preferText(existingRelation.information, nextRelation.information),
 		description: preferText(existingRelation.description, nextRelation.description),
+		scope: nextRelation.scope.length > 0 ? nextRelation.scope : existingRelation.scope,
 		metadata: preferText(existingRelation.metadata, nextRelation.metadata),
 	};
 }
@@ -144,6 +148,7 @@ function mergeNode(existingNode, nextNode) {
 		description: nextNode.description
 			? nextNode.description
 			: existingNode.description,
+		scope: nextNode.scope.length > 0 ? nextNode.scope : existingNode.scope,
 		metadata: nextNode.metadata
 			? nextNode.metadata
 			: existingNode.metadata,
@@ -175,12 +180,21 @@ export function normalizeGraphPayload(payload, { schema = null } = {}) {
 			schemaViolations.push(schemaViolation("nodeType", nodeType, message, { name, label: rawNode.label || labelFromName(name) }));
 		}
 
+		const scope = parseScope(rawNode.scope);
+		const nodeScopeProblems = schemaRules.enforceSchema ? scopeProblems(scope, schemaRules.nodeScopeValues) : [];
+		if (nodeScopeProblems.length > 0) {
+			const message = `Node "${name}" has an invalid scope: ${nodeScopeProblems.join("; ")}.`;
+			warnings.push(message);
+			schemaViolations.push(schemaViolation("scope", formatScope(scope), message, { name, label: rawNode.label || labelFromName(name) }));
+		}
+
 		const normalizedNode = {
 			id: rawNode.id || `node:${name}`,
 			label: rawNode.label || labelFromName(name),
 			name,
 			type: nodeType,
 			description: rawNode.description || "",
+			scope,
 			metadata: rawNode.metadata || "",
 			operation: rawNode.operation || "upsert",
 		};
@@ -206,6 +220,14 @@ export function normalizeGraphPayload(payload, { schema = null } = {}) {
 			schemaViolations.push(schemaViolation("relationshipType", relation, message, { sourceName, targetName, relation }));
 		}
 
+		const scope = parseScope(rawRelation.scope);
+		const relationScopeProblems = schemaRules.enforceSchema ? scopeProblems(scope, schemaRules.relationScopeValues) : [];
+		if (relationScopeProblems.length > 0) {
+			const message = `Relation "${sourceName}" -> "${targetName}" has an invalid scope: ${relationScopeProblems.join("; ")}.`;
+			warnings.push(message);
+			schemaViolations.push(schemaViolation("scope", formatScope(scope), message, { sourceName, targetName, relation }));
+		}
+
 		// Relations never create nodes. An endpoint without a node record here is a reference to an
 		// existing node; resolveGraphPayload() in graphResolution.js checks that it exists.
 		const sourceId = nodeMap.get(sourceName)?.id ?? `node:${sourceName}`;
@@ -219,6 +241,7 @@ export function normalizeGraphPayload(payload, { schema = null } = {}) {
 			relation,
 			information: rawRelation.information ?? "",
 			description: rawRelation.description ?? "",
+			scope,
 			metadata: rawRelation.metadata ?? "",
 			operation: rawRelation.operation || "upsert",
 		};
@@ -416,7 +439,7 @@ export function extractCustomGraph(text) {
 		const recordType = parts[0]?.toUpperCase();
 
 		if (recordType === "NODE" || recordType === "NODE_CREATE" || recordType === "NODE_UPDATE") {
-			const [, name, label, type = "", description = "", metadata = ""] = parts;
+			const [, name, label, type = "", description = "", scope = "", metadata = ""] = parts;
 
 			if (!name || !label) {
 				skippedLines.push(index + 1);
@@ -428,6 +451,7 @@ export function extractCustomGraph(text) {
 				label,
 				type,
 				description,
+				scope,
 				metadata,
 				operation: recordType === "NODE" ? "upsert" : recordType.replace("NODE_", "").toLowerCase(),
 			});
@@ -447,7 +471,7 @@ export function extractCustomGraph(text) {
 		}
 
 		if (recordType === "RELATION" || recordType === "EDGE" || recordType === "RELATION_CREATE" || recordType === "RELATION_UPDATE") {
-			const [, sourceName, targetName, relation = "", information = "", description = "", metadata = ""] = parts;
+			const [, sourceName, targetName, relation = "", information = "", description = "", scope = "", metadata = ""] = parts;
 
 			if (!sourceName || !targetName) {
 				skippedLines.push(index + 1);
@@ -460,6 +484,7 @@ export function extractCustomGraph(text) {
 				relation,
 				information,
 				description,
+				scope,
 				metadata,
 				operation: recordType === "RELATION" || recordType === "EDGE" ? "upsert" : recordType.replace("RELATION_", "").toLowerCase(),
 			});
@@ -548,6 +573,7 @@ export function formatGraphRecords(graphPayload) {
 			node.label || node.name || graphNameFromId(node.id),
 			node.type || "",
 			node.description || "",
+			formatScope(node.scope),
 			node.metadata || "",
 		]));
 	}
@@ -564,6 +590,7 @@ export function formatGraphRecords(graphPayload) {
 			relation.relation || "",
 			relation.information || "",
 			relation.description || "",
+			formatScope(relation.scope),
 			relation.metadata || "",
 		]));
 	}
@@ -677,7 +704,9 @@ function checkConstraints(fieldName, value, constraints, record) {
 		};
 	}
 
-	if (constraints.allowedValues && Array.isArray(constraints.allowedValues) && value && !constraints.allowedValues.includes(String(value))) {
+	// List fields (scope) are checked value by value.
+	const values = Array.isArray(value) ? value : [value];
+	if (constraints.allowedValues && Array.isArray(constraints.allowedValues) && value && values.some((item) => !constraints.allowedValues.includes(String(item)))) {
 		return {
 			field: fieldName,
 			value,

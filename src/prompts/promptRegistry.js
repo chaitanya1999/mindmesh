@@ -1,11 +1,13 @@
 import fs from "node:fs";
 import { formatFieldGuidance, formatSchemaCatalog, loadGraphSchema } from "../schema/graphSchema.js";
+import { COMMON_SCOPE } from "../schema/scope.js";
 
 const GRAPH_SCHEMA_PLACEHOLDER = "{{GRAPH_SCHEMA}}";
 const EXISTING_GRAPH_CONTEXT_PLACEHOLDER = "{{EXISTING_GRAPH_CONTEXT}}";
 const USER_INPUT_PLACEHOLDER = "{{USER_INPUT}}";
 const FIELD_GUIDANCE_PLACEHOLDER = "{{FIELD_GUIDANCE}}";
 const REVIEWER_REVISION_PLACEHOLDER = "{{REVIEWER_REVISION}}";
+const INGEST_SCOPE_PLACEHOLDER = "{{INGEST_SCOPE}}";
 
 function readPrompt(filePath, fallback) {
 	if (!filePath || !fs.existsSync(filePath)) {
@@ -32,6 +34,7 @@ export function loadPrompts(config) {
 			.replaceAll(FIELD_GUIDANCE_PLACEHOLDER, fieldGuidance)
 			.replaceAll(EXISTING_GRAPH_CONTEXT_PLACEHOLDER, "No existing graph context was retrieved.")
 			.replaceAll(USER_INPUT_PLACEHOLDER, "")
+			.replaceAll(INGEST_SCOPE_PLACEHOLDER, formatIngestScope(""))
 			.replaceAll(REVIEWER_REVISION_PLACEHOLDER, ""),
 		extractionSystemTemplate,
 		answerSystem: readPrompt(
@@ -65,15 +68,26 @@ export function buildExtractionPrompt(template, {
 	graphSchema,
 	existingGraphContext = "No existing graph context was retrieved.",
 	userInput = "",
+	scope = "",
 	reviewerRevision = null,
 } = {}) {
 	return renderTemplate(template, {
 		[GRAPH_SCHEMA_PLACEHOLDER]: formatSchemaCatalog(graphSchema),
 		[FIELD_GUIDANCE_PLACEHOLDER]: formatFieldGuidance(graphSchema),
 		[EXISTING_GRAPH_CONTEXT_PLACEHOLDER]: existingGraphContext,
+		[INGEST_SCOPE_PLACEHOLDER]: formatIngestScope(scope),
 		[USER_INPUT_PLACEHOLDER]: userInput,
 		[REVIEWER_REVISION_PLACEHOLDER]: formatReviewerRevision(reviewerRevision),
 	});
+}
+
+// The scope chosen for this input (ingest picker, MCP `scope`, or the proposal's stored scope on regeneration).
+export function formatIngestScope(scope) {
+	if (!scope) {
+		return "Selected scope for this input: none. Set a scope only where the input itself states it.";
+	}
+	const included = scope === COMMON_SCOPE ? `items scoped ${COMMON_SCOPE}` : `items scoped ${scope}, items scoped ${COMMON_SCOPE}`;
+	return `Selected scope for this input: ${scope}. Existing graph context was limited to ${included}, and unscoped items.`;
 }
 
 // Section appended when a HITL reviewer regenerates a proposal; empty for normal ingestion.

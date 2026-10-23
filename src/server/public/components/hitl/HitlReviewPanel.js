@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "preact/hooks";
 
+import { HitlReviewChecklist } from "./HitlReviewChecklist.js";
 import { HitlProposalSummary } from "./HitlProposalSummary.js";
 import { CopyButton } from "../common/CopyButton.js";
 import {
@@ -391,6 +392,7 @@ export function HitlReviewPanel({
 											<small>{truncateText(note.inputPreview, 72)}</small>
 											<small>
 												{formatHitlDate(note.createdAt)} · <code>{hitlShortRef(note.id)}</code>
+												{note.scope && <span class="note-tag scope" title="Scope picked for this ingest">{note.scope}</span>}
 												{note.regenerated && <span class="note-tag regenerated">Regenerated</span>}
 												{note.reviewerNotes && <span class="note-tag notes" title={note.reviewerNotes}>Notes</span>}
 											</small>
@@ -429,6 +431,10 @@ export function HitlReviewPanel({
 							<strong>{selectedNote.ingestedBy || selectedNote.userName || "Unknown user"}</strong>
 						</div>
 						<div class="detail-kv">
+							<span>Ingest scope</span>
+							<strong>{selectedNote.scope || "None"}</strong>
+						</div>
+						<div class="detail-kv">
 							<span>Created</span>
 							<strong>{formatHitlDate(selectedNote.createdAt)}</strong>
 						</div>
@@ -452,6 +458,7 @@ export function HitlReviewPanel({
 							<span>User input</span>
 							<textarea readOnly rows="4" value={selectedNote.userInput || selectedNote.prompt || ""} />
 						</label>
+						<HitlReviewChecklist />
 						<HitlProposalSummary
 							activeRowKey={activeProposalRowKey}
 							graph={graph}

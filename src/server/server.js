@@ -286,6 +286,7 @@ export function createApp(services) {
 			sessionId: optionalSessionId(req.body),
 			memoryMessages: optionalMemoryMessages(req.body),
 			includeUnverifiedKnowledge: Boolean(req.body?.includeUnverifiedKnowledge),
+			scope: String(req.body?.scope ?? ""),
 		});
 
 		res.json({
@@ -293,6 +294,7 @@ export function createApp(services) {
 			entryNodes: result.entryNodes,
 			graph: result.graph,
 			depth: result.depth,
+			scope: result.scope,
 			sessionId: result.sessionId,
 		});
 	}));
@@ -493,6 +495,7 @@ export function createApp(services) {
 			text,
 			source: "web",
 			userName: requireIngestUserName(req),
+			scope: String(req.body?.scope ?? ""),
 		});
 		const graph = await graphStore.getGraphPreview(DEFAULT_GRAPH_LIMIT);
 

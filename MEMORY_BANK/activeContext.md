@@ -17,9 +17,15 @@ At task end, record the outcome under "Last Completed", move unfinished items to
 
 None.
 
-## Last Completed (2026-10-12)
+## Last Completed (2026-10-23)
 
-Admin panel (`/admin`), uncommitted. Owner decisions: all suggested extras; reachable from any machine with the password; password set by `npm run kg:admin:password`, stored only as a scrypt hash in local `config.json`.
+Scope (business units), uncommitted. Owner decisions: values `uc, nc, tw, cv, tr, common` from the schema; blank = not curated and matches every filter; filter `uc` matches `uc`, `common`, unscoped; filter `common` matches `common`, unscoped; BU concepts get a name prefix (`uc_qde_screen`), shared technical nodes keep API names; scope column before `metadata`, no backward compatibility; blank update keeps, filled replaces, a change of an existing non-empty node scope is flagged `AMBIGUITY:`; relation scope supported but the prompt keeps it empty; MCP ingest tools require `scope` and tell the agent to ask; one Scope picker for Ask and Ingest. Behavior: README Graph Schema > Scope; locations: codeMap Scope; rule: core.md.
+
+- Also: `--scope` for `kg:ingest` / `kg:ask`; HITL card and detail show the ingest scope; Review checklist in the HITL detail; HITL preview keeps the stored scope for blank-scope records; `list_proposals` scope filter; `get_schema` returns `scopeValues`.
+- The owner's local `schema/graphSchema.json` got the two `scope` descriptors (backup of the old file in that session's scratchpad).
+- Checks: `npm test` 109 pass (new `test/scope.test.js`, 16 tests; a deliberately broken filter rule failed 6 of them); existing tests and `kg:test-parser` fixtures moved to the new column count; bundle builds; lint clean except the two old findings (`cleanField` in graphPayload.js, `_ids` in adminRoutes.js). Not run: anything against the real stores (Neo4j and Chroma were down), the MCP smoke test, and a UI click-through.
+
+Before that (2026-10-12), the admin panel (`/admin`), committed as `d200f9b` and `6745324`. Owner decisions: all suggested extras; reachable from any machine with the password; password set by `npm run kg:admin:password`, stored only as a scrypt hash in local `config.json`.
 
 - Backend: `src/admin/` (`adminService.js`, `adminAuth.js`, `auditLog.js`), `src/server/adminRoutes.js`, `src/cli/adminPassword.js`. Maintenance writes go through `GraphWriteService` (`wipeGraph`, `clearGraphVectors`, `reindexVectors`, `repairVectorIndex`) and `HitlService` (proposal export, clear); `kg:reindex-vectors` now uses `GraphWriteService.reindexVectors()` and no longer needs a write-gate exception. New store methods: `deleteAllKnowledge`, `listIds`, `getDatabaseInfo` (Neo4j); `deleteCollections`, `clearHitlCollection`, `listCollectionsWithCounts`, `listIndexIds`, `queryCollections` (Chroma).
 - Frontend: `components/admin/` (Overview, Maintenance, Query console, Danger zone, Audit log), `/admin` link in the route switcher.
@@ -47,6 +53,9 @@ Earlier (2026-10-11, pushed): review bugs 1, 2, 5, 6, the Neo4j 5.23+ cleanup, t
 
 ## Open Follow-Ups
 
+- Scope, first run on the real stores: run `npm run kg:reindex-vectors` (or the admin Reindex) before relying on scope filters, because vectors written before scope have no `scoped` flag and are missed by filtered searches; then check the Neo4j scope Cypher and Chroma filters live (search with and without a scope), the MCP smoke test, and the UI (picker, form toggles, HITL chips, tooltip).
+- Scope retrofit (owner): admin backup -> settle pending proposals -> wipe -> re-ingest per area with the scope picker or MCP `scope`.
+- Scope is not shown in the Sigma renderer (no tooltip there) and the HITL list has no scope filter in the UI (the API and MCP have one).
 - Admin panel: restoring from a backup file is not implemented. Sessions are in memory (a restart logs out). Over plain HTTP the password travels unencrypted; HTTPS or a trusted network is needed for use from other machines. Run wipe and reindex once live on throwaway data when convenient.
 - After pulling on the work laptop, restart the MCP server in VS Code / Agentforce so the agent sees the new tools; agent setups or saved prompts naming the old tools need the new names.
 - The client-side parser `lib/hitlProposal.js` can now be replaced by the server's `records` (review finding F; part of roadmap item 1).

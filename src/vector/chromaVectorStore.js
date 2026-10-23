@@ -1,4 +1,5 @@
 import { ChromaClient } from "chromadb";
+import { formatScope, parseScope, scopeMatchValues } from "../schema/scope.js";
 
 function nodeDocument(node) {
 	return [
@@ -19,6 +20,34 @@ function relationDocument(relation) {
 	].filter(Boolean).join("\n");
 }
 
+// Chroma metadata holds no lists, so a scope is stored as one flag per value (scope_uc: true), plus
+// `scoped` (false for unscoped items, which match every filter) and `scope` as text for display.
+function scopeMetadata(scope) {
+	const values = parseScope(scope);
+	return {
+		scope: formatScope(values),
+		scoped: values.length > 0,
+		...Object.fromEntries(values.map((value) => [`scope_${value}`, true])),
+	};
+}
+
+function scopeWhere(scope) {
+	const values = scopeMatchValues(scope);
+	if (values.length === 0) {
+		return null;
+	}
+	return { $or: [...values.map((value) => ({ [`scope_${value}`]: true })), { scoped: false }] };
+}
+
+// Chroma needs $and for more than one condition.
+function combineWhere(...conditions) {
+	const parts = conditions.filter(Boolean);
+	if (parts.length === 0) {
+		return undefined;
+	}
+	return parts.length === 1 ? parts[0] : { $and: parts };
+}
+
 function previewText(value, maxLength = 240) {
 	const text = String(value ?? "").replace(/\s+/g, " ").trim();
 	return text.length > maxLength ? `${text.slice(0, maxLength - 3)}...` : text;
@@ -30,6 +59,7 @@ function hitlNoteDocument(note) {
 		`Status: ${note.status || "pending"}`,
 		`User: ${note.userName || "unknown"}`,
 		`Source: ${note.source || "unknown"}`,
+		`Scope: ${note.scope || "none"}`,
 		`Created at: ${note.createdAt || ""}`,
 		"",
 		"Human input:",
@@ -70,6 +100,7 @@ function hitlNoteFromRecord(id, document, metadata = {}) {
 		status,
 		userName,
 		source,
+		scope: metadata.scope || "",
 		createdAt,
 		userInput,
 		llmResponse,
@@ -273,6 +304,7 @@ export class ChromaVectorStore {
 				status: note.status || "pending",
 				userName: note.userName || "unknown",
 				source: note.source || "unknown",
+				scope: String(note.scope ?? ""),
 				createdAt,
 				inputPreview: previewText(note.userInput),
 				llmPreview: previewText(note.llmResponse),
@@ -379,13 +411,15 @@ export class ChromaVectorStore {
 		}
 	}
 
-	async queryHitlNotes(query, topK) {
+	// `scope` keeps proposals ingested for that scope, for "common", and without a scope.
+	async queryHitlNotes(query, topK, { scope = "" } = {}) {
 		const collection = await this.getHitlCollection();
+		const scopeValues = scopeMatchValues(scope);
 		const results = await collection.query({
 			queryTexts: this.embeddingProvider ? undefined : [query],
 			queryEmbeddings: this.embeddingProvider ? [await this.embeddingProvider.embedQuery(query)] : undefined,
 			nResults: topK,
-			where: { status: "pending" },
+			where: combineWhere({ status: "pending" }, scopeValues.length > 0 ? { scope: { $in: [...scopeValues, ""] } } : null),
 		});
 
 		const ids = results.ids?.[0] ?? [];
@@ -421,6 +455,7 @@ export class ChromaVectorStore {
 					name: node.name,
 					type: node.type,
 					description: node.description ?? "",
+					...scopeMetadata(node.scope),
 				})),
 			});
 		}
@@ -438,6 +473,7 @@ export class ChromaVectorStore {
 					relation: relation.relation,
 					information: relation.information ?? "",
 					description: relation.description ?? "",
+					...scopeMetadata(relation.scope),
 				})),
 			});
 		}
@@ -495,14 +531,14 @@ export class ChromaVectorStore {
 		});
 	}
 
-	// `type` limits results to one node type (stored in the vector metadata).
-	async queryNodes(query, topK, { type = "" } = {}) {
+	// `type` limits results to one node type, `scope` to nodes matching a scope filter (vector metadata).
+	async queryNodes(query, topK, { type = "", scope = "" } = {}) {
 		const collection = await this.getNodeCollection();
 		const results = await collection.query({
 			queryTexts: this.embeddingProvider ? undefined : [query],
 			queryEmbeddings: this.embeddingProvider ? [await this.embeddingProvider.embedQuery(query)] : undefined,
 			nResults: topK,
-			where: type ? { type } : undefined,
+			where: combineWhere(type ? { type } : null, scopeWhere(scope)),
 		});
 
 		const ids = results.ids?.[0] ?? [];
@@ -518,14 +554,14 @@ export class ChromaVectorStore {
 		}));
 	}
 
-	// `relation` limits results to one relation type (stored in the vector metadata).
-	async queryRelations(query, topK, { relation = "" } = {}) {
+	// `relation` limits results to one relation type, `scope` to relations matching a scope filter.
+	async queryRelations(query, topK, { relation = "", scope = "" } = {}) {
 		const collection = await this.getRelationCollection();
 		const results = await collection.query({
 			queryTexts: this.embeddingProvider ? undefined : [query],
 			queryEmbeddings: this.embeddingProvider ? [await this.embeddingProvider.embedQuery(query)] : undefined,
 			nResults: topK,
-			where: relation ? { relation } : undefined,
+			where: combineWhere(relation ? { relation } : null, scopeWhere(scope)),
 		});
 
 		const ids = results.ids?.[0] ?? [];

@@ -4,6 +4,7 @@ import { GraphPanelHeader } from "./GraphPanelHeader.js";
 import { DEFAULT_NODE_COLOR, HITL_CONTEXT_NODE_COLOR, GRAPH_SELECTED_NODE_BORDER_WIDTH, GRAPH_SELECTION_COLOR, GRAPH_SELECTION_DIM_NODE_COLOR, GRAPH_SELECTION_DIM_EDGE_COLOR, NEOVIS_EDGE_SIZE, HITL_PENDING_EDGE_WIDTH, createNodeTypeColorMap, nodeColorFromTypeMap, hitlOperationColor, selectedNodeColor, selectedEdgeColor, hitlOperationEdgeStyle, hitlNodeColor, createLinkCountByNodeId, nodeSizeForLinkCount } from "./graphStyle.js";
 import { normalizeGraph } from "../../lib/graphData.js";
 import { truncate, relationLabel, displayText, clampNumber } from "../../lib/utils.js";
+import { scopeLabel } from "../../lib/scope.js";
 
 const NEOVIS_ARROW_SCALE_FACTOR = 0.6;
 const NEOVIS_NODE_FOCUS_SCALE = 1.55;
@@ -104,6 +105,7 @@ function createNeoVisGraphData(graph) {
 				title: neoVisTitle([
 					["Label", node.label],
 					["Type", node.type],
+					["Scope", scopeLabel(node.scope)],
 					["Description", displayText(node.description)],
 					["Metadata", displayText(node.metadata)],
 					["HITL", node.pendingHitl ? `${node.pendingOperation || "pending"} by ${node.ingestedBy || "unknown"}` : ""],
@@ -189,6 +191,7 @@ function createNeoVisGraphData(graph) {
 					title: neoVisTitle([
 						["Relation", relationLabel(relation.relation)],
 						["Information", displayText(relation.information)],
+						["Scope", scopeLabel(relation.scope)],
 						["Description", displayText(relation.description)],
 						["Metadata", displayText(relation.metadata)],
 						["HITL", relation.pendingHitl ? `${relation.pendingOperation || "pending"} by ${relation.ingestedBy || "unknown"}` : ""],
