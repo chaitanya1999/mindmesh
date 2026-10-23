@@ -31,6 +31,17 @@ function scopeMetadata(scope) {
 	};
 }
 
+// Chroma's upsert merges metadata keys, so a flag of a removed scope value would stay true. Returns the
+// stale scope_* flags of the stored records, set to false, per id.
+async function staleScopeFlags(collection, ids) {
+	const stored = await collection.get({ ids, include: ["metadatas"] });
+	return new Map((stored.ids ?? []).map((id, index) => [id, Object.fromEntries(
+		Object.entries(stored.metadatas?.[index] ?? {})
+			.filter(([key, value]) => key.startsWith("scope_") && value === true)
+			.map(([key]) => [key, false]),
+	)]));
+}
+
 function scopeWhere(scope) {
 	const values = scopeMatchValues(scope);
 	if (values.length === 0) {
@@ -445,6 +456,7 @@ export class ChromaVectorStore {
 
 		if (nodes.length > 0) {
 			const documents = nodes.map(nodeDocument);
+			const stale = await staleScopeFlags(nodeCollection, nodes.map((node) => node.id));
 			await nodeCollection.upsert({
 				ids: nodes.map((node) => node.id),
 				documents,
@@ -455,6 +467,7 @@ export class ChromaVectorStore {
 					name: node.name,
 					type: node.type,
 					description: node.description ?? "",
+					...stale.get(node.id),
 					...scopeMetadata(node.scope),
 				})),
 			});
@@ -462,6 +475,7 @@ export class ChromaVectorStore {
 
 		if (relations.length > 0) {
 			const documents = relations.map(relationDocument);
+			const stale = await staleScopeFlags(relationCollection, relations.map((relation) => relation.id));
 			await relationCollection.upsert({
 				ids: relations.map((relation) => relation.id),
 				documents,
@@ -473,6 +487,7 @@ export class ChromaVectorStore {
 					relation: relation.relation,
 					information: relation.information ?? "",
 					description: relation.description ?? "",
+					...stale.get(relation.id),
 					...scopeMetadata(relation.scope),
 				})),
 			});

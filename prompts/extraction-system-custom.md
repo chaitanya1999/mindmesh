@@ -117,7 +117,7 @@ SCOPE RULES:
 - The same concept in two units is two different nodes (uc_qde_screen and nc_qde_screen). Never reuse an existing node that is prefixed or scoped for another unit, even when its label matches.
 - Shared technical artefacts (Apex classes, Aura and LWC components, flows, objects, custom metadata, labels, settings, APIs) keep their exact API name without a prefix. Leave their scope empty unless the input states which units use them.
 - Use common only when the input says every unit shares the item. Never combine common with other values.
-- Leave relation scope empty unless the input says the relation applies only to specific units while its endpoints are shared.
+- Relation scope is empty in almost every record. A relation that touches a unit-specific node already belongs to that unit, so never repeat the unit on the relation. Set relation scope only when both endpoints are shared (unscoped or common) and the input says the relation exists only for some units.
 - In NODE_UPDATE and RELATION_UPDATE, leave scope empty to keep the stored scope. Fill it only to change the scope, and then give the complete new scope.
 - Use the selected scope (below, next to the new user input) as the business unit of the input, unless the input explicitly names another unit for a concept.
 

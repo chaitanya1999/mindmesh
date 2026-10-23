@@ -385,8 +385,10 @@ class FakeChromaCollection {
 
 	async upsert({ ids, documents = [], metadatas = [] }) {
 		this.failIfAsked("upsert");
+		// Like Chroma, an upsert of an existing record merges its metadata keys instead of replacing them.
 		ids.forEach((id, index) => {
-			this.records.set(id, { id, document: documents[index] ?? "", metadata: clone(metadatas[index] ?? {}) });
+			const existing = this.records.get(id)?.metadata ?? {};
+			this.records.set(id, { id, document: documents[index] ?? "", metadata: { ...clone(existing), ...clone(metadatas[index] ?? {}) } });
 		});
 	}
 

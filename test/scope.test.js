@@ -189,6 +189,16 @@ describe("Scope in direct edits", () => {
 		assert.deepEqual((await services.graphStore.getNode("node:a_screen")).scope, ["nc", "uc"]);
 	});
 
+	it("drops the vector flags of removed scope values", async () => {
+		await seedGraph({ nodes: [scoped("a_screen", "screen", ["uc"])] });
+
+		await http.put("/api/hitl/nodes/node%3Aa_screen", { label: "A", type: "screen", scope: ["nc"], reviewedBy: "owner" });
+
+		const search = async (scope) => (await client.callTool({ name: "search_nodes", arguments: { query: "A", scope } })).content[0].text;
+		assert.doesNotMatch(await search("uc"), /node:a_screen/);
+		assert.match(await search("nc"), /node:a_screen/);
+	});
+
 	it("rejects an invalid scope in a form edit", async () => {
 		await seedGraph({ nodes: [node("a_screen", "screen")] });
 

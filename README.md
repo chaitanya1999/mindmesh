@@ -831,7 +831,7 @@ Node metadata:
 - `name`
 - `type`
 - `description`
-- `scope` (text, `nc,uc`), `scoped` (false when unscoped), and one flag per value (`scope_uc: true`), because Chroma metadata holds no lists. Scope filters query these flags; vectors written before scope existed have no `scoped` flag and are missed by scope filters until `npm run kg:reindex-vectors`.
+- `scope` (text, `nc,uc`), `scoped` (false when unscoped), and one flag per value (`scope_uc: true`), because Chroma metadata holds no lists. Chroma's upsert merges metadata keys, so an upsert sets the flags of values no longer in the scope to `false`. Scope filters query these flags; vectors written before scope existed have no `scoped` flag and are missed by scope filters until `npm run kg:reindex-vectors`.
 
 Relationship documents concatenate:
 

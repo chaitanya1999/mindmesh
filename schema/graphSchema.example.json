@@ -84,7 +84,7 @@
 			},
 			{
 				"name": "scope",
-				"description": "Business units the relation applies to, comma-separated. Leave it empty in almost all cases; set it only when the input says the relation applies to specific units while its endpoints are shared.",
+				"description": "Business units the relation applies to, comma-separated. Empty in almost all cases: a relation touching a unit-specific node already belongs to that unit, so never repeat the unit here. Set it only when both endpoints are shared (unscoped or common) and the input says the relation exists only for some units.",
 				"constraints": {
 					"allowedValues": ["uc", "nc", "tw", "cv", "tr", "common"]
 				}
