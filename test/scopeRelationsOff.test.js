@@ -1,4 +1,4 @@
-// The default scope switches (config scope.nodes on, scope.relations off): relation scopes are dropped from
+// Node scopes on, relation scopes off (the LOS setting in config.example.json): relation scopes are dropped from
 // records, left out of the prompt, the MCP tools and the UI settings, and kept on direct edits.
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -16,8 +16,7 @@ const SCOPED_SCHEMA = {
 	relationshipProperties: { fields: [{ ...SCOPE_FIELD, description: "Relation business units." }] },
 };
 
-// No `scope` option: the config defaults apply.
-const services = createTestServices({ mode: "auto" });
+const services = createTestServices({ mode: "auto", scope: { nodes: true, relations: false } });
 const writeScopedSchema = () => fs.writeFileSync(services.schemaPath, `${JSON.stringify(SCOPED_SCHEMA, null, "\t")}\n`);
 writeScopedSchema();
 const client = new Client({ name: "mindmesh-test", version: "0.0.0" });
@@ -39,7 +38,7 @@ beforeEach(() => {
 	writeScopedSchema();
 });
 
-describe("Relation scopes switched off (default)", () => {
+describe("Relation scopes switched off", () => {
 	it("tells the UI which scopes are in use", async () => {
 		const response = await http.get("/api/graph");
 

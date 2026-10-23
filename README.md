@@ -177,7 +177,7 @@ Replacement model:
 
 `mcp.allowReviewDecisions` (default `false`) registers the MCP tools `approve_proposal` and `reject_proposal`; see MCP Server.
 
-`scope.nodes` (default `true`) and `scope.relations` (default `false`) switch node and relation scopes on or off; see Scope.
+`scope.nodes` and `scope.relations` switch node and relation scopes on; both are off when not set. `config.example.json` turns node scopes on (the LOS setting); see Scope.
 
 `admin.passwordHash` (written by `npm run kg:admin:password`, empty by default, which disables the admin panel) and `admin.sessionMinutes` (default 30) configure the admin panel; see Admin Panel.
 
@@ -233,7 +233,7 @@ Web/CLI ingest and MCP `submit_ingest` use the same rule and return the reasons 
 
 ### Scope (business units)
 
-Nodes and relations can carry a `scope`: a list of values saying which parts of the organisation they belong to. Each kind is switched on or off in config: `scope.nodes` (default on) and `scope.relations` (default off). For the LOS project the values are the business units `uc`, `nc`, `tw`, `cv`, `tr`, plus `common` for things every unit shares. The allowed values are the `constraints.allowedValues` of the `scope` field descriptor in `nodeProperties.fields` (and `relationshipProperties.fields` for relations, which falls back to the node list); without a descriptor any value is accepted. The rules are in `src/schema/scope.js`. An existing local `schema/graphSchema.json` needs the two `scope` descriptors copied from `graphSchema.example.json`; the picker and the validation read the values from there.
+Nodes and relations can carry a `scope`: a list of values saying which parts of the organisation they belong to. Each kind is switched on in config with `scope.nodes` and `scope.relations`; both are off when not set (`config.example.json` turns node scopes on). For the LOS project the values are the business units `uc`, `nc`, `tw`, `cv`, `tr`, plus `common` for things every unit shares. The allowed values are the `constraints.allowedValues` of the `scope` field descriptor in `nodeProperties.fields` (and `relationshipProperties.fields` for relations, which falls back to the node list); without a descriptor any value is accepted. The rules are in `src/schema/scope.js`. An existing local `schema/graphSchema.json` needs the two `scope` descriptors copied from `graphSchema.example.json`; the picker and the validation read the values from there.
 
 - An empty scope means "not curated, or not needed" and is the normal state for shared technical artefacts. `common` cannot be combined with other values. An unknown value or `common` with other values is a `scope` schema violation, so the record goes to review.
 - Business-unit specific concepts are named with the unit as a prefix (`uc_qde_screen`, `nc_qde_screen`), because the same concept in two units is two nodes. MindMesh never derives the scope from the name.

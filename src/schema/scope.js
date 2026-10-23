@@ -8,7 +8,8 @@ export const COMMON_SCOPE = "common";
 // Which kinds of scope are in use (config `scope.nodes`, `scope.relations`; set once by createMindMesh()).
 // A switched-off kind keeps its record column, but values are dropped, prompts and forms leave it out, and
 // filters ignore it. Stored values are kept.
-const DEFAULT_SCOPE_SETTINGS = { nodes: true, relations: false };
+// Both off unless config switches them on.
+const DEFAULT_SCOPE_SETTINGS = { nodes: false, relations: false };
 let scopeSettings = { ...DEFAULT_SCOPE_SETTINGS };
 
 export function setScopeSettings(settings = {}) {

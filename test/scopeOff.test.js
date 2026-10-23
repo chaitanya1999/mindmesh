@@ -1,5 +1,5 @@
-// Both scope switches off (config scope.nodes and scope.relations false): MindMesh behaves as if scope did
-// not exist, but stored scopes are kept.
+// Both scope switches off (the default when config has no `scope`): MindMesh behaves as if scope did not
+// exist, but stored scopes are kept.
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { after, before, beforeEach, describe, it } from "node:test";
@@ -12,7 +12,8 @@ import { TEST_SCHEMA, createTestServices, node, records, startHttp } from "./hel
 const SCOPE_FIELD = { name: "scope", description: "Node business units.", constraints: { allowedValues: ["uc", "nc", "common"] } };
 const SCOPED_SCHEMA = { ...TEST_SCHEMA, nodeProperties: { fields: [SCOPE_FIELD] } };
 
-const services = createTestServices({ mode: "auto", scope: { nodes: false, relations: false } });
+// No `scope` option: the defaults apply.
+const services = createTestServices({ mode: "auto" });
 const writeScopedSchema = () => fs.writeFileSync(services.schemaPath, `${JSON.stringify(SCOPED_SCHEMA, null, "\t")}\n`);
 writeScopedSchema();
 const client = new Client({ name: "mindmesh-test", version: "0.0.0" });
