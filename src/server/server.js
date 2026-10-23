@@ -10,6 +10,7 @@ import { buildTriplets } from "../hitl/hitlService.js";
 import { createMindMesh, isMainModule } from "../mindmesh.js";
 import { registerAdminRoutes } from "./adminRoutes.js";
 import { readEditableGraphSchema, saveEditableGraphSchema } from "../schema/graphSchema.js";
+import { getScopeSettings } from "../schema/scope.js";
 
 // HTTP layer only: request parsing, file uploads, and response shapes. HITL decisions live in HitlService,
 // graph writes in GraphWriteService.
@@ -193,10 +194,12 @@ export function createApp(services) {
 	const { config, graphStore, hitlService, ragService, jobsService, adminService } = services;
 	const app = express();
 
+	// The UI reads type lists and scope values from `schema`, and which scope fields to show from `scopeSettings`.
 	function withGraphSchema(graph) {
 		return {
 			...graph,
 			schema: hitlService.currentSchema(),
+			scopeSettings: getScopeSettings(),
 		};
 	}
 

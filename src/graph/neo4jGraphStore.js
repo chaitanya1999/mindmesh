@@ -79,10 +79,10 @@ function compactString(value) {
 	return String(value ?? "").trim();
 }
 
-// Cypher condition for the scope filter on node `n` (or relation) bound to `variable`: unscoped items
-// always match. Pass $scopeValues from scopeMatchValues(); an empty list disables the filter.
-function scopeCondition(variable) {
-	return `(size($scopeValues) = 0 OR coalesce(size(${variable}.scope), 0) = 0 OR any(s IN ${variable}.scope WHERE s IN $scopeValues))`;
+// Cypher condition for the scope filter on the node or relation bound to `variable`: unscoped items always
+// match. `parameter` holds scopeMatchValues() for that kind; an empty list disables the filter.
+function scopeCondition(variable, parameter = "nodeScopeValues") {
+	return `(size($${parameter}) = 0 OR coalesce(size(${variable}.scope), 0) = 0 OR any(s IN ${variable}.scope WHERE s IN $${parameter}))`;
 }
 
 function sessionOptions(config) {
@@ -296,10 +296,10 @@ export class Neo4jGraphStore {
 						WHERE (size($relationTypes) = 0 OR r.relation IN $relationTypes)
 							AND (size($nodeTypes) = 0 OR m.type IN $nodeTypes)
 							AND ${scopeCondition("m")}
-							AND ${scopeCondition("r")}
+							AND ${scopeCondition("r", "relationScopeValues")}
 						RETURN r, startNode(r).id AS sourceId, endNode(r).id AS targetId, m
 						`,
-						{ frontier, relationTypes, nodeTypes, scopeValues: scopeMatchValues(scope) },
+						{ frontier, relationTypes, nodeTypes, nodeScopeValues: scopeMatchValues(scope, "node"), relationScopeValues: scopeMatchValues(scope, "relation") },
 					),
 				);
 				const next = [];
@@ -525,7 +525,7 @@ export class Neo4jGraphStore {
 						n.label ASC
 					LIMIT $limit
 					`,
-					{ query: text, type: compactString(type), scopeValues: scopeMatchValues(scope), limit: neo4j.int(safeLimit) },
+					{ query: text, type: compactString(type), nodeScopeValues: scopeMatchValues(scope, "node"), limit: neo4j.int(safeLimit) },
 				),
 			);
 

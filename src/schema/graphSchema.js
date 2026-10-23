@@ -1,6 +1,7 @@
 import fs from "node:fs";
 
 import { toSnakeCase } from "../ingestion/graphPayload.js";
+import { scopeEnabled } from "./scope.js";
 
 function readJson(filePath) {
 	if (!filePath || !fs.existsSync(filePath)) {
@@ -172,15 +173,22 @@ export function formatSchemaCatalog(schema) {
  * This renders per-property descriptions and constraints for both node and relationship fields.
  * Used by promptRegistry.js to inject field-level guidance after the OUTPUT SYNTAX section.
  */
+// A switched-off scope (config scope.nodes / scope.relations) is left out of the guidance.
+function guidanceFields(fields = [], kind) {
+	return fields.filter((field) => field?.name !== "scope" || scopeEnabled(kind));
+}
+
 export function formatFieldGuidance(schema) {
 	const parts = [];
+	const nodeFields = guidanceFields(schema.nodeProperties?.fields, "node");
+	const relationFields = guidanceFields(schema.relationshipProperties?.fields, "relation");
 
-	if (schema.nodeProperties?.fields && schema.nodeProperties.fields.length > 0) {
-		parts.push(formatPropertyGuidance("Node fields:", schema.nodeProperties.fields));
+	if (nodeFields.length > 0) {
+		parts.push(formatPropertyGuidance("Node fields:", nodeFields));
 	}
 
-	if (schema.relationshipProperties?.fields && schema.relationshipProperties.fields.length > 0) {
-		parts.push(formatPropertyGuidance("Relationship fields:", schema.relationshipProperties.fields));
+	if (relationFields.length > 0) {
+		parts.push(formatPropertyGuidance("Relationship fields:", relationFields));
 	}
 
 	if (parts.length === 0) {

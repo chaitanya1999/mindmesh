@@ -112,14 +112,25 @@ EXTRACTION RULES:
 
 
 SCOPE RULES:
-- scope lists the business units a node or relation belongs to, comma-separated, using only the allowed values in the field guidance. Empty means not specified.
+{{#SCOPE_NODES}}
+- scope lists the business units a node belongs to, comma-separated, using only the allowed values in the field guidance. Empty means not specified.
+- Read the input from the selected scope (below, next to the new user input): a concept specific to one unit belongs to the selected unit unless the input explicitly names another unit for it.
 - A business-unit specific concept (a screen, section, field, rule, or process of one unit) gets the unit as a name prefix and as its scope, for example NODE_CREATE|uc_qde_screen|QDE Screen|screen||uc|. Keep the prefix out of the label.
-- The same concept in two units is two different nodes (uc_qde_screen and nc_qde_screen). Never reuse an existing node that is prefixed or scoped for another unit, even when its label matches.
+- The same concept in two units is two different nodes (uc_qde_screen and nc_qde_screen). Existing graph context covers every unit and shows each node's scope. Reuse a node prefixed or scoped for another unit only when the input explicitly refers to that unit's item; otherwise create or reuse the selected unit's own node.
+- Never invent a node of another unit from a passing mention: use another unit's node only if it exists in Existing graph context.
 - Shared technical artefacts (Apex classes, Aura and LWC components, flows, objects, custom metadata, labels, settings, APIs) keep their exact API name without a prefix. Leave their scope empty unless the input states which units use them.
 - Use common only when the input says every unit shares the item. Never combine common with other values.
-- Relation scope is empty in almost every record. A relation that touches a unit-specific node already belongs to that unit, so never repeat the unit on the relation. Set relation scope only when both endpoints are shared (unscoped or common) and the input says the relation exists only for some units.
-- In NODE_UPDATE and RELATION_UPDATE, leave scope empty to keep the stored scope. Fill it only to change the scope, and then give the complete new scope.
-- Use the selected scope (below, next to the new user input) as the business unit of the input, unless the input explicitly names another unit for a concept.
+- In NODE_UPDATE, leave scope empty to keep the stored scope. Fill it only to change the scope, and then give the complete new scope.
+{{/SCOPE_NODES}}
+{{^SCOPE_NODES}}
+- Always leave the scope field of node records empty.
+{{/SCOPE_NODES}}
+{{#SCOPE_RELATIONS}}
+- Relation scope is empty in almost every record. A relation that touches a unit-specific node already belongs to that unit, so never repeat the unit on the relation. Set relation scope only when both endpoints are shared (unscoped or common) and the input says the relation exists only for some units. In RELATION_UPDATE, leave it empty to keep the stored scope.
+{{/SCOPE_RELATIONS}}
+{{^SCOPE_RELATIONS}}
+- Always leave the scope field of relation records empty.
+{{/SCOPE_RELATIONS}}
 
 
 METADATA RULES:
@@ -214,9 +225,9 @@ Thought process, explanations and low-value descriptions are forbidden.
 
 VALID OUTPUT EXAMPLE:
 <start#$#$>
-NODE_CREATE|uc_ekyc_screen|EKYC Screen|screen|Screen that captures identity verification details.|uc|
+NODE_CREATE|ekyc_screen|EKYC Screen|screen|Screen that captures identity verification details.||
 NODE_CREATE|pan_api|PAN API|api|API used to verify PAN details.||
-RELATION_CREATE|uc_ekyc_screen|pan_api|uses|for verification|Triggered during identity verification.||
+RELATION_CREATE|ekyc_screen|pan_api|uses|for verification|Triggered during identity verification.||
 </end#$#$>
 
 
@@ -250,8 +261,10 @@ RELATION_CREATE|ekyc_screen|pan_api|invokes||||
 </end#$#$>
 
 
+{{#SCOPE_NODES}}
 {{INGEST_SCOPE}}
 
+{{/SCOPE_NODES}}
 New user input:
 {{USER_INPUT}}
 

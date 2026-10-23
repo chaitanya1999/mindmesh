@@ -90,6 +90,10 @@
 	"schema": {
 		"path": "./schema/graphSchema.json"
 	},
+	"scope": {
+		"nodes": true,
+		"relations": false
+	},
 	"logging": {
 		"enabled": false,
 		"directory": "./logs",

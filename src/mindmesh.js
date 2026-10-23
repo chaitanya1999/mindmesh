@@ -10,6 +10,7 @@ import { KgJobsService } from "./jobs/kgJobsService.js";
 import { createLlmProvider } from "./llm/providerFactory.js";
 import { loadPrompts } from "./prompts/promptRegistry.js";
 import { HybridRagService } from "./rag/hybridRagService.js";
+import { setScopeSettings } from "./schema/scope.js";
 import { createVectorStore } from "./vector/providerFactory.js";
 
 // Composition root: builds the stores and services once, for the web server, the MCP server, and the CLIs.
@@ -17,6 +18,8 @@ import { createVectorStore } from "./vector/providerFactory.js";
 // `withLlm: false` creates no LLM provider; the MCP server uses it, because the calling agent does the reasoning.
 export function createMindMesh(config, overrides = {}) {
 	const { withLlm = true, llmProviderName } = overrides;
+	// Process-wide: which kinds of scope are in use (config scope.nodes / scope.relations).
+	setScopeSettings(config.scope);
 	const prompts = overrides.prompts ?? loadPrompts(config);
 	const llmProvider = overrides.llmProvider !== undefined
 		? overrides.llmProvider

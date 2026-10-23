@@ -24,7 +24,7 @@ export function NodeForm({
 	onDraftChange,
 	onSave,
 	saveLabel = "Save node",
-	nodeScopeValues = [],
+	nodeScopeValues = null,
 }) {
 	const isControlled = Boolean(controlledDraft && onDraftChange);
 	// The id is node:<name>, so nodes already in the graph keep their name. Pending items without an
@@ -73,9 +73,11 @@ export function NodeForm({
 				</datalist>
 				<input list="node-type-options" value={draft.type} onInput={(event) => updateField("type", event.currentTarget.value)} placeholder="Choose a schema type" required />
 			</Field>
-			<Field label="Scope">
-				<ScopeField value={draft.scope ?? []} scopeValues={nodeScopeValues} onChange={(scope) => updateField("scope", scope)} />
-			</Field>
+			{nodeScopeValues && (
+				<Field label="Scope">
+					<ScopeField value={draft.scope ?? []} scopeValues={nodeScopeValues} onChange={(scope) => updateField("scope", scope)} />
+				</Field>
+			)}
 			<Field label="Description">
 				<textarea rows="4" value={draft.description} onInput={(event) => updateField("description", event.currentTarget.value)} />
 			</Field>

@@ -5,7 +5,7 @@ import { resolveGraphPayload } from "../ingestion/graphResolution.js";
 import { countReviewSignals, reviewReasons } from "../ingestion/reviewSignals.js";
 import { createDebugLogger, errorDetails, logStep } from "../logging/debugLogger.js";
 import { buildApprovalSchema, loadGraphSchema, mergeSchemaTypes } from "../schema/graphSchema.js";
-import { normalizeScopeFilter, parseScope, scopeAllowedValues, scopeProblems } from "../schema/scope.js";
+import { normalizeScopeFilter, parseScope, scopeAllowedValues, scopeEnabled, scopeProblems } from "../schema/scope.js";
 
 // Human-in-the-loop: decides whether a change may enter the graph, and keeps the proposals for the ones that
 // need a reviewer. Owns the proposal lifecycle (submit, list, preview, reviewer notes, regenerate, approve,
@@ -172,7 +172,8 @@ function normalizeManualNode(body, existingId = "") {
 		name,
 		type: requireString(toSnakeCase(body?.type), "Node type"),
 		description: String(body?.description ?? "").trim(),
-		scope: parseScope(body?.scope),
+		// Switched-off scopes are not taken from forms (editNode keeps the stored value).
+		scope: scopeEnabled("node") ? parseScope(body?.scope) : [],
 	};
 }
 
@@ -194,7 +195,7 @@ function normalizeManualRelation(body, existingId = "") {
 		relation,
 		information: String(body?.information ?? "").trim(),
 		description: String(body?.description ?? "").trim(),
-		scope: parseScope(body?.scope),
+		scope: scopeEnabled("relation") ? parseScope(body?.scope) : [],
 	};
 }
 
@@ -692,12 +693,13 @@ export class HitlService {
 	async submitRecords({ graphRecords, text, userName, source, scope: requestedScope = "", debugLogger }) {
 		const graphSchema = this.currentSchema();
 		const scope = normalizeScopeFilter(requestedScope, graphSchema);
-		const pendingHitl = await this.ingestionService.retrievePendingHitlContext({ text, graphSchema, scope });
+		const pendingHitl = await this.ingestionService.retrievePendingHitlContext({ text, graphSchema });
 		const { graphPayload, proposalText } = await this.ingestionService.prepareExtraction({
 			extractedGraph: parseGraphExtraction(graphRecords),
 			rawResponse: graphRecords,
 			pendingHitl,
 			graphSchema,
+			scope,
 		});
 
 		return this.submit({ text, source, userName, scope, graphPayload, proposalText, debugLogger });
@@ -908,13 +910,13 @@ export class HitlService {
 			text: note.userInput,
 			graphSchema: schema,
 			excludeNoteIds: [note.id],
-			scope: note.scope || "",
 		});
 		const { graphPayload, proposalText } = await this.ingestionService.prepareExtraction({
 			extractedGraph: parsedGraph,
 			rawResponse,
 			pendingHitl,
 			graphSchema: schema,
+			scope: note.scope || "",
 		});
 		const reviewSignals = countReviewSignals(graphPayload);
 
@@ -1045,6 +1047,9 @@ export class HitlService {
 		if (pending) {
 			return { pending };
 		}
+		if (!scopeEnabled("node") && nodeId) {
+			node.scope = (await this.graphStore.getNode(nodeId))?.scope ?? [];
+		}
 
 		return { node: await this.graphWriter.writeNode(node) };
 	}
@@ -1069,6 +1074,9 @@ export class HitlService {
 		});
 		if (pending) {
 			return { pending };
+		}
+		if (!scopeEnabled("relation") && relationId) {
+			relation.scope = (await this.graphStore.getRelation(relationId))?.scope ?? [];
 		}
 
 		return { relation: await this.graphWriter.writeRelation(relation, { replaceId: relationId }) };

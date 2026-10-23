@@ -15,8 +15,8 @@ function clone(value) {
 }
 
 // Same rule as Neo4jGraphStore's scope condition: unscoped items always match.
-function inScope(item, scope) {
-	const values = scopeMatchValues(scope);
+function inScope(item, scope, kind = "node") {
+	const values = scopeMatchValues(scope, kind);
 	const itemScope = item?.scope ?? [];
 	return values.length === 0 || itemScope.length === 0 || itemScope.some((value) => values.includes(value));
 }
@@ -135,7 +135,7 @@ export class MemoryGraphStore {
 		for (let hop = 1; hop <= depth && frontier.length > 0; hop += 1) {
 			const next = [];
 			for (const relation of this.relations.values()) {
-				if ((relationTypes.length > 0 && !relationTypes.includes(relation.relation)) || !inScope(relation, scope)) {
+				if ((relationTypes.length > 0 && !relationTypes.includes(relation.relation)) || !inScope(relation, scope, "relation")) {
 					continue;
 				}
 				const steps = [];

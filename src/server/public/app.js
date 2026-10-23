@@ -649,8 +649,9 @@ function App() {
 	const [userName, setUserName] = useState(() => readSessionValue(WORKSPACE_USER_STORAGE_KEY));
 	// One scope for Ask and Ingest, kept for the browser session.
 	const [workspaceScope, setWorkspaceScope] = useState(() => readSessionValue(WORKSPACE_SCOPE_STORAGE_KEY));
-	// Some responses (ingest) carry a graph without the schema; keep the last schema seen.
+	// Some responses carry a graph without the schema; keep the last schema and scope settings seen.
 	const [graphSchema, setGraphSchema] = useState(null);
+	const [scopeSettings, setScopeSettings] = useState(null);
 	const [isEditingUserName, setIsEditingUserName] = useState(false);
 	const defaultWorkspaceWidth = isHitlRoute || isJobsRoute || isSchemaRoute
 		? DEFAULT_TOOL_WORKSPACE_WIDTH
@@ -679,9 +680,13 @@ function App() {
 		if (graph?.schema) {
 			setGraphSchema(graph.schema);
 		}
+		if (graph?.scopeSettings) {
+			setScopeSettings(graph.scopeSettings);
+		}
 	}, [graph]);
-	const nodeScopeValues = useMemo(() => scopeValuesFromSchema(graphSchema, "node"), [graphSchema]);
-	const relationScopeValues = useMemo(() => scopeValuesFromSchema(graphSchema, "relation"), [graphSchema]);
+	// null hides the scope field (that kind of scope is switched off in config, or settings not loaded yet).
+	const nodeScopeValues = useMemo(() => (scopeSettings?.nodes ? scopeValuesFromSchema(graphSchema, "node") : null), [graphSchema, scopeSettings]);
+	const relationScopeValues = useMemo(() => (scopeSettings?.relations ? scopeValuesFromSchema(graphSchema, "relation") : null), [graphSchema, scopeSettings]);
 	const changeWorkspaceScope = useCallback((scope) => {
 		setWorkspaceScope(scope);
 		writeSessionValue(WORKSPACE_SCOPE_STORAGE_KEY, scope);
@@ -1037,7 +1042,7 @@ function App() {
 					sessionId,
 					memoryMessages,
 					includeUnverifiedKnowledge,
-					scope: workspaceScope,
+					scope: nodeScopeValues ? workspaceScope : "",
 				}),
 			});
 			const answerText = result.answer || "The graph does not contain enough information yet.";
@@ -1059,7 +1064,7 @@ function App() {
 			setIsBusy(false);
 			setTimeout(() => inputRef.current?.focus(), 0);
 		}
-	}, [appendMessage, askText, includeUnverifiedKnowledge, updateMessage, userName, workspaceScope]);
+	}, [appendMessage, askText, includeUnverifiedKnowledge, nodeScopeValues, updateMessage, userName, workspaceScope]);
 
 	const runJob = useCallback(async (jobType) => {
 		setIsJobBusy(true);
@@ -1120,7 +1125,7 @@ function App() {
 					const formData = new FormData();
 					formData.append("text", text);
 					formData.append("userName", activeUserName);
-					formData.append("scope", workspaceScope);
+					formData.append("scope", nodeScopeValues ? workspaceScope : "");
 					for (const file of files) {
 						formData.append("files", file);
 					}
@@ -1131,7 +1136,7 @@ function App() {
 				})()
 				: {
 					method: "POST",
-					body: JSON.stringify({ text, userName: activeUserName, scope: workspaceScope }),
+					body: JSON.stringify({ text, userName: activeUserName, scope: nodeScopeValues ? workspaceScope : "" }),
 				};
 			const result = await requestJson("/api/ingest", requestOptions);
 			const nextGraph = normalizeGraph(result.graph);
@@ -1158,7 +1163,7 @@ function App() {
 			setIsBusy(false);
 			setTimeout(() => inputRef.current?.focus(), 0);
 		}
-	}, [appendMessage, ingestFiles, ingestText, updateMessage, userName]);
+	}, [appendMessage, ingestFiles, ingestText, nodeScopeValues, updateMessage, userName, workspaceScope]);
 
 	const clearIngestChat = useCallback(() => {
 		setIngestMessages([

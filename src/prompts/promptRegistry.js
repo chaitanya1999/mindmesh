@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { formatFieldGuidance, formatSchemaCatalog, loadGraphSchema } from "../schema/graphSchema.js";
-import { COMMON_SCOPE } from "../schema/scope.js";
+import { scopeEnabled } from "../schema/scope.js";
 
 const GRAPH_SCHEMA_PLACEHOLDER = "{{GRAPH_SCHEMA}}";
 const EXISTING_GRAPH_CONTEXT_PLACEHOLDER = "{{EXISTING_GRAPH_CONTEXT}}";
@@ -8,6 +8,17 @@ const USER_INPUT_PLACEHOLDER = "{{USER_INPUT}}";
 const FIELD_GUIDANCE_PLACEHOLDER = "{{FIELD_GUIDANCE}}";
 const REVIEWER_REVISION_PLACEHOLDER = "{{REVIEWER_REVISION}}";
 const INGEST_SCOPE_PLACEHOLDER = "{{INGEST_SCOPE}}";
+
+// Conditional blocks for the scope switches: {{#SCOPE_NODES}}...{{/SCOPE_NODES}} is kept when node scopes are
+// on, {{^SCOPE_NODES}}...{{/SCOPE_NODES}} when they are off; the same for SCOPE_RELATIONS.
+const SCOPE_SECTIONS = { SCOPE_NODES: "node", SCOPE_RELATIONS: "relation" };
+const SCOPE_SECTION_PATTERN = /\{\{([#^])(SCOPE_NODES|SCOPE_RELATIONS)\}\}\r?\n?([\s\S]*?)\{\{\/\2\}\}\r?\n?/g;
+
+export function renderScopeSections(template) {
+	return String(template).replace(SCOPE_SECTION_PATTERN, (match, mode, name, body) => (
+		(mode === "#") === scopeEnabled(SCOPE_SECTIONS[name]) ? body : ""
+	));
+}
 
 function readPrompt(filePath, fallback) {
 	if (!filePath || !fs.existsSync(filePath)) {
@@ -29,7 +40,7 @@ export function loadPrompts(config) {
 	);
 
 	return {
-		extractionSystem: extractionSystemTemplate
+		extractionSystem: renderScopeSections(extractionSystemTemplate)
 			.replaceAll(GRAPH_SCHEMA_PLACEHOLDER, schemaCatalog)
 			.replaceAll(FIELD_GUIDANCE_PLACEHOLDER, fieldGuidance)
 			.replaceAll(EXISTING_GRAPH_CONTEXT_PLACEHOLDER, "No existing graph context was retrieved.")
@@ -71,7 +82,7 @@ export function buildExtractionPrompt(template, {
 	scope = "",
 	reviewerRevision = null,
 } = {}) {
-	return renderTemplate(template, {
+	return renderTemplate(renderScopeSections(template), {
 		[GRAPH_SCHEMA_PLACEHOLDER]: formatSchemaCatalog(graphSchema),
 		[FIELD_GUIDANCE_PLACEHOLDER]: formatFieldGuidance(graphSchema),
 		[EXISTING_GRAPH_CONTEXT_PLACEHOLDER]: existingGraphContext,
@@ -82,12 +93,15 @@ export function buildExtractionPrompt(template, {
 }
 
 // The scope chosen for this input (ingest picker, MCP `scope`, or the proposal's stored scope on regeneration).
+// It frames the reasoning only; the retrieved context is not filtered by it. Empty when node scopes are off.
 export function formatIngestScope(scope) {
+	if (!scopeEnabled("node")) {
+		return "";
+	}
 	if (!scope) {
 		return "Selected scope for this input: none. Set a scope only where the input itself states it.";
 	}
-	const included = scope === COMMON_SCOPE ? `items scoped ${COMMON_SCOPE}` : `items scoped ${scope}, items scoped ${COMMON_SCOPE}`;
-	return `Selected scope for this input: ${scope}. Existing graph context was limited to ${included}, and unscoped items.`;
+	return `Selected scope for this input: ${scope}. Read the input as ${scope} knowledge. Existing graph context covers every scope; each node shows its own.`;
 }
 
 // Section appended when a HITL reviewer regenerates a proposal; empty for normal ingestion.

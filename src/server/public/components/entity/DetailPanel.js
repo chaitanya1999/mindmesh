@@ -6,8 +6,8 @@ import { relationLabel, displayText } from "../../lib/utils.js";
 export function DetailPanel({
 	graph,
 	nodeTypes = [],
-	nodeScopeValues = [],
-	relationScopeValues = [],
+	nodeScopeValues = null,
+	relationScopeValues = null,
 	nodeDeleteLabel = "Delete",
 	nodeSaveLabel = "Save node",
 	onDeleteNode,

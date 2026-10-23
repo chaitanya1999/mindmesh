@@ -17,7 +17,15 @@ At task end, record the outcome under "Last Completed", move unfinished items to
 
 None.
 
-## Last Completed (2026-10-23)
+## Last Completed (2026-10-23, afternoon)
+
+Scope follow-up, owner decisions after the live run: (1) the ingest scope frames the reasoning and no longer filters the ingest context (filtering made the LLM guess the names of other units' nodes); records touching existing nodes scoped outside the ingest scope get an `AMBIGUITY:` signal. (2) Config switches `scope.nodes` (default on) and `scope.relations` (default off), implemented now instead of a roadmap item; relation scope is therefore off. Behavior: README Graph Schema > Scope; locations: codeMap Scope.
+
+- Also fixed: `runIngest` in `app.js` lacked `workspaceScope` in its dependencies, so Ingest could send a stale scope after the picker changed (bug from `4b601d5`; the UI check reproduced it with the old list). Proposal text is rewritten when a switched-off scope was dropped, so the HITL view never shows it.
+- Checks: `npm test` 124 pass (new `test/scopeRelationsOff.test.js`, `test/scopeOff.test.js`; mutation checks on the out-of-scope flag and the prompt sections failed tests as expected); `kg:test-parser`; build; lint (only the two old findings). Live, real stores + hub LLM: 26 store checks (both scopes on); ingests with relations off gave no relation scopes; an nc ingest naming "the UC QDE screen" linked to the real `uc_qde_screen` (no invented edit) and the relation was flagged; nc and uc QDE texts each reused their own unit's screen with both visible; MCP tools offer `scope` only where switched on; jsdom UI check 17/17 (picker, chips, no relation scope field, Ingest sends the changed scope). Stores empty before and after.
+
+Earlier the same day:
+
 
 Scope (business units), pushed as `4b601d5`, plus a fix from the live run (below). Owner decisions: values `uc, nc, tw, cv, tr, common` from the schema; blank = not curated and matches every filter; filter `uc` matches `uc`, `common`, unscoped; filter `common` matches `common`, unscoped; BU concepts get a name prefix (`uc_qde_screen`), shared technical nodes keep API names; scope column before `metadata`, no backward compatibility; blank update keeps, filled replaces, a change of an existing non-empty node scope is flagged `AMBIGUITY:`; relation scope supported but the prompt keeps it empty; MCP ingest tools require `scope` and tell the agent to ask; one Scope picker for Ask and Ingest. Behavior: README Graph Schema > Scope; locations: codeMap Scope; rule: core.md.
 
@@ -61,7 +69,7 @@ Earlier (2026-10-11, pushed): review bugs 1, 2, 5, 6, the Neo4j 5.23+ cleanup, t
 
 ## Open Follow-Ups
 
-- Scope decisions for the owner: (1) a scope listing all five BUs is accepted as is; leave it, flag it (`AMBIGUITY:` suggesting common), or rewrite to common? (2) Seen live: an nc ingest whose text mentioned UC proposed an edit to `uc_qde_screen` (guessed from the prefix; it was flagged only because it was a create). Option: flag any record that touches an existing node scoped outside the ingest scope.
+- Scope decision for the owner: a scope listing all five BUs is accepted as is; leave it, flag it (`AMBIGUITY:` suggesting common), or rewrite to common? (Evening.)
 - Vectors written before scope existed have no `scoped` flag; reindex before relying on filters if such data is ever restored from a backup.
 - Scope retrofit (owner): admin backup -> settle pending proposals -> wipe -> re-ingest per area with the scope picker or MCP `scope`.
 - Scope is not shown in the Sigma renderer (no tooltip there) and the HITL list has no scope filter in the UI (the API and MCP have one).

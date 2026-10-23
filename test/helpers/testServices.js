@@ -45,8 +45,9 @@ export function createScriptedLlm() {
 	};
 }
 
-// `adminPassword` enables the admin panel (its hash goes into config.admin.passwordHash).
-export function createTestServices({ mode = "auto", adminPassword = "" } = {}) {
+// `adminPassword` enables the admin panel (its hash goes into config.admin.passwordHash). `scope` is config.scope
+// (which kinds of scope are switched on; process-wide, so one setting per test file).
+export function createTestServices({ mode = "auto", adminPassword = "", scope = undefined } = {}) {
 	const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mindmesh-test-"));
 	const schemaPath = path.join(directory, "graphSchema.json");
 	const prompt = (name) => path.join(ROOT, "prompts", name);
@@ -63,6 +64,7 @@ export function createTestServices({ mode = "auto", adminPassword = "" } = {}) {
 		rag: { topK: 5, depth: 1, memory: { enabled: false, maxMessages: 12, maxMessageChars: 2000 } },
 		logging: { enabled: false, directory },
 		admin: { passwordHash: adminPassword ? hashPassword(adminPassword) : "" },
+		scope,
 	};
 	const writeSchema = (schema = TEST_SCHEMA) => fs.writeFileSync(schemaPath, `${JSON.stringify(schema, null, "\t")}\n`);
 	writeSchema();

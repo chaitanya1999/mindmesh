@@ -4,9 +4,11 @@
 //   exist in the graph (and must not be deleted by the same payload);
 // - an endpoint that already exists is only a reference and is never written;
 // - NODE_CREATE for a node that already exists is applied as NODE_UPDATE and flagged for review;
-// - a record that replaces the non-empty scope of an existing node is flagged for review (a blank scope keeps it).
+// - a record that replaces the non-empty scope of an existing node is flagged for review (a blank scope keeps it);
+// - with an ingest scope, a record that touches an existing node scoped outside it (a node record, or a
+//   relation using it as an endpoint) is flagged for review.
 
-import { formatScope, parseScope } from "../schema/scope.js";
+import { formatScope, matchesScope, parseScope, scopeEnabled } from "../schema/scope.js";
 
 function graphNameFromId(value) {
 	return String(value ?? "").replace(/^node:/i, "");
@@ -21,7 +23,8 @@ function appendSignal(metadata, signal) {
 	return text ? `${text}; ${signal}` : signal;
 }
 
-export async function resolveGraphPayload(graphPayload, graphStore) {
+// `scope`: the ingest scope of the extraction ("" when there is none, for example at approval time).
+export async function resolveGraphPayload(graphPayload, graphStore, { scope = "" } = {}) {
 	if (typeof graphStore?.getExistingNodeIds !== "function") {
 		throw new Error("The configured graph store cannot check which nodes exist.");
 	}
@@ -31,12 +34,18 @@ export async function resolveGraphPayload(graphPayload, graphStore) {
 	const endpointIds = (graphPayload.relations ?? []).flatMap((relation) => [relation.sourceId, relation.targetId]);
 	const lookupIds = [...new Set([...payloadNodeIds, ...endpointIds])].filter(Boolean);
 	const existingNodeIds = new Set(lookupIds.length > 0 ? await graphStore.getExistingNodeIds(lookupIds) : []);
-	const scopedNodeIds = (graphPayload.nodes ?? [])
-		.filter((node) => parseScope(node.scope).length > 0 && existingNodeIds.has(node.id))
-		.map((node) => node.id);
-	const storedScopes = new Map(scopedNodeIds.length > 0 && typeof graphStore.getNodesByIds === "function"
-		? (await graphStore.getNodesByIds(scopedNodeIds)).map((node) => [node.id, formatScope(node.scope)])
+	// Stored node scopes are needed for the scope checks only when node scopes are in use.
+	const ingestScope = scopeEnabled("node") ? formatScope(scope) : "";
+	const checksScopes = scopeEnabled("node") && (Boolean(ingestScope) || (graphPayload.nodes ?? []).some((node) => parseScope(node.scope).length > 0));
+	const existingIds = [...existingNodeIds];
+	const storedScopes = new Map(checksScopes && existingIds.length > 0 && typeof graphStore.getNodesByIds === "function"
+		? (await graphStore.getNodesByIds(existingIds)).map((node) => [node.id, formatScope(node.scope)])
 		: []);
+	// A stored scope that the ingest scope does not match (unscoped and common nodes always match).
+	const outsideScope = (nodeId) => {
+		const stored = storedScopes.get(nodeId);
+		return Boolean(ingestScope && stored && !matchesScope(stored, ingestScope));
+	};
 	let changed = false;
 
 	const nodes = (graphPayload.nodes ?? []).map((node) => {
@@ -54,6 +63,12 @@ export async function resolveGraphPayload(graphPayload, graphStore) {
 			next = {
 				...next,
 				metadata: appendSignal(next.metadata, `AMBIGUITY: scope of "${node.name}" changes from ${storedScope} to ${proposedScope}. Confirm the new scope.`),
+			};
+		}
+		if (outsideScope(node.id)) {
+			next = {
+				...next,
+				metadata: appendSignal(next.metadata, `AMBIGUITY: "${node.name}" is scoped ${storedScope}, outside this input's scope ${ingestScope}. Confirm the change belongs to it.`),
 			};
 		}
 		if (next !== node) {
@@ -75,7 +90,16 @@ export async function resolveGraphPayload(graphPayload, graphStore) {
 		}
 
 		if (problems.length === 0) {
-			return relation;
+			const outside = [relation.sourceId, relation.targetId].filter(outsideScope);
+			if (outside.length === 0) {
+				return relation;
+			}
+			changed = true;
+			const names = outside.map((id) => `"${graphNameFromId(id)}" (scoped ${storedScopes.get(id)})`).join(" and ");
+			return {
+				...relation,
+				metadata: appendSignal(relation.metadata, `AMBIGUITY: this relation uses ${names}, outside this input's scope ${ingestScope}. Confirm it.`),
+			};
 		}
 
 		const sourceName = graphNameFromId(relation.sourceId);

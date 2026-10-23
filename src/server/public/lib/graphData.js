@@ -4,5 +4,6 @@ export function normalizeGraph(graph) {
 		nodes: graph?.nodes ?? [],
 		relations: graph?.relations ?? [],
 		schema: graph?.schema ?? null,
+		scopeSettings: graph?.scopeSettings ?? null,
 	};
 }

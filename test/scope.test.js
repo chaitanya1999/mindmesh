@@ -18,7 +18,7 @@ const SCOPED_SCHEMA = {
 	relationshipProperties: { fields: [{ name: "scope", description: "Business units.", constraints: { allowedValues: SCOPE_VALUES } }] },
 };
 
-const services = createTestServices({ mode: "auto" });
+const services = createTestServices({ mode: "auto", scope: { nodes: true, relations: true } });
 const writeScopedSchema = () => fs.writeFileSync(services.schemaPath, `${JSON.stringify(SCOPED_SCHEMA, null, "\t")}\n`);
 writeScopedSchema();
 const client = new Client({ name: "mindmesh-test", version: "0.0.0" });
@@ -133,24 +133,55 @@ describe("Scope in ingest and storage", () => {
 		assert.deepEqual((await services.graphStore.getNode("node:apex_util")).scope, ["uc"]);
 	});
 
-	it("filters the ingest context by scope and names the scope in the prompt", async () => {
+	it("names the ingest scope in the prompt but does not filter the context by it", async () => {
 		await seedGraph({
 			nodes: [
 				scoped("uc_qde_screen", "screen", ["uc"], "UC QDE"),
 				scoped("nc_qde_screen", "screen", ["nc"], "NC QDE"),
 				scoped("shared_api", "api", [], "Shared API"),
-				scoped("org_api", "api", ["common"], "Org API"),
 			],
 		});
 
 		await ingest("The QDE screen.", "uc");
 
 		const prompt = services.llmProvider.requests[0].systemPrompt;
-		assert.match(prompt, /Selected scope for this input: uc\./);
-		assert.match(prompt, /node:uc_qde_screen/);
+		assert.match(prompt, /Selected scope for this input: uc\. Read the input as uc knowledge\./);
+		assert.match(prompt, /\[node:uc_qde_screen\] UC QDE \(type: screen, name: uc_qde_screen, scope: uc\)/);
+		assert.match(prompt, /\[node:nc_qde_screen\] NC QDE \(type: screen, name: nc_qde_screen, scope: nc\)/);
 		assert.match(prompt, /node:shared_api/);
-		assert.match(prompt, /node:org_api/);
-		assert.doesNotMatch(prompt, /node:nc_qde_screen/);
+	});
+
+	it("flags records that touch existing nodes scoped outside the ingest scope", async () => {
+		await seedGraph({
+			nodes: [
+				scoped("uc_qde_screen", "screen", ["uc"]),
+				scoped("nc_qde_screen", "screen", ["nc"]),
+				scoped("org_api", "api", ["common"]),
+				scoped("otp_cmp", "api", []),
+			],
+		});
+		services.llmProvider.nextResponse = records(
+			"NODE_UPDATE|uc_qde_screen|QDE|screen|Edited from NC.||",
+			"RELATION_CREATE|uc_qde_screen|otp_cmp|uses||||",
+			"RELATION_CREATE|nc_qde_screen|org_api|uses||||",
+		);
+
+		const response = await ingest("NC text that mentions UC.", "nc");
+
+		assert.equal(response.body.status, "pending_hitl");
+		const text = response.body.hitlNote.document;
+		assert.match(text, /NODE_UPDATE\|uc_qde_screen.*AMBIGUITY: "uc_qde_screen" is scoped uc, outside this input's scope nc/);
+		assert.match(text, /RELATION_CREATE\|uc_qde_screen\|otp_cmp.*AMBIGUITY: this relation uses "uc_qde_screen" \(scoped uc\), outside this input's scope nc/);
+		assert.match(text, /^RELATION_CREATE\|nc_qde_screen\|org_api\|uses\|\|\|\|$/m, "own-scope and common nodes are not flagged");
+	});
+
+	it("does not flag out-of-scope nodes when the ingest has no scope", async () => {
+		await seedGraph({ nodes: [scoped("uc_qde_screen", "screen", ["uc"])] });
+		services.llmProvider.nextResponse = records("NODE_UPDATE|uc_qde_screen|QDE|screen|More.||");
+
+		const response = await ingest("Text.", "");
+
+		assert.equal(response.body.status, "applied");
 	});
 
 	it("stores the ingest scope on a proposal and regenerates with it", async () => {
@@ -256,7 +287,7 @@ describe("Scope filters for reads", () => {
 		const result = await callTool("get_ingest_prompt", { text: "The QDE screen.", scope: "uc" });
 		assert.equal(result.scope, "uc");
 		assert.match(result.extractionSystemPrompt, /Selected scope for this input: uc\./);
-		assert.ok(result.retrievedNodes.every((item) => item.id !== "node:nc_qde_screen"));
+		assert.ok(result.retrievedNodes.some((item) => item.id === "node:nc_qde_screen"), "other units are in the context");
 	});
 
 	it("submit_ingest stores the scope on the proposal", async () => {

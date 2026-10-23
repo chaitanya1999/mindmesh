@@ -5,6 +5,29 @@
 
 export const COMMON_SCOPE = "common";
 
+// Which kinds of scope are in use (config `scope.nodes`, `scope.relations`; set once by createMindMesh()).
+// A switched-off kind keeps its record column, but values are dropped, prompts and forms leave it out, and
+// filters ignore it. Stored values are kept.
+const DEFAULT_SCOPE_SETTINGS = { nodes: true, relations: false };
+let scopeSettings = { ...DEFAULT_SCOPE_SETTINGS };
+
+export function setScopeSettings(settings = {}) {
+	scopeSettings = {
+		nodes: settings.nodes ?? DEFAULT_SCOPE_SETTINGS.nodes,
+		relations: settings.relations ?? DEFAULT_SCOPE_SETTINGS.relations,
+	};
+	return getScopeSettings();
+}
+
+export function getScopeSettings() {
+	return { ...scopeSettings };
+}
+
+// kind: "node" | "relation"
+export function scopeEnabled(kind = "node") {
+	return kind === "relation" ? scopeSettings.relations : scopeSettings.nodes;
+}
+
 function scopeValue(value) {
 	return String(value ?? "")
 		.trim()
@@ -45,25 +68,27 @@ export function scopeProblems(scope, allowedValues) {
 	return problems;
 }
 
-// The scope values an item may carry to match a filter; empty means no filtering. Unscoped items always match.
-export function scopeMatchValues(filter) {
+// The scope values an item may carry to match a filter; empty means no filtering (also when that kind of
+// scope is switched off). Unscoped items always match.
+export function scopeMatchValues(filter, kind = "node") {
 	const value = scopeValue(filter);
-	if (!value) {
+	if (!value || !scopeEnabled(kind)) {
 		return [];
 	}
 	return value === COMMON_SCOPE ? [COMMON_SCOPE] : [value, COMMON_SCOPE];
 }
 
-export function matchesScope(itemScope, filter) {
-	const matchValues = scopeMatchValues(filter);
+export function matchesScope(itemScope, filter, kind = "node") {
+	const matchValues = scopeMatchValues(filter, kind);
 	const scope = parseScope(itemScope);
 	return matchValues.length === 0 || scope.length === 0 || scope.some((value) => matchValues.includes(value));
 }
 
-// A filter or ingest scope from a request: one value, or "" for none. Unknown values are a 400 error.
+// A filter or ingest scope from a request: one value, or "" for none (always "" when every kind of scope is off).
+// Unknown values are a 400 error.
 export function normalizeScopeFilter(value, schema) {
 	const values = parseScope(value);
-	if (values.length === 0) {
+	if (values.length === 0 || (!scopeEnabled("node") && !scopeEnabled("relation"))) {
 		return "";
 	}
 	const allowed = scopeAllowedValues(schema, "node");

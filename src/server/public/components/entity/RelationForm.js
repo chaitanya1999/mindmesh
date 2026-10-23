@@ -26,7 +26,7 @@ export function RelationForm({
 	onSave,
 	relation,
 	saveLabel = "Save relation",
-	relationScopeValues = [],
+	relationScopeValues = null,
 }) {
 	const isControlled = Boolean(controlledDraft && onDraftChange);
 	const [localDraft, setLocalDraft] = useState(() => createRelationDraft(relation));
@@ -75,10 +75,12 @@ export function RelationForm({
 			<Field label="Description">
 				<textarea rows="4" value={draft.description} onInput={(event) => updateField("description", event.currentTarget.value)} />
 			</Field>
-			<Field label="Scope">
-				<ScopeField value={draft.scope ?? []} scopeValues={relationScopeValues} onChange={(scope) => updateField("scope", scope)} />
-				<small class="scope-hint">Leave empty unless this relation applies only to some scopes.</small>
-			</Field>
+			{relationScopeValues && (
+				<Field label="Scope">
+					<ScopeField value={draft.scope ?? []} scopeValues={relationScopeValues} onChange={(scope) => updateField("scope", scope)} />
+					<small class="scope-hint">Leave empty unless this relation applies only to some scopes.</small>
+				</Field>
+			)}
 			<div class="form-actions">
 				<button type="submit" class="primary">{saveLabel}</button>
 				{onCancel && <button type="button" onClick={onCancel}>Cancel</button>}

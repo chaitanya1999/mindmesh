@@ -8,7 +8,7 @@ import { createDebugLogger } from "../logging/debugLogger.js";
 import { createMindMesh, isMainModule } from "../mindmesh.js";
 import { buildExtractionPrompt } from "../prompts/promptRegistry.js";
 import { readEditableGraphSchema } from "../schema/graphSchema.js";
-import { normalizeScopeFilter, scopeAllowedValues } from "../schema/scope.js";
+import { normalizeScopeFilter, scopeAllowedValues, scopeEnabled } from "../schema/scope.js";
 
 // MCP server for coding agents. The agent does all reasoning: MindMesh retrieves context, hands out its
 // extraction prompts, and stores the agent's records through the same HITL path as the web UI. Transport only:
@@ -116,12 +116,11 @@ function resolveReviewerNotes(notes, note) {
 }
 
 const INGEST_INSTRUCTIONS = [
-	"0. The scope you passed filtered the retrieved context and is named in the prompt; pass the same `scope` to `submit_ingest`.",
 	"1. Treat `extractionSystemPrompt` as your extraction instructions and follow its record format exactly.",
 	"2. The text is the only source of new facts. `retrievedNodes`, `pendingNodes`, and the context inside the prompt are only for recognising entities that already exist.",
 	"3. Before extracting, check every entity the text mentions against `retrievedNodes` and `pendingNodes` (see `retrievalQuality`). For each one that is missing, call `search_nodes` (match \"text\" with its name, then \"semantic\" with a short description) and `get_node` to confirm; reuse the exact existing name. Create a node only when nothing matches.",
 	"4. Write the complete record block between <start#$#$> and </end#$#$>.",
-	"5. Call `submit_ingest` with `records` (the whole block), `text` (the original text), `scope` (the same as here), and `author` (the user, if known).",
+	"5. Call `submit_ingest` with `records` (the whole block), `text` (the original text), `author` (the user, if known), and the same `scope` as here when scopes are in use.",
 	"6. Tell the user the outcome: applied, or pending with its ref and review reasons.",
 ].join("\n");
 
@@ -160,11 +159,17 @@ export function createMcpServer(services) {
 		openWorldHint: false,
 	};
 
-	// Scope arguments take one value; the allowed values are read from the schema when the server is built.
+	// Scope arguments take one value; the allowed values are read from the schema when the server is built. They
+	// exist only for the kinds of scope switched on in config (scope.nodes, scope.relations).
+	const nodeScopes = scopeEnabled("node");
 	const scopeValues = scopeAllowedValues(hitlService.currentSchema(), "node");
 	const scopeChoices = scopeValues ? ` Allowed values: ${scopeValues.join(", ")}.` : "";
-	const scopeFilter = z.string().optional().describe(`Scope filter: only items in this scope, items scoped common, and unscoped items. Omit for no filter.${scopeChoices}`);
-	const ingestScope = z.string().describe(`The scope (business unit) the text belongs to.${scopeChoices} Required: if the user has not said which scope the text is for, ask them before calling; pass "" only when they say it has no scope.`);
+	const filterArgument = z.string().optional().describe(`Scope filter: only items in this scope, items scoped common, and unscoped items. Omit for no filter.${scopeChoices}`);
+	const scopeFilter = nodeScopes ? { scope: filterArgument } : {};
+	const relationScopeFilter = scopeEnabled("relation") ? { scope: filterArgument } : {};
+	const ingestScope = nodeScopes
+		? { scope: z.string().describe(`The scope (business unit) the text belongs to; it frames the extraction, it does not filter the context.${scopeChoices} Required: if the user has not said which scope the text is for, ask them before calling; pass "" only when they say it has no scope.`) }
+		: {};
 
 	const server = new McpServer(
 		{
@@ -181,14 +186,16 @@ export function createMcpServer(services) {
 				"MindMesh is a human-reviewed knowledge graph (Neo4j + Chroma). Approved facts are in the graph; new knowledge becomes a pending proposal that a person reviews.",
 				"",
 				"Questions: start with `search_context`; use `search_nodes`, `search_relations`, `get_node`, `explore_graph`, `find_paths`, and `query_cypher` to go deeper. Cite node and relation ids. Pending proposals (`search_proposals`, includePending) are unverified: keep them separate from approved facts.",
-				"Ingestion: `get_ingest_prompt` with the user's text and its scope (ask the user for the scope if they did not give it), look up any entity it did not retrieve, extract records, then `submit_ingest` with the same scope.",
-				"Scope: nodes and relations can carry a scope, a list such as [\"uc\"]; unscoped items are shared or not classified yet. When the user works on one scope, pass it as `scope` to the search tools.",
+				nodeScopes
+					? "Ingestion: `get_ingest_prompt` with the user's text and its scope (ask the user for the scope if they did not give it), look up any entity it did not retrieve, extract records, then `submit_ingest` with the same scope."
+					: "Ingestion: `get_ingest_prompt` with the user's text, look up any entity it did not retrieve, extract records, then `submit_ingest`.",
+				nodeScopes ? "Scope: nodes can carry a scope, a list such as [\"uc\"]; unscoped nodes are shared or not classified yet. When the user works on one scope, pass it as `scope` to the search tools." : "",
 				"Reviewing: `list_proposals` and `get_proposal`; `save_reviewer_notes`; regenerate with `get_regenerate_prompt` then `submit_regeneration`.",
 				allowReviewDecisions
 					? "Decisions: `approve_proposal` and `reject_proposal` are enabled. Use them only when the user explicitly asks for that proposal."
 					: "Decisions: approving and rejecting are done by a person in the MindMesh HITL UI (not available over MCP on this server).",
 				"Proposals are named by id or short ref such as #d964db.",
-			].join("\n"),
+			].filter(Boolean).join("\n"),
 		},
 	);
 
@@ -224,7 +231,7 @@ export function createMcpServer(services) {
 			query: z.string().describe("The question or topic to build context for."),
 			includePending: z.boolean().optional().describe("Also include pending (unapproved) proposals as unverified knowledge. Default false."),
 			depth: z.number().int().min(0).max(4).optional().describe("How many relation hops to expand from the closest nodes. Default: the server setting."),
-			scope: scopeFilter,
+			...scopeFilter,
 		},
 		async ({ query, includePending = false, depth, scope }) => {
 			const result = await ragService.retrieveContext({ query, includeUnverifiedKnowledge: includePending, depth, scope });
@@ -261,7 +268,7 @@ export function createMcpServer(services) {
 			query: z.string().describe("Name, phrase, or description to search for."),
 			match: z.enum(["semantic", "text"]).optional().describe("semantic (default) or text."),
 			type: z.string().optional().describe("Only nodes of this node type (see get_schema)."),
-			scope: scopeFilter,
+			...scopeFilter,
 			limit: z.number().int().min(1).max(50).optional().describe("Maximum results. Default 10."),
 		},
 		async ({ query, match, type, scope, limit }) => graphReadService.searchNodes({ query, match, type, scope, limit }),
@@ -274,7 +281,7 @@ export function createMcpServer(services) {
 		{
 			query: z.string().describe("The fact or relationship to search for."),
 			relationType: z.string().optional().describe("Only relations of this type (see get_schema)."),
-			scope: scopeFilter,
+			...relationScopeFilter,
 			limit: z.number().int().min(1).max(50).optional().describe("Maximum results. Default 10."),
 		},
 		async ({ query, relationType, scope, limit }) => graphReadService.searchRelations({ query, relationType, scope, limit }),
@@ -308,7 +315,7 @@ export function createMcpServer(services) {
 			direction: z.enum(["both", "out", "in"]).optional().describe("both (default), out, or in."),
 			relationTypes: z.array(z.string()).optional().describe("Only follow relations of these types."),
 			nodeTypes: z.array(z.string()).optional().describe("Only reach nodes of these types."),
-			scope: scopeFilter,
+			...scopeFilter,
 			limit: z.number().int().min(1).max(500).optional().describe("Maximum nodes. Default 100."),
 		},
 		async ({ from, depth, direction, relationTypes, nodeTypes, scope, limit }) => graphReadService.exploreGraph({ from, depth, direction, relationTypes, nodeTypes, scope, limit }),
@@ -374,7 +381,7 @@ export function createMcpServer(services) {
 			operation: z.enum(["create", "update", "delete"]).optional().describe("Only proposals containing this kind of change."),
 			author: z.string().optional().describe("Only proposals by this user."),
 			source: z.string().optional().describe("Only proposals from this source (for example web, mcp, manual)."),
-			scope: z.string().optional().describe("Only proposals ingested with this scope."),
+			...(nodeScopes ? { scope: z.string().optional().describe("Only proposals ingested with this scope.") } : {}),
 			limit: z.number().int().min(1).max(100).optional().describe("Maximum results. Default 20."),
 		},
 		async ({ signal, operation, author, source, scope, limit = 20 }) => {
@@ -405,17 +412,17 @@ export function createMcpServer(services) {
 		"Get Ingest Prompt",
 		[
 			"Step 1 of adding knowledge from the user's text. Runs MindMesh's own retrieval and returns its exact extraction prompt (record format, schema types, field guidance, retrieved context), the retrieved and pending nodes, a retrieval quality note, and instructions. ",
-			"MindMesh's retrieval is one search over the whole text and can miss entities named differently: check every entity the text mentions against retrievedNodes and pendingNodes, and look up the missing ones with search_nodes / get_node (with the same scope) before extracting. Then call submit_ingest. ",
-			"The scope is required: if the user has not said which scope (business unit) the text is for, ask them first.",
+			"MindMesh's retrieval is one search over the whole text and can miss entities named differently: check every entity the text mentions against retrievedNodes and pendingNodes, and look up the missing ones with search_nodes / get_node before extracting. Then call submit_ingest.",
+			nodeScopes ? " The scope is required: if the user has not said which scope (business unit) the text is for, ask them first." : "",
 		].join(""),
 		{
 			text: z.string().describe("The text to add to the knowledge graph."),
-			scope: ingestScope,
+			...ingestScope,
 		},
 		async ({ text, scope: requestedScope }) => {
 			const graphSchema = hitlService.currentSchema();
 			const scope = normalizeScopeFilter(requestedScope, graphSchema);
-			const existingContext = await ingestionService.retrieveExistingContext({ text, graphSchema, scope });
+			const existingContext = await ingestionService.retrieveExistingContext({ text, graphSchema });
 			return {
 				scope,
 				extractionSystemPrompt: buildExtractionPrompt(prompts.extractionSystemTemplate, {
@@ -449,7 +456,7 @@ export function createMcpServer(services) {
 		{
 			records: z.string().describe(`The extracted records: ${RECORD_BLOCK}.`),
 			text: z.string().describe("The original text the records were extracted from."),
-			scope: ingestScope,
+			...ingestScope,
 			author: z.string().optional().describe("Who provided the text. Default mcp-agent."),
 			source: z.string().optional().describe("Short source label. Default mcp."),
 		},

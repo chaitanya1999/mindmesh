@@ -25,7 +25,7 @@ export function ChatPanel({
 	onTab,
 	onScopeChange,
 	scope = "",
-	scopeValues = [],
+	scopeValues = null,
 	statusMessage,
 	userName,
 	onChangeUserName,
@@ -55,7 +55,7 @@ export function ChatPanel({
 					</button>
 				))}
 			</div>
-			<ScopePicker disabled={isBusy || workspaceLocked} onChange={onScopeChange} scopeValues={scopeValues} value={scope} />
+			{scopeValues && <ScopePicker disabled={isBusy || workspaceLocked} onChange={onScopeChange} scopeValues={scopeValues} value={scope} />}
 			{statusMessage && <div class="status-line">{statusMessage}</div>}
 			{activeTab === "ask" && (
 				<>

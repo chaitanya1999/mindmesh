@@ -4,7 +4,7 @@ import { createDebugLogger, errorDetails, logStep } from "../logging/debugLogger
 import { buildExtractionPrompt } from "../prompts/promptRegistry.js";
 import { formatExtractionGraphContext } from "../rag/graphContext.js";
 import { loadGraphSchema } from "../schema/graphSchema.js";
-import { matchesScope, normalizeScopeFilter } from "../schema/scope.js";
+import { normalizeScopeFilter } from "../schema/scope.js";
 
 function previewText(value, maxLength = 180) {
 	const text = String(value ?? "").replace(/\s+/g, " ").trim();
@@ -162,12 +162,11 @@ function reconcileExtractionWithPendingHitl(extractedGraph, pendingHitl) {
 	};
 }
 
-// `scope` keeps proposals ingested for that scope, for common, or without a scope.
-async function retrievePendingHitlNotes(vectorStore, text, topK, excludeNoteIds = [], scope = "") {
+async function retrievePendingHitlNotes(vectorStore, text, topK, excludeNoteIds = []) {
 	const excluded = new Set(excludeNoteIds);
 	const byId = new Map();
 	if (typeof vectorStore.queryHitlNotes === "function") {
-		for (const note of await vectorStore.queryHitlNotes(text, topK, { scope })) {
+		for (const note of await vectorStore.queryHitlNotes(text, topK)) {
 			if (note?.id) {
 				byId.set(note.id, note);
 			}
@@ -183,7 +182,7 @@ async function retrievePendingHitlNotes(vectorStore, text, topK, excludeNoteIds 
 		}
 	}
 
-	return [...byId.values()].filter((note) => !excluded.has(note.id) && matchesScope(note.scope, scope));
+	return [...byId.values()].filter((note) => !excluded.has(note.id));
 }
 
 export class IngestionService {
@@ -202,7 +201,7 @@ export class IngestionService {
 		};
 	}
 
-	async retrievePendingHitlContext({ text, graphSchema, excludeNoteIds = [], scope = "" }) {
+	async retrievePendingHitlContext({ text, graphSchema, excludeNoteIds = [] }) {
 		if (typeof this.vectorStore.queryHitlNotes !== "function" && typeof this.vectorStore.listHitlNotes !== "function") {
 			return {
 				notes: [],
@@ -214,7 +213,7 @@ export class IngestionService {
 			};
 		}
 
-		const notes = await retrievePendingHitlNotes(this.vectorStore, text, this.ingestion.contextTopK, excludeNoteIds, scope);
+		const notes = await retrievePendingHitlNotes(this.vectorStore, text, this.ingestion.contextTopK, excludeNoteIds);
 		const nodeMap = new Map();
 		const relationMap = new Map();
 		const nodeDeleteMap = new Map();
@@ -280,8 +279,9 @@ export class IngestionService {
 	}
 
 	// excludeNoteIds keeps a regenerated HITL note from treating its own previous proposal as pending context.
-	// `scope` (a scope filter value) leaves out nodes, relations, and proposals scoped only to other values.
-	async retrieveExistingContext({ text, graphSchema, excludeNoteIds = [], scope = "" }) {
+	// Not filtered by the ingest scope: the model sees every unit's nodes (each labelled with its scope), so it
+	// can tell a unit's own node from another unit's and link to the right one.
+	async retrieveExistingContext({ text, graphSchema, excludeNoteIds = [] }) {
 		if (!this.ingestion.contextEnabled) {
 			return {
 				entryNodes: [],
@@ -298,12 +298,12 @@ export class IngestionService {
 			};
 		}
 
-		const entryNodes = await this.vectorStore.queryNodes(text, this.ingestion.contextTopK, { scope });
+		const entryNodes = await this.vectorStore.queryNodes(text, this.ingestion.contextTopK);
 		const nodeIds = [...new Set(entryNodes.map((node) => node.id).filter(Boolean))];
 		const graph = nodeIds.length > 0
-			? await this.graphStore.expandFromNodes(nodeIds, this.ingestion.contextDepth, { scope })
+			? await this.graphStore.expandFromNodes(nodeIds, this.ingestion.contextDepth)
 			: { nodes: [], relations: [] };
-		const pendingHitl = await this.retrievePendingHitlContext({ text, graphSchema, excludeNoteIds, scope });
+		const pendingHitl = await this.retrievePendingHitlContext({ text, graphSchema, excludeNoteIds });
 		const contextParts = [formatExtractionGraphContext(graph)];
 		if (pendingHitl.context) {
 			contextParts.push(pendingHitl.context);
@@ -347,14 +347,16 @@ export class IngestionService {
 
 	// Reconciles an extraction with pending HITL proposals, normalizes it, and checks it against the graph.
 	// Used for text ingestion, regeneration, and records an agent extracted (MCP). `proposalText` is the
-	// model's exact output unless one of these steps changed the records.
-	async prepareExtraction({ extractedGraph, rawResponse, pendingHitl, graphSchema }) {
+	// model's exact output unless one of these steps changed the records. `scope` is the ingest scope; the graph
+	// check flags records that touch existing nodes scoped outside it.
+	async prepareExtraction({ extractedGraph, rawResponse, pendingHitl, graphSchema, scope = "" }) {
 		const reconciledGraph = reconcileExtractionWithPendingHitl(extractedGraph, pendingHitl);
 		const { graphPayload, changed } = await resolveGraphPayload(
 			normalizeGraphPayload(reconciledGraph, { schema: graphSchema }),
 			this.graphStore,
+			{ scope },
 		);
-		const proposalText = rawResponse && reconciledGraph === extractedGraph && !changed
+		const proposalText = rawResponse && reconciledGraph === extractedGraph && !changed && !graphPayload.scopeDropped
 			? rawResponse
 			: formatGraphRecords(graphPayload);
 
@@ -371,7 +373,6 @@ export class IngestionService {
 			text: note.userInput,
 			graphSchema,
 			excludeNoteIds: [note.id],
-			scope,
 		});
 		const extractionPrompt = buildExtractionPrompt(this.prompts.extractionSystemTemplate, {
 			graphSchema,
@@ -414,7 +415,7 @@ export class IngestionService {
 			logStep(debugLogger, this.ingestion.contextEnabled
 				? "[ingest] Retrieving existing graph context..."
 				: "[ingest] Existing graph context retrieval is disabled.");
-			const existingContext = await this.retrieveExistingContext({ text, graphSchema, scope });
+			const existingContext = await this.retrieveExistingContext({ text, graphSchema });
 			logStep(
 				debugLogger,
 				`[ingest] Retrieved ${existingContext.entryNodes.length} context entry node(s); expanded graph has ${existingContext.graph.nodes.length} node(s) and ${existingContext.graph.relations.length} relation(s); pending HITL context has ${existingContext.pendingHitl.graph.nodes.length} node(s) and ${existingContext.pendingHitl.graph.relations.length} relation(s).`,
@@ -464,6 +465,7 @@ export class IngestionService {
 				rawResponse,
 				pendingHitl: existingContext.pendingHitl,
 				graphSchema,
+				scope,
 			});
 			debugLogger.json("Parsed Extraction Payload", extractedGraph);
 			logStep(

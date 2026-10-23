@@ -177,6 +177,8 @@ Replacement model:
 
 `mcp.allowReviewDecisions` (default `false`) registers the MCP tools `approve_proposal` and `reject_proposal`; see MCP Server.
 
+`scope.nodes` (default `true`) and `scope.relations` (default `false`) switch node and relation scopes on or off; see Scope.
+
 `admin.passwordHash` (written by `npm run kg:admin:password`, empty by default, which disables the admin panel) and `admin.sessionMinutes` (default 30) configure the admin panel; see Admin Panel.
 
 Example:
@@ -231,13 +233,15 @@ Web/CLI ingest and MCP `submit_ingest` use the same rule and return the reasons 
 
 ### Scope (business units)
 
-Nodes and relations can carry a `scope`: a list of values saying which parts of the organisation they belong to. For the LOS project the values are the business units `uc`, `nc`, `tw`, `cv`, `tr`, plus `common` for things every unit shares. The allowed values are the `constraints.allowedValues` of the `scope` field descriptor in `nodeProperties.fields` (and `relationshipProperties.fields` for relations, which falls back to the node list); without a descriptor any value is accepted. The rules are in `src/schema/scope.js`. An existing local `schema/graphSchema.json` needs the two `scope` descriptors copied from `graphSchema.example.json`; the picker and the validation read the values from there.
+Nodes and relations can carry a `scope`: a list of values saying which parts of the organisation they belong to. Each kind is switched on or off in config: `scope.nodes` (default on) and `scope.relations` (default off). For the LOS project the values are the business units `uc`, `nc`, `tw`, `cv`, `tr`, plus `common` for things every unit shares. The allowed values are the `constraints.allowedValues` of the `scope` field descriptor in `nodeProperties.fields` (and `relationshipProperties.fields` for relations, which falls back to the node list); without a descriptor any value is accepted. The rules are in `src/schema/scope.js`. An existing local `schema/graphSchema.json` needs the two `scope` descriptors copied from `graphSchema.example.json`; the picker and the validation read the values from there.
 
 - An empty scope means "not curated, or not needed" and is the normal state for shared technical artefacts. `common` cannot be combined with other values. An unknown value or `common` with other values is a `scope` schema violation, so the record goes to review.
 - Business-unit specific concepts are named with the unit as a prefix (`uc_qde_screen`, `nc_qde_screen`), because the same concept in two units is two nodes. MindMesh never derives the scope from the name.
-- Filtering with one value `f` (ingest context, Ask, MCP reads): a blank filter matches everything; `f = uc` matches items whose scope contains `uc` or `common`, and unscoped items; `f = common` matches `common` and unscoped items. Items scoped only to other values are left out. Graph expansion does not follow a neighbour or a relation that fails the filter.
+- A switched-off kind keeps its column in the record format, but values in it are dropped with a warning (and the stored proposal text is rewritten without them). The prompt leaves out that kind's scope rules and field guidance and tells the model to leave the field empty (`{{#SCOPE_NODES}}` / `{{^SCOPE_NODES}}` and `SCOPE_RELATIONS` blocks in the template, rendered by `renderScopeSections()`). Filters ignore it, direct edits keep the stored value, the MCP tools do not offer that `scope` argument, and the UI hides the field (and, for nodes, the picker); `/api/graph` returns `scopeSettings`. Stored scopes are never removed.
+- Filtering with one value `f` (Ask and the MCP read tools; not ingest): a blank filter matches everything; `f = uc` matches items whose scope contains `uc` or `common`, and unscoped items; `f = common` matches `common` and unscoped items. Items scoped only to other values are left out. Graph expansion does not follow a neighbour or a relation that fails the filter.
 - Writes: in a payload apply (ingest, approval) a blank scope keeps the stored value and a filled one replaces it, like `description`. Direct reviewer edits set the scope exactly as submitted (an empty selection clears it). A record that replaces the non-empty scope of an existing node gets an `AMBIGUITY:` signal (`scope of "x" changes from uc to nc`), so auto mode sends it to review.
-- The ingest scope (web picker, MCP `scope`, CLI `--scope`) filters the retrieved context, is named in the prompt through `{{INGEST_SCOPE}}`, and is stored on the proposal; regeneration reuses it. It does not stamp a scope on records: the model (or reviewer) sets record scopes, following the SCOPE RULES in the extraction prompt.
+- The ingest scope (web picker, MCP `scope`, CLI `--scope`) frames the reasoning; it does not filter the retrieved context. The model sees every unit's nodes, each labelled with its scope, so it can reuse the selected unit's own node and link to another unit's node only when the input refers to it. The scope is named in the prompt through `{{INGEST_SCOPE}}` and stored on the proposal; regeneration reuses it. It does not stamp a scope on records: the model (or reviewer) sets record scopes, following the SCOPE RULES in the extraction prompt.
+- With an ingest scope, a record that touches an existing node scoped outside it gets an `AMBIGUITY:` signal, so it always goes to review: a node record (`"uc_qde_screen" is scoped uc, outside this input's scope nc`) or a relation using such a node as an endpoint. Unscoped and `common` nodes are never flagged.
 
 ### Property Descriptors (Schema-Driven Field Guidance)
 
@@ -343,7 +347,7 @@ stdout carries the MCP protocol, so the server sends all of its console output t
 - Tool names are `verb_noun` in snake_case. Descriptions carry the workflow; the agent needs no extra setup.
 - `node`, `from`, and `to` accept a node id (`node:ekyc_screen`) or a bare name (`ekyc_screen`); `ref` accepts a proposal id or a short ref (`#d964db`).
 - One node shape (`id`, `name`, `label`, `type`, `description`, `scope`) and one relation shape (`id`, `relation`, `sourceId`, `targetId`, `information`, `description`, `scope`).
-- `scope` arguments take one value (allowed values listed in the argument description, from the schema when the server starts). On the read tools it is an optional filter (see Scope). On `get_ingest_prompt` and `submit_ingest` it is required, and the description tells the agent to ask the user for it when they have not said; `""` means no scope. Semantic results come from Chroma, but records are always read from Neo4j; vectors whose node is gone are skipped.
+- `scope` arguments take one value (allowed values listed in the argument description, from the schema when the server starts) and exist only for the kinds of scope switched on in config: node scopes add it to `search_context`, `search_nodes`, `explore_graph`, `list_proposals`, `get_ingest_prompt`, and `submit_ingest`; relation scopes add it to `search_relations`. On the read tools it is an optional filter (see Scope). On `get_ingest_prompt` and `submit_ingest` it is required, and the description tells the agent to ask the user for it when they have not said; `""` means no scope. Semantic results come from Chroma, but records are always read from Neo4j; vectors whose node is gone are skipped.
 - Pending proposals are unverified: every pending item carries `verified: false` and a `ref`.
 - Read tools are marked `readOnlyHint`; `submit_regeneration` and the review decisions are marked `destructiveHint` (and `submit_ingest` too in `auto` mode, where it can apply updates).
 - Errors for bad input or unknown ids are `InvalidParams`; an unknown node points the agent to `search_nodes`.
@@ -367,8 +371,8 @@ stdout carries the MCP protocol, so the server sends all of its console output t
 
 ### Proposing knowledge
 
-- `get_ingest_prompt` — `{ text, scope }`. Runs MindMesh's default retrieval, filtered by `scope`, and returns `extractionSystemPrompt` (the exact extraction prompt: record format, schema types, field guidance, retrieved context, the text), `retrievedNodes`, `pendingNodes`, `retrievalQuality` (entry-node count, closest distance, and a note), `ingestionMode`, `scope`, and `instructions`.
-- `submit_ingest` — `{ records, text, scope, author?, source? }`. `scope` is stored on the proposal and filters the pending-proposal reconciliation. Submits the agent's record block. It is prepared exactly like a web ingestion (reconciled with pending proposals, normalized, checked against the graph), then applied in `auto` mode when clean or stored as a proposal (see Graph Schema for the review reasons). Returns `status`, `applied`, `ref` and `id` when pending, `reviewReasons`, `counts`, `nodeIds`, `relationIds`, `schemaViolations`, and `schemaWarnings`.
+- `get_ingest_prompt` — `{ text, scope }`. Runs MindMesh's default retrieval (not filtered by `scope`, which the prompt names), and returns `extractionSystemPrompt` (the exact extraction prompt: record format, schema types, field guidance, retrieved context, the text), `retrievedNodes`, `pendingNodes`, `retrievalQuality` (entry-node count, closest distance, and a note), `ingestionMode`, `scope`, and `instructions`.
+- `submit_ingest` — `{ records, text, scope, author?, source? }`. `scope` is stored on the proposal and used for the out-of-scope review signal. Submits the agent's record block. It is prepared exactly like a web ingestion (reconciled with pending proposals, normalized, checked against the graph), then applied in `auto` mode when clean or stored as a proposal (see Graph Schema for the review reasons). Returns `status`, `applied`, `ref` and `id` when pending, `reviewReasons`, `counts`, `nodeIds`, `relationIds`, `schemaViolations`, and `schemaWarnings`.
 - `get_regenerate_prompt` — `{ ref, notes? }`. The extraction prompt plus the reviewer-revision section for one proposal. `notes` from chat win over notes saved in the HITL UI; one of them is required. Also returns the original text, the previous proposal, `retrievedNodes`, and `instructions`. The proposal itself is excluded from pending context.
 - `submit_regeneration` — `{ ref, records, notes?, author? }`. Overwrites the pending proposal with the revised records, saves the notes, and marks it regenerated with origin `agent`. A block with no records is rejected and the proposal is left unchanged.
 - `save_reviewer_notes` — `{ ref, notes }`. Saves (replaces) the reviewer notes on a proposal.
@@ -858,7 +862,7 @@ Node and relationship vectors share their ids with Neo4j and are derived from it
 HITL note documents contain the pending proposal status, user/source metadata, original input, and LLM proposed graph mutations. Their metadata includes:
 
 - counts for proposed node/relation upserts, deletions, schema suggestions, ambiguity signals, and contradiction signals
-- `scope`: the ingest scope (empty for none); pending-context retrieval and `queryHitlNotes` with a scope filter keep proposals of that scope, `common`, or none
+- `scope`: the ingest scope (empty for none); `queryHitlNotes` with a scope filter (Ask's unverified knowledge) keeps proposals of that scope, `common`, or none
 - `reviewerNotes`: the latest reviewer notes, saved from the HITL UI or by an agent
 - `regenerated`, `regeneratedBy`, `regeneratedAt`, `regenerationOrigin` (`ui` or `agent`): set when the proposal was regenerated. The proposal is overwritten and no history is kept.
 
@@ -872,7 +876,7 @@ The current RAG flow queries only `kg_nodes`; relationship vectors are indexed f
 
 `HitlService.ingestText({ text, source, userName, scope })` runs `IngestionService.ingestText()`, which performs retrieval-augmented extraction and then hands the prepared payload to `HitlService.submit()`:
 
-1. Query Chroma node collection with `ingestion.contextTopK`. With an ingest scope, every retrieval step uses the scope filter (see Scope).
+1. Query Chroma node collection with `ingestion.contextTopK`. The ingest scope does not filter retrieval (see Scope).
 2. Expand Neo4j graph from returned node IDs with `ingestion.contextDepth`.
 3. Query/list pending HITL notes and parse their proposed mutations as unverified pending context.
 4. Format approved graph and pending HITL context as human-readable node/fact lists while preserving exact `node:*` IDs.
@@ -891,7 +895,7 @@ A reviewer can regenerate a pending proposal with instructions instead of editin
 Behavior:
 
 1. The original user input is extracted again with the normal extraction prompt plus the `{{REVIEWER_REVISION}}` section (`formatReviewerRevision()` in `src/prompts/promptRegistry.js`). That section contains the reviewer notes as top-priority instructions and the previous proposal as the baseline to keep unless the notes ask for a change. The web UI sends the current draft, including unsaved manual edits, as that baseline.
-2. Graph context is retrieved again with the proposal's stored ingest scope, with this note excluded from the pending HITL context. Otherwise its own previous creates would be reconciled into updates.
+2. Graph context is retrieved again, with this note excluded from the pending HITL context; the prompt names the proposal's stored ingest scope. Otherwise its own previous creates would be reconciled into updates.
 3. The response must contain at least one record. The parser returns an empty graph for unparseable text, so an empty result is rejected and the proposal is left unchanged.
 4. The proposal is overwritten (no history), counts are recomputed, the notes are saved, and the regeneration fields are set. The original submitter and creation time are kept, and the proposal stays pending for approval.
 
@@ -940,8 +944,8 @@ Layout and behavior:
 - Mobile: graph preview stacks above the side panel.
 - The graph preview has two renderers, toggled in the graph header: NeoVis (default) and Graphology + Sigma with force-layout positioning. Both support pan/zoom, hover focus, click-to-select focus, and compact relationship labels.
 - The graph panel includes instant client-side search over the loaded preview and full Neo4j search on submit. Search results focus a loaded node or fetch its neighborhood.
-- The main workspace side panel has **Ask** and **Ingest** tabs, with one **Scope** picker for both (None plus the schema's scope values, kept for the browser session): Ask answers from that scope, `common`, and unscoped knowledge; Ingest sends it as the ingest scope.
-- Node and relation forms (main page and HITL) have a Scope field with one toggle per allowed value; `common` clears the other values. The NeoVis hover tooltip shows the scope; the Sigma renderer has no tooltip.
+- The main workspace side panel has **Ask** and **Ingest** tabs, with one **Scope** picker for both when node scopes are on (None plus the schema's scope values, kept for the browser session): Ask answers from that scope, `common`, and unscoped knowledge; Ingest sends it as the ingest scope.
+- Node and relation forms (main page and HITL) have a Scope field with one toggle per allowed value when that kind of scope is switched on; `common` clears the other values. The NeoVis hover tooltip shows the scope; the Sigma renderer has no tooltip.
 - Clicking a node or relation opens a details modal to edit or delete it. The Name field is read-only for nodes that already exist in the graph, because the name is part of the node id; change the label instead.
 - Graph action buttons open modals to create nodes and relationships manually. Node and relation forms start with an empty type, which must be filled with a schema type; the Name placeholder shows the name derived from the label, which becomes the permanent id if Name is left empty.
 - On `/`, manual node and relationship mutations create HITL proposals. On `/hitl`, reviewer mutations apply directly when schema-valid, or update the open proposal draft when one is selected.

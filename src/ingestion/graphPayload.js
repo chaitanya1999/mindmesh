@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { formatScope, parseScope, scopeAllowedValues, scopeProblems } from "../schema/scope.js";
+import { formatScope, parseScope, scopeAllowedValues, scopeEnabled, scopeProblems } from "../schema/scope.js";
 
 export function toSnakeCase(value) {
 	return String(value ?? "")
@@ -98,6 +98,18 @@ function buildSchemaRules(schema) {
 	};
 }
 
+// The scope of a record, or [] with a warning when that kind of scope is switched off (config scope.*).
+// `dropped` collects the records whose scope was ignored.
+function recordScope(rawScope, kind, label, warnings, dropped) {
+	const scope = parseScope(rawScope);
+	if (scope.length > 0 && !scopeEnabled(kind)) {
+		warnings.push(`Ignored scope "${formatScope(scope)}" on ${label}: ${kind} scopes are switched off.`);
+		dropped.push(label);
+		return [];
+	}
+	return scope;
+}
+
 function schemaViolation(kind, value, message, record = {}) {
 	return {
 		kind,
@@ -158,6 +170,7 @@ function mergeNode(existingNode, nextNode) {
 export function normalizeGraphPayload(payload, { schema = null } = {}) {
 	const nodeMap = new Map();
 	const warnings = [...(payload.warnings ?? [])];
+	const droppedScopes = [];
 	const schemaViolations = [];
 	const schemaSuggestions = normalizeSuggestions(payload.schemaSuggestions);
 	if (schema) {
@@ -180,7 +193,7 @@ export function normalizeGraphPayload(payload, { schema = null } = {}) {
 			schemaViolations.push(schemaViolation("nodeType", nodeType, message, { name, label: rawNode.label || labelFromName(name) }));
 		}
 
-		const scope = parseScope(rawNode.scope);
+		const scope = recordScope(rawNode.scope, "node", `node "${name}"`, warnings, droppedScopes);
 		const nodeScopeProblems = schemaRules.enforceSchema ? scopeProblems(scope, schemaRules.nodeScopeValues) : [];
 		if (nodeScopeProblems.length > 0) {
 			const message = `Node "${name}" has an invalid scope: ${nodeScopeProblems.join("; ")}.`;
@@ -220,7 +233,7 @@ export function normalizeGraphPayload(payload, { schema = null } = {}) {
 			schemaViolations.push(schemaViolation("relationshipType", relation, message, { sourceName, targetName, relation }));
 		}
 
-		const scope = parseScope(rawRelation.scope);
+		const scope = recordScope(rawRelation.scope, "relation", `relation "${sourceName}" -> "${targetName}"`, warnings, droppedScopes);
 		const relationScopeProblems = schemaRules.enforceSchema ? scopeProblems(scope, schemaRules.relationScopeValues) : [];
 		if (relationScopeProblems.length > 0) {
 			const message = `Relation "${sourceName}" -> "${targetName}" has an invalid scope: ${relationScopeProblems.join("; ")}.`;
@@ -297,6 +310,8 @@ export function normalizeGraphPayload(payload, { schema = null } = {}) {
 		schemaSuggestions,
 		schemaViolations,
 		schemaWarnings: [...new Set(warnings)],
+		// True when a switched-off scope was dropped, so stored proposal text is rewritten without it.
+		scopeDropped: droppedScopes.length > 0,
 	};
 }
 

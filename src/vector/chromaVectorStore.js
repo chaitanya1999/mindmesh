@@ -42,8 +42,8 @@ async function staleScopeFlags(collection, ids) {
 	)]));
 }
 
-function scopeWhere(scope) {
-	const values = scopeMatchValues(scope);
+function scopeWhere(scope, kind) {
+	const values = scopeMatchValues(scope, kind);
 	if (values.length === 0) {
 		return null;
 	}
@@ -553,7 +553,7 @@ export class ChromaVectorStore {
 			queryTexts: this.embeddingProvider ? undefined : [query],
 			queryEmbeddings: this.embeddingProvider ? [await this.embeddingProvider.embedQuery(query)] : undefined,
 			nResults: topK,
-			where: combineWhere(type ? { type } : null, scopeWhere(scope)),
+			where: combineWhere(type ? { type } : null, scopeWhere(scope, "node")),
 		});
 
 		const ids = results.ids?.[0] ?? [];
@@ -576,7 +576,7 @@ export class ChromaVectorStore {
 			queryTexts: this.embeddingProvider ? undefined : [query],
 			queryEmbeddings: this.embeddingProvider ? [await this.embeddingProvider.embedQuery(query)] : undefined,
 			nResults: topK,
-			where: combineWhere(relation ? { relation } : null, scopeWhere(scope)),
+			where: combineWhere(relation ? { relation } : null, scopeWhere(scope, "relation")),
 		});
 
 		const ids = results.ids?.[0] ?? [];
