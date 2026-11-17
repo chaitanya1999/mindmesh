@@ -289,7 +289,7 @@ export function createApp(services) {
 			sessionId: optionalSessionId(req.body),
 			memoryMessages: optionalMemoryMessages(req.body),
 			includeUnverifiedKnowledge: Boolean(req.body?.includeUnverifiedKnowledge),
-			scope: String(req.body?.scope ?? ""),
+			scope: req.body?.scope ?? "",
 		});
 
 		res.json({
@@ -498,7 +498,7 @@ export function createApp(services) {
 			text,
 			source: "web",
 			userName: requireIngestUserName(req),
-			scope: String(req.body?.scope ?? ""),
+			scope: req.body?.scope ?? "",
 		});
 		const graph = await graphStore.getGraphPreview(DEFAULT_GRAPH_LIMIT);
 

@@ -26,7 +26,7 @@ export function RelationForm({
 	onSave,
 	relation,
 	saveLabel = "Save relation",
-	relationScopeValues = null,
+	relationScopeDimensions = null,
 }) {
 	const isControlled = Boolean(controlledDraft && onDraftChange);
 	const [localDraft, setLocalDraft] = useState(() => createRelationDraft(relation));
@@ -75,10 +75,10 @@ export function RelationForm({
 			<Field label="Description">
 				<textarea rows="4" value={draft.description} onInput={(event) => updateField("description", event.currentTarget.value)} />
 			</Field>
-			{relationScopeValues && (
+			{relationScopeDimensions && (
 				<Field label="Scope">
-					<ScopeField value={draft.scope ?? []} scopeValues={relationScopeValues} onChange={(scope) => updateField("scope", scope)} />
-					<small class="scope-hint">Leave empty unless this relation applies only to some scopes.</small>
+					<ScopeField value={draft.scope ?? []} dimensions={relationScopeDimensions} onChange={(scope) => updateField("scope", scope)} />
+					<small class="scope-hint">Leave empty unless this relation applies only to some business units.</small>
 				</Field>
 			)}
 			<div class="form-actions">

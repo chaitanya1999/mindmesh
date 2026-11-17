@@ -1,7 +1,7 @@
 // In-memory stand-ins for Neo4j and the Chroma client, so tests run without databases.
 // MemoryGraphStore follows Neo4jGraphStore's rules; FakeChromaClient sits under the real ChromaVectorStore,
 // so its document format, HITL listing and metadata deletes are tested as they are.
-import { parseScope, scopeMatchValues } from "../../src/schema/scope.js";
+import { matchesScope, mergeScope, parseScope } from "../../src/schema/scope.js";
 import { ChromaVectorStore } from "../../src/vector/chromaVectorStore.js";
 
 function httpError(message, status) {
@@ -14,11 +14,9 @@ function clone(value) {
 	return structuredClone(value);
 }
 
-// Same rule as Neo4jGraphStore's scope condition: unscoped items always match.
+// Same rule as Neo4jGraphStore's scope condition.
 function inScope(item, scope, kind = "node") {
-	const values = scopeMatchValues(scope, kind);
-	const itemScope = item?.scope ?? [];
-	return values.length === 0 || itemScope.length === 0 || itemScope.some((value) => values.includes(value));
+	return matchesScope(item?.scope ?? [], scope, kind);
 }
 
 export class MemoryGraphStore {
@@ -87,7 +85,7 @@ export class MemoryGraphStore {
 				name: node.name,
 				type: node.type,
 				description: description || existing?.description || "",
-				scope: parseScope(node.scope).length > 0 ? parseScope(node.scope) : existing?.scope ?? [],
+				scope: mergeScope(existing?.scope ?? [], node.scope),
 				createdAt: existing?.createdAt ?? now,
 				updatedAt: now,
 			};
@@ -108,7 +106,7 @@ export class MemoryGraphStore {
 				relation: relation.relation,
 				information: information || existing?.information || "",
 				description: description || existing?.description || "",
-				scope: parseScope(relation.scope).length > 0 ? parseScope(relation.scope) : existing?.scope ?? [],
+				scope: mergeScope(existing?.scope ?? [], relation.scope),
 				createdAt: existing?.createdAt ?? now,
 				updatedAt: now,
 			};

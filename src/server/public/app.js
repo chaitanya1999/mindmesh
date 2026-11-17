@@ -22,7 +22,7 @@ import { SchemaPanel } from "./components/schema/SchemaPanel.js";
 import { requestJson } from "./lib/api.js";
 import { normalizeGraph } from "./lib/graphData.js";
 import { toSnakeCase, relationLabel, decodePipelineField, displayNameFromIdentifier, clampNumber } from "./lib/utils.js";
-import { formatScope, scopeValuesFromSchema } from "./lib/scope.js";
+import { formatScope, scopeDimensionsFromSchema } from "./lib/scope.js";
 
 const GRAPH_LIMIT = 150;
 const EMPTY_GRAPH = { nodes: [], relations: [] };
@@ -31,7 +31,8 @@ const ASK_MEMORY_STORAGE_KEY = "mindmesh.askMemory";
 const ASK_SESSION_STORAGE_KEY = "mindmesh.askSessionId";
 const WORKSPACE_USER_STORAGE_KEY = "mindmesh.workspaceUserName";
 const HITL_REVIEWER_STORAGE_KEY = "mindmesh.hitlReviewerName";
-const WORKSPACE_SCOPE_STORAGE_KEY = "mindmesh.workspaceScope";
+// Record form, "bu:uc;module:sbd" (a new key: values stored before scope dimensions have none).
+const WORKSPACE_SCOPE_STORAGE_KEY = "mindmesh.workspaceScopeDimensions";
 const DEFAULT_JOB_DEPTH = 2;
 const INGEST_WELCOME_MESSAGE = "Paste source text to extract nodes and relationships.";
 const MAX_INGEST_FILES = 10;
@@ -685,8 +686,8 @@ function App() {
 		}
 	}, [graph]);
 	// null hides the scope field (that kind of scope is switched off in config, or settings not loaded yet).
-	const nodeScopeValues = useMemo(() => (scopeSettings?.nodes ? scopeValuesFromSchema(graphSchema, "node") : null), [graphSchema, scopeSettings]);
-	const relationScopeValues = useMemo(() => (scopeSettings?.relations ? scopeValuesFromSchema(graphSchema, "relation") : null), [graphSchema, scopeSettings]);
+	const nodeScopeDimensions = useMemo(() => (scopeSettings?.nodes ? scopeDimensionsFromSchema(graphSchema, "node") : null), [graphSchema, scopeSettings]);
+	const relationScopeDimensions = useMemo(() => (scopeSettings?.relations ? scopeDimensionsFromSchema(graphSchema, "relation") : null), [graphSchema, scopeSettings]);
 	const changeWorkspaceScope = useCallback((scope) => {
 		setWorkspaceScope(scope);
 		writeSessionValue(WORKSPACE_SCOPE_STORAGE_KEY, scope);
@@ -1042,7 +1043,7 @@ function App() {
 					sessionId,
 					memoryMessages,
 					includeUnverifiedKnowledge,
-					scope: nodeScopeValues ? workspaceScope : "",
+					scope: nodeScopeDimensions ? workspaceScope : "",
 				}),
 			});
 			const answerText = result.answer || "The graph does not contain enough information yet.";
@@ -1064,7 +1065,7 @@ function App() {
 			setIsBusy(false);
 			setTimeout(() => inputRef.current?.focus(), 0);
 		}
-	}, [appendMessage, askText, includeUnverifiedKnowledge, nodeScopeValues, updateMessage, userName, workspaceScope]);
+	}, [appendMessage, askText, includeUnverifiedKnowledge, nodeScopeDimensions, updateMessage, userName, workspaceScope]);
 
 	const runJob = useCallback(async (jobType) => {
 		setIsJobBusy(true);
@@ -1125,7 +1126,7 @@ function App() {
 					const formData = new FormData();
 					formData.append("text", text);
 					formData.append("userName", activeUserName);
-					formData.append("scope", nodeScopeValues ? workspaceScope : "");
+					formData.append("scope", nodeScopeDimensions ? workspaceScope : "");
 					for (const file of files) {
 						formData.append("files", file);
 					}
@@ -1136,7 +1137,7 @@ function App() {
 				})()
 				: {
 					method: "POST",
-					body: JSON.stringify({ text, userName: activeUserName, scope: nodeScopeValues ? workspaceScope : "" }),
+					body: JSON.stringify({ text, userName: activeUserName, scope: nodeScopeDimensions ? workspaceScope : "" }),
 				};
 			const result = await requestJson("/api/ingest", requestOptions);
 			const nextGraph = normalizeGraph(result.graph);
@@ -1163,7 +1164,7 @@ function App() {
 			setIsBusy(false);
 			setTimeout(() => inputRef.current?.focus(), 0);
 		}
-	}, [appendMessage, ingestFiles, ingestText, nodeScopeValues, updateMessage, userName, workspaceScope]);
+	}, [appendMessage, ingestFiles, ingestText, nodeScopeDimensions, updateMessage, userName, workspaceScope]);
 
 	const clearIngestChat = useCallback(() => {
 		setIngestMessages([
@@ -2091,7 +2092,7 @@ function App() {
 						<DetailPanel
 							graph={normalizedGraph}
 							nodeTypes={schemaNodeTypes}
-							nodeScopeValues={nodeScopeValues}
+							nodeScopeDimensions={nodeScopeDimensions}
 							nodeDeleteLabel={hitlDeleteLabel}
 							nodeSaveLabel={hitlNodeSaveLabel}
 							onDeleteNode={deleteHitlDraftNode}
@@ -2100,7 +2101,7 @@ function App() {
 							onSaveRelation={saveHitlDraftRelation}
 							onSelectItem={handleHitlOpenItem}
 							relationshipTypes={schemaRelationshipTypes}
-							relationScopeValues={relationScopeValues}
+							relationScopeDimensions={relationScopeDimensions}
 							relationDeleteLabel={hitlDeleteLabel}
 							relationSaveLabel={hitlRelationSaveLabel}
 							selectedItem={selectedItem}
@@ -2112,7 +2113,7 @@ function App() {
 						<NodeForm
 							draft={createNodeDraftValue}
 							nodeTypes={schemaNodeTypes}
-							nodeScopeValues={nodeScopeValues}
+							nodeScopeDimensions={nodeScopeDimensions}
 							onCancel={closeCreateModal}
 							onDraftChange={setCreateNodeDraftValue}
 							onSave={createHitlNode}
@@ -2129,7 +2130,7 @@ function App() {
 							onDraftChange={setCreateRelationDraftValue}
 							onSave={createHitlRelation}
 							relationshipTypes={schemaRelationshipTypes}
-							relationScopeValues={relationScopeValues}
+							relationScopeDimensions={relationScopeDimensions}
 							saveLabel={hitlDraftMode ? "Add to proposal" : "Create directly"}
 						/>
 					</EntityModal>
@@ -2229,7 +2230,7 @@ function App() {
 					activeTab={activeTab}
 					onScopeChange={changeWorkspaceScope}
 					scope={workspaceScope}
-					scopeValues={nodeScopeValues}
+					scopeDimensions={nodeScopeDimensions}
 					askMessages={askMessages}
 					askText={askText}
 					includeUnverifiedKnowledge={includeUnverifiedKnowledge}
@@ -2265,14 +2266,14 @@ function App() {
 					<DetailPanel
 						graph={normalizedGraph}
 						nodeTypes={schemaNodeTypes}
-						nodeScopeValues={nodeScopeValues}
+						nodeScopeDimensions={nodeScopeDimensions}
 						onDeleteNode={deleteNode}
 						onDeleteRelation={deleteRelation}
 						onSaveNode={saveNode}
 						onSaveRelation={saveRelation}
 						onSelectItem={handleOpenItem}
 						relationshipTypes={schemaRelationshipTypes}
-						relationScopeValues={relationScopeValues}
+						relationScopeDimensions={relationScopeDimensions}
 						selectedItem={selectedItem}
 					/>
 				</EntityModal>
@@ -2282,7 +2283,7 @@ function App() {
 					<NodeForm
 						draft={createNodeDraftValue}
 						nodeTypes={schemaNodeTypes}
-						nodeScopeValues={nodeScopeValues}
+						nodeScopeDimensions={nodeScopeDimensions}
 						onCancel={closeCreateModal}
 						onDraftChange={setCreateNodeDraftValue}
 						onSave={createNode}
@@ -2299,7 +2300,7 @@ function App() {
 						onDraftChange={setCreateRelationDraftValue}
 						onSave={createRelation}
 						relationshipTypes={schemaRelationshipTypes}
-						relationScopeValues={relationScopeValues}
+						relationScopeDimensions={relationScopeDimensions}
 						saveLabel="Create relation"
 					/>
 				</EntityModal>

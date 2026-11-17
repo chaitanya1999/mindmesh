@@ -3,7 +3,7 @@ import {
 	displayNameFromIdentifier,
 	relationLabel,
 } from "../../lib/hitlProposal.js";
-import { parseScope } from "../../lib/scope.js";
+import { parseScope, scopeLabel } from "../../lib/scope.js";
 
 function operationLabel(operation) {
 	if (operation === "delete") {
@@ -42,15 +42,16 @@ function findCurrentRelation(graph, record) {
 	)) ?? null;
 }
 
-// Scope chips for a record; "unscoped" only where the reader needs to see that it is empty.
+// Scope chips for a record, one per dimension ("bu: nc, uc"); "unscoped" only where the reader needs to see that
+// it is empty.
 function ScopeChips({ scope, showEmpty = false }) {
-	const values = parseScope(scope);
-	if (values.length === 0) {
+	const groups = scopeLabel(scope).split(" · ").filter(Boolean);
+	if (groups.length === 0) {
 		return showEmpty ? <span class="scope-chips"><span class="scope-chip muted">unscoped</span></span> : null;
 	}
 	return (
 		<span class="scope-chips">
-			{values.map((value) => <span class="scope-chip active" key={value}>{value}</span>)}
+			{groups.map((group) => <span class="scope-chip active" key={group}>{group}</span>)}
 		</span>
 	);
 }

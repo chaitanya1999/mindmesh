@@ -9,7 +9,7 @@ import { createMcpServer } from "../src/mcp/server.js";
 import { createApp } from "../src/server/server.js";
 import { TEST_SCHEMA, createTestServices, node, records, startHttp } from "./helpers/testServices.js";
 
-const SCOPE_FIELD = { name: "scope", description: "Node business units.", constraints: { allowedValues: ["uc", "nc", "common"] } };
+const SCOPE_FIELD = { name: "scope", description: "Node business units.", guidance: ["A unit concept gets the unit as a name prefix."], dimensions: [{ name: "bu", description: "Units.", allowedValues: ["uc", "nc"] }] };
 const SCOPED_SCHEMA = { ...TEST_SCHEMA, nodeProperties: { fields: [SCOPE_FIELD] } };
 
 // No `scope` option: the defaults apply.
@@ -39,18 +39,18 @@ const scoped = (name, scope) => ({ ...node(name, "screen"), scope });
 
 describe("All scopes switched off", () => {
 	it("drops node scopes and adds no scope signals", async () => {
-		services.graphStore.seed({ nodes: [scoped("uc_a_screen", ["uc"])] });
-		services.llmProvider.nextResponse = records("NODE_UPDATE|uc_a_screen|A|screen|More.|nc|", "NODE_CREATE|b_screen|B|screen||xx|");
+		services.graphStore.seed({ nodes: [scoped("uc_a_screen", ["bu:uc"])] });
+		services.llmProvider.nextResponse = records("NODE_UPDATE|uc_a_screen|A|screen|More.|bu:nc|", "NODE_CREATE|b_screen|B|screen||bu:xx|");
 
-		const response = await http.post("/api/ingest", { text: "A and B.", userName: "tester", scope: "nc" });
+		const response = await http.post("/api/ingest", { text: "A and B.", userName: "tester", scope: "bu:nc" });
 
 		assert.equal(response.body.status, "applied", response.body.reviewReasons?.join("; "));
-		assert.deepEqual((await services.graphStore.getNode("node:uc_a_screen")).scope, ["uc"], "stored scope is kept");
+		assert.deepEqual((await services.graphStore.getNode("node:uc_a_screen")).scope, ["bu:uc"], "stored scope is kept");
 		assert.deepEqual((await services.graphStore.getNode("node:b_screen")).scope, []);
 	});
 
 	it("leaves every scope rule out of the prompt", async () => {
-		await http.post("/api/ingest", { text: "Something.", userName: "tester", scope: "uc" });
+		await http.post("/api/ingest", { text: "Something.", userName: "tester", scope: "bu:uc" });
 
 		const prompt = services.llmProvider.requests[0].systemPrompt;
 		assert.match(prompt, /Always leave the scope field of node records empty\./);
@@ -62,21 +62,21 @@ describe("All scopes switched off", () => {
 	});
 
 	it("ignores scope filters", async () => {
-		services.graphStore.seed({ nodes: [scoped("uc_a_screen", ["uc"]), scoped("nc_a_screen", ["nc"])] });
+		services.graphStore.seed({ nodes: [scoped("uc_a_screen", ["bu:uc"]), scoped("nc_a_screen", ["bu:nc"])] });
 
-		const result = await services.graphReadService.searchNodes({ query: "a_screen", match: "text", scope: "uc" });
+		const result = await services.graphReadService.searchNodes({ query: "a_screen", match: "text", scope: "bu:uc" });
 
 		assert.equal(result.results.length, 2);
 	});
 
 	it("keeps the stored node scope on a direct edit", async () => {
-		services.graphStore.seed({ nodes: [scoped("uc_a_screen", ["uc"])] });
+		services.graphStore.seed({ nodes: [scoped("uc_a_screen", ["bu:uc"])] });
 
 		await http.put("/api/hitl/nodes/node%3Auc_a_screen", { label: "A2", type: "screen", scope: [], reviewedBy: "owner" });
 
 		const stored = await services.graphStore.getNode("node:uc_a_screen");
 		assert.equal(stored.label, "A2");
-		assert.deepEqual(stored.scope, ["uc"]);
+		assert.deepEqual(stored.scope, ["bu:uc"]);
 	});
 
 	it("registers no scope arguments on the MCP tools", async () => {

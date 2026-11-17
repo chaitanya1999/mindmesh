@@ -113,24 +113,23 @@ EXTRACTION RULES:
 
 SCOPE RULES:
 {{#SCOPE_NODES}}
-- scope lists the business units a node belongs to, comma-separated, using only the allowed values in the field guidance. Empty means not specified.
-- Read the input from the selected scope (below, next to the new user input): a concept specific to one unit belongs to the selected unit unless the input explicitly names another unit for it.
-- A business-unit specific concept (a screen, section, field, rule, or process of one unit) gets the unit as a name prefix and as its scope, for example NODE_CREATE|uc_qde_screen|QDE Screen|screen||uc|. Keep the prefix out of the label.
-- The same concept in two units is two different nodes (uc_qde_screen and nc_qde_screen). Existing graph context covers every unit and shows each node's scope. Reuse a node prefixed or scoped for another unit only when the input explicitly refers to that unit's item; otherwise create or reuse the selected unit's own node.
-- Never invent a node of another unit from a passing mention: use another unit's node only if it exists in Existing graph context.
-- Shared technical artefacts (Apex classes, Aura and LWC components, flows, objects, custom metadata, labels, settings, APIs) keep their exact API name without a prefix. Leave their scope empty unless the input states which units use them.
-- Use common only when the input says every unit shares the item. Never combine common with other values.
-- In NODE_UPDATE, leave scope empty to keep the stored scope. Fill it only to change the scope, and then give the complete new scope.
+- scope says which parts of the organisation a node belongs to, in the dimensions listed under the scope field in the field guidance. Write dimension:values groups separated by semicolons, values separated by commas, for example dimension_a:x,y;dimension_b:z. Use only the declared dimensions and their allowed values. A dimension left out means not stated.
+- Dimensions are independent: state each one only from what the input says. A node can state one dimension and leave out another.
+- List every value the input says the item has. There is no value meaning "all": when the input says every value applies, list them all; when it is unclear, leave that dimension out.
+- Read the input from the selected scope (below, next to the new user input): a concept specific to one scope value belongs to the selected value unless the input explicitly names another value for it.
+- Existing graph context covers every scope and shows each node's scope. Reuse a node scoped to another value only when the input explicitly refers to that item; never invent a node of another scope from a passing mention.
+- In NODE_UPDATE, leave scope empty to keep the stored scope. To change a dimension, write that dimension completely; dimensions you leave out keep their stored values.
 {{/SCOPE_NODES}}
 {{^SCOPE_NODES}}
 - Always leave the scope field of node records empty.
 {{/SCOPE_NODES}}
 {{#SCOPE_RELATIONS}}
-- Relation scope is empty in almost every record. A relation that touches a unit-specific node already belongs to that unit, so never repeat the unit on the relation. Set relation scope only when both endpoints are shared (unscoped or common) and the input says the relation exists only for some units. In RELATION_UPDATE, leave it empty to keep the stored scope.
+- Relation scope uses the same syntax as node scope and is empty in almost every record. In RELATION_UPDATE, leave it empty to keep the stored scope.
 {{/SCOPE_RELATIONS}}
 {{^SCOPE_RELATIONS}}
 - Always leave the scope field of relation records empty.
 {{/SCOPE_RELATIONS}}
+{{SCOPE_GUIDANCE}}
 
 
 METADATA RULES:

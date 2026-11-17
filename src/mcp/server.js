@@ -8,7 +8,7 @@ import { createDebugLogger } from "../logging/debugLogger.js";
 import { createMindMesh, isMainModule } from "../mindmesh.js";
 import { buildExtractionPrompt } from "../prompts/promptRegistry.js";
 import { readEditableGraphSchema } from "../schema/graphSchema.js";
-import { normalizeScopeFilter, scopeAllowedValues, scopeEnabled } from "../schema/scope.js";
+import { normalizeScopeFilter, scopeDimensions, scopeEnabled } from "../schema/scope.js";
 
 // MCP server for coding agents. The agent does all reasoning: MindMesh retrieves context, hands out its
 // extraction prompts, and stores the agent's records through the same HITL path as the web UI. Transport only:
@@ -137,7 +137,7 @@ const REGENERATE_INSTRUCTIONS = [
 const QUERY_CYPHER_DESCRIPTION = [
 	"Runs one read-only Cypher query on the approved graph, for questions the other tools would need many calls for (for example every screen with its sections and their fields). ",
 	"Graph model: (:KnowledgeNode {id, name, label, type, description, scope, createdAt, updatedAt})-[:RELATES_TO {id, relation, sourceId, targetId, information, description, scope}]->(:KnowledgeNode). ",
-	"`scope` is a list of strings, or absent when unscoped; for example WHERE 'uc' IN n.scope OR 'common' IN n.scope OR n.scope IS NULL. ",
+	"`scope` is a list of \"dimension:value\" strings (for example [\"bu:uc\", \"module:sbd\"]), or absent when unscoped; a dimension with no entry is not stated. Nodes for bu uc: WHERE 'bu:uc' IN coalesce(n.scope, []) OR none(s IN coalesce(n.scope, []) WHERE s STARTS WITH 'bu:'). ",
 	"Every node has the label KnowledgeNode and every relationship the type RELATES_TO; the meaning is in the `type` and `relation` properties. Node ids are \"node:<name>\". ",
 	"Example: MATCH (s:KnowledgeNode {type: 'screen'})-[:RELATES_TO {relation: 'contains'}]->(x:KnowledgeNode) RETURN s.label, collect(x.label). ",
 	"Neo4j checks that the query only reads; writes, schema changes, LOAD CSV, dbms.* and apoc.* are refused. 10 second timeout, at most `limit` rows. Pending proposals are not in Neo4j.",
@@ -159,17 +159,29 @@ export function createMcpServer(services) {
 		openWorldHint: false,
 	};
 
-	// Scope arguments take one value; the allowed values are read from the schema when the server is built. They
-	// exist only for the kinds of scope switched on in config (scope.nodes, scope.relations).
+	// Scope arguments: an object with one value per dimension declared in the schema when the server is built
+	// (a "bu:uc;module:sbd" string when the schema declares none). They exist only for the kinds of scope
+	// switched on in config (scope.nodes, scope.relations).
 	const nodeScopes = scopeEnabled("node");
-	const scopeValues = scopeAllowedValues(hitlService.currentSchema(), "node");
-	const scopeChoices = scopeValues ? ` Allowed values: ${scopeValues.join(", ")}.` : "";
-	const filterArgument = z.string().optional().describe(`Scope filter: only items in this scope, items scoped common, and unscoped items. Omit for no filter.${scopeChoices}`);
+	const dimensions = scopeDimensions(hitlService.currentSchema(), "node");
+	const dimensionText = (dimension) => `${dimension.name}${dimension.allowedValues ? ` (${dimension.allowedValues.join(", ")})` : ""}`;
+	const scopeArgument = (required) => {
+		if (!dimensions) {
+			const text = z.string().describe("Scope as \"dimension:value;dimension:value\", one value per dimension.");
+			return required ? text : text.optional();
+		}
+		return z.object(Object.fromEntries(dimensions.map((dimension) => {
+			const value = z.string().describe(`One ${dimensionText(dimension)} value${required ? ", or \"\" for none" : ""}.`);
+			return [dimension.name, required ? value : value.optional()];
+		})));
+	};
+	const filterArgument = scopeArgument(false).optional().describe("Scope filter, one value per dimension: keeps items that state that value, or no value, in each given dimension. Omit for no filter.");
 	const scopeFilter = nodeScopes ? { scope: filterArgument } : {};
 	const relationScopeFilter = scopeEnabled("relation") ? { scope: filterArgument } : {};
 	const ingestScope = nodeScopes
-		? { scope: z.string().describe(`The scope (business unit) the text belongs to; it frames the extraction, it does not filter the context.${scopeChoices} Required: if the user has not said which scope the text is for, ask them before calling; pass "" only when they say it has no scope.`) }
+		? { scope: scopeArgument(true).describe("The scope the text belongs to, one value per dimension; it frames the extraction, it does not filter the context. Required: for each dimension the user has not given, ask them before calling; pass \"\" only when they say it does not apply.") }
 		: {};
+	const scopeSummary = dimensions ? ` (${dimensions.map(dimensionText).join("; ")})` : "";
 
 	const server = new McpServer(
 		{
@@ -189,7 +201,7 @@ export function createMcpServer(services) {
 				nodeScopes
 					? "Ingestion: `get_ingest_prompt` with the user's text and its scope (ask the user for the scope if they did not give it), look up any entity it did not retrieve, extract records, then `submit_ingest` with the same scope."
 					: "Ingestion: `get_ingest_prompt` with the user's text, look up any entity it did not retrieve, extract records, then `submit_ingest`.",
-				nodeScopes ? "Scope: nodes can carry a scope, a list such as [\"uc\"]; unscoped nodes are shared or not classified yet. When the user works on one scope, pass it as `scope` to the search tools." : "",
+				nodeScopes ? `Scope: nodes can carry a scope in independent dimensions${scopeSummary}, a list such as ["bu:uc", "module:sbd"]; a dimension a node does not state is unknown and matches every filter. When the user works on one scope, pass it as \`scope\` to the search tools; search without it when filtered results miss something.` : "",
 				"Reviewing: `list_proposals` and `get_proposal`; `save_reviewer_notes`; regenerate with `get_regenerate_prompt` then `submit_regeneration`.",
 				allowReviewDecisions
 					? "Decisions: `approve_proposal` and `reject_proposal` are enabled. Use them only when the user explicitly asks for that proposal."
@@ -381,7 +393,7 @@ export function createMcpServer(services) {
 			operation: z.enum(["create", "update", "delete"]).optional().describe("Only proposals containing this kind of change."),
 			author: z.string().optional().describe("Only proposals by this user."),
 			source: z.string().optional().describe("Only proposals from this source (for example web, mcp, manual)."),
-			...(nodeScopes ? { scope: z.string().optional().describe("Only proposals ingested with this scope.") } : {}),
+			...(nodeScopes ? { scope: scopeArgument(false).optional().describe("Only proposals whose ingest scope matches (a dimension the proposal does not name matches).") } : {}),
 			limit: z.number().int().min(1).max(100).optional().describe("Maximum results. Default 20."),
 		},
 		async ({ signal, operation, author, source, scope, limit = 20 }) => {
@@ -413,7 +425,7 @@ export function createMcpServer(services) {
 		[
 			"Step 1 of adding knowledge from the user's text. Runs MindMesh's own retrieval and returns its exact extraction prompt (record format, schema types, field guidance, retrieved context), the retrieved and pending nodes, a retrieval quality note, and instructions. ",
 			"MindMesh's retrieval is one search over the whole text and can miss entities named differently: check every entity the text mentions against retrievedNodes and pendingNodes, and look up the missing ones with search_nodes / get_node before extracting. Then call submit_ingest.",
-			nodeScopes ? " The scope is required: if the user has not said which scope (business unit) the text is for, ask them first." : "",
+			nodeScopes ? " The scope is required: for each scope dimension the user has not given for the text, ask them first." : "",
 		].join(""),
 		{
 			text: z.string().describe("The text to add to the knowledge graph."),

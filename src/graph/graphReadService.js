@@ -1,6 +1,6 @@
 import { toSnakeCase } from "../ingestion/graphPayload.js";
 import { formatFieldGuidance, loadGraphSchema } from "../schema/graphSchema.js";
-import { normalizeScopeFilter, scopeAllowedValues } from "../schema/scope.js";
+import { normalizeScopeFilter, scopeDimensions } from "../schema/scope.js";
 
 // Read-only views of the approved graph for agents (MCP). Chroma finds candidates by meaning; the records
 // returned are always read from Neo4j, the source of truth. Pending proposals are HitlService's business.
@@ -90,7 +90,7 @@ export class GraphReadService {
 	}
 
 	// match "semantic" ranks by meaning (Chroma); "text" is a case-insensitive name/text match (Neo4j).
-	// `scope` keeps nodes in that scope, common nodes, and unscoped nodes.
+	// `scope` keeps nodes that state the filtered value, or no value, in each filtered dimension.
 	async searchNodes({ query, match = "semantic", type = "", scope = "", limit }) {
 		const count = safeLimit(limit);
 		const nodeType = toSnakeCase(type);
@@ -250,8 +250,8 @@ export class GraphReadService {
 				nodes: counts.nodeTypes.reduce((sum, row) => sum + row.count, 0),
 				relations: counts.relationTypes.reduce((sum, row) => sum + row.count, 0),
 			},
-			// Allowed scope values (null: any value); unscoped items match every scope filter.
-			scopeValues: scopeAllowedValues(schema, "node"),
+			// Scope dimensions with their allowed values (null: none declared, any dimension and value accepted).
+			scopeDimensions: scopeDimensions(schema, "node"),
 			fieldGuidance: formatFieldGuidance(schema),
 		};
 	}

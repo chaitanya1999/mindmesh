@@ -9,11 +9,11 @@ import { createMcpServer } from "../src/mcp/server.js";
 import { createApp } from "../src/server/server.js";
 import { TEST_SCHEMA, createTestServices, node, records, relation, startHttp } from "./helpers/testServices.js";
 
-const SCOPE_FIELD = { name: "scope", description: "Business units.", constraints: { allowedValues: ["uc", "nc", "common"] } };
+const SCOPE_FIELD = { name: "scope", description: "Business units.", dimensions: [{ name: "bu", description: "Units.", allowedValues: ["uc", "nc"] }] };
 const SCOPED_SCHEMA = {
 	...TEST_SCHEMA,
-	nodeProperties: { fields: [{ ...SCOPE_FIELD, description: "Node business units." }] },
-	relationshipProperties: { fields: [{ ...SCOPE_FIELD, description: "Relation business units." }] },
+	nodeProperties: { fields: [{ ...SCOPE_FIELD, description: "Node business units.", guidance: ["A unit concept gets the unit as a name prefix."] }] },
+	relationshipProperties: { fields: [{ ...SCOPE_FIELD, description: "Relation business units.", guidance: ["Relation unit guidance."] }] },
 };
 
 const services = createTestServices({ mode: "auto", scope: { nodes: true, relations: false } });
@@ -47,52 +47,53 @@ describe("Relation scopes switched off", () => {
 
 	it("drops relation scopes from records with a warning and keeps node scopes", async () => {
 		services.graphStore.seed({ nodes: [node("b_api", "api")] });
-		services.llmProvider.nextResponse = records("NODE_CREATE|uc_a_screen|A|screen||uc|", "RELATION_CREATE|uc_a_screen|b_api|uses|||uc|");
+		services.llmProvider.nextResponse = records("NODE_CREATE|uc_a_screen|A|screen||bu:uc|", "RELATION_CREATE|uc_a_screen|b_api|uses|||bu:uc|");
 
-		const response = await http.post("/api/ingest", { text: "A uses B.", userName: "tester", scope: "uc" });
+		const response = await http.post("/api/ingest", { text: "A uses B.", userName: "tester", scope: "bu:uc" });
 
 		assert.equal(response.body.status, "applied");
 		assert.deepEqual(response.body.relations[0].scope, []);
-		assert.deepEqual((await services.graphStore.getNode("node:uc_a_screen")).scope, ["uc"]);
+		assert.deepEqual((await services.graphStore.getNode("node:uc_a_screen")).scope, ["bu:uc"]);
 	});
 
 	it("warns about a dropped relation scope and stores the proposal without it", async () => {
 		services.ingestionService.ingestion.mode = "hitl";
 		services.graphStore.seed({ nodes: [node("b_api", "api")] });
-		services.llmProvider.nextResponse = records("NODE_CREATE|uc_a_screen|A|screen||uc|", "RELATION_CREATE|uc_a_screen|b_api|uses|||uc|");
+		services.llmProvider.nextResponse = records("NODE_CREATE|uc_a_screen|A|screen||bu:uc|", "RELATION_CREATE|uc_a_screen|b_api|uses|||bu:uc|");
 
-		const response = await http.post("/api/ingest", { text: "A uses B.", userName: "tester", scope: "uc" });
+		const response = await http.post("/api/ingest", { text: "A uses B.", userName: "tester", scope: "bu:uc" });
 
 		assert.ok(response.body.schemaWarnings.some((warning) => /relation scopes are switched off/.test(warning)), response.body.schemaWarnings.join("; "));
 		const { note } = (await http.get(`/api/hitl/notes/${encodeURIComponent(response.body.hitlNote.id)}`)).body;
 		assert.match(note.llmResponse, /^RELATION_CREATE\|uc_a_screen\|b_api\|uses\|\|\|\|$/m, "the stored text drops the relation scope");
-		assert.match(note.llmResponse, /NODE_CREATE\|uc_a_screen\|A\|screen\|\|uc\|/);
+		assert.match(note.llmResponse, /NODE_CREATE\|uc_a_screen\|A\|screen\|\|bu:uc\|/);
 	});
 
 	it("leaves relation scope out of the prompt and tells the model to leave it empty", async () => {
-		await http.post("/api/ingest", { text: "Something.", userName: "tester", scope: "uc" });
+		await http.post("/api/ingest", { text: "Something.", userName: "tester", scope: "bu:uc" });
 
 		const prompt = services.llmProvider.requests[0].systemPrompt;
 		assert.match(prompt, /Always leave the scope field of relation records empty\./);
-		assert.match(prompt, /gets the unit as a name prefix/, "node scope rules are present");
+		assert.match(prompt, /^- A unit concept gets the unit as a name prefix\.$/m, "node scope guidance from the schema is present");
+		assert.doesNotMatch(prompt, /Relation unit guidance/, "relation scope guidance is left out");
 		assert.match(prompt, /Node business units\./);
 		assert.doesNotMatch(prompt, /Relation business units\./);
 		assert.doesNotMatch(prompt, /Relation scope is empty in almost every record/);
-		assert.doesNotMatch(prompt, /\{\{[#^/]SCOPE_/, "no section markers are left");
+		assert.doesNotMatch(prompt, /\{\{[#^/]?SCOPE_/, "no section markers or placeholders are left");
 	});
 
 	it("keeps a stored relation scope on a direct edit", async () => {
 		services.graphStore.seed({
 			nodes: [node("a_screen", "screen"), node("b_api", "api")],
-			relations: [{ ...relation("a_screen", "uses", "b_api"), scope: ["nc"] }],
+			relations: [{ ...relation("a_screen", "uses", "b_api"), scope: ["bu:nc"] }],
 		});
 		const id = relation("a_screen", "uses", "b_api").id;
 
-		const response = await http.put(`/api/hitl/relations/${encodeURIComponent(id)}`, { sourceId: "a_screen", targetId: "b_api", relation: "uses", information: "now", scope: ["uc"], reviewedBy: "owner" });
+		const response = await http.put(`/api/hitl/relations/${encodeURIComponent(id)}`, { sourceId: "a_screen", targetId: "b_api", relation: "uses", information: "now", scope: ["bu:uc"], reviewedBy: "owner" });
 
 		assert.equal(response.status, 200);
 		const stored = await services.graphStore.getRelation(id);
-		assert.deepEqual(stored.scope, ["nc"]);
+		assert.deepEqual(stored.scope, ["bu:nc"]);
 		assert.equal(stored.information, "now");
 	});
 

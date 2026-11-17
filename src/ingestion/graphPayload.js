@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { formatScope, parseScope, scopeAllowedValues, scopeEnabled, scopeProblems } from "../schema/scope.js";
+import { formatScope, mergeScope, parseScope, scopeDimensions, scopeEnabled, scopeProblems } from "../schema/scope.js";
 
 export function toSnakeCase(value) {
 	return String(value ?? "")
@@ -93,8 +93,8 @@ function buildSchemaRules(schema) {
 		enforceSchema,
 		allowedNodeTypes,
 		allowedRelationshipTypes,
-		nodeScopeValues: scopeAllowedValues(schema, "node"),
-		relationScopeValues: scopeAllowedValues(schema, "relation") ?? scopeAllowedValues(schema, "node"),
+		nodeScopeDimensions: scopeDimensions(schema, "node"),
+		relationScopeDimensions: scopeDimensions(schema, "relation"),
 	};
 }
 
@@ -143,7 +143,7 @@ function mergeRelation(existingRelation, nextRelation) {
 		...existingRelation,
 		information: preferText(existingRelation.information, nextRelation.information),
 		description: preferText(existingRelation.description, nextRelation.description),
-		scope: nextRelation.scope.length > 0 ? nextRelation.scope : existingRelation.scope,
+		scope: mergeScope(existingRelation.scope, nextRelation.scope),
 		metadata: preferText(existingRelation.metadata, nextRelation.metadata),
 	};
 }
@@ -160,7 +160,7 @@ function mergeNode(existingNode, nextNode) {
 		description: nextNode.description
 			? nextNode.description
 			: existingNode.description,
-		scope: nextNode.scope.length > 0 ? nextNode.scope : existingNode.scope,
+		scope: mergeScope(existingNode.scope, nextNode.scope),
 		metadata: nextNode.metadata
 			? nextNode.metadata
 			: existingNode.metadata,
@@ -194,7 +194,7 @@ export function normalizeGraphPayload(payload, { schema = null } = {}) {
 		}
 
 		const scope = recordScope(rawNode.scope, "node", `node "${name}"`, warnings, droppedScopes);
-		const nodeScopeProblems = schemaRules.enforceSchema ? scopeProblems(scope, schemaRules.nodeScopeValues) : [];
+		const nodeScopeProblems = schemaRules.enforceSchema ? scopeProblems(scope, schemaRules.nodeScopeDimensions) : [];
 		if (nodeScopeProblems.length > 0) {
 			const message = `Node "${name}" has an invalid scope: ${nodeScopeProblems.join("; ")}.`;
 			warnings.push(message);
@@ -234,7 +234,7 @@ export function normalizeGraphPayload(payload, { schema = null } = {}) {
 		}
 
 		const scope = recordScope(rawRelation.scope, "relation", `relation "${sourceName}" -> "${targetName}"`, warnings, droppedScopes);
-		const relationScopeProblems = schemaRules.enforceSchema ? scopeProblems(scope, schemaRules.relationScopeValues) : [];
+		const relationScopeProblems = schemaRules.enforceSchema ? scopeProblems(scope, schemaRules.relationScopeDimensions) : [];
 		if (relationScopeProblems.length > 0) {
 			const message = `Relation "${sourceName}" -> "${targetName}" has an invalid scope: ${relationScopeProblems.join("; ")}.`;
 			warnings.push(message);

@@ -4,11 +4,12 @@
 //   exist in the graph (and must not be deleted by the same payload);
 // - an endpoint that already exists is only a reference and is never written;
 // - NODE_CREATE for a node that already exists is applied as NODE_UPDATE and flagged for review;
-// - a record that replaces the non-empty scope of an existing node is flagged for review (a blank scope keeps it);
-// - with an ingest scope, a record that touches an existing node scoped outside it (a node record, or a
-//   relation using it as an endpoint) is flagged for review.
+// - a record that replaces a non-empty scope dimension of an existing node is flagged for review (dimensions
+//   the record does not state are kept);
+// - with an ingest scope, a record that touches an existing node scoped outside it in a dimension the ingest
+//   scope names (a node record, or a relation using it as an endpoint) is flagged for review.
 
-import { formatScope, matchesScope, parseScope, scopeEnabled } from "../schema/scope.js";
+import { formatScope, matchesScope, parseScope, scopeByDimension, scopeEnabled } from "../schema/scope.js";
 
 function graphNameFromId(value) {
 	return String(value ?? "").replace(/^node:/i, "");
@@ -41,7 +42,7 @@ export async function resolveGraphPayload(graphPayload, graphStore, { scope = ""
 	const storedScopes = new Map(checksScopes && existingIds.length > 0 && typeof graphStore.getNodesByIds === "function"
 		? (await graphStore.getNodesByIds(existingIds)).map((node) => [node.id, formatScope(node.scope)])
 		: []);
-	// A stored scope that the ingest scope does not match (unscoped and common nodes always match).
+	// A stored scope that the ingest scope does not match (a dimension the node does not state always matches).
 	const outsideScope = (nodeId) => {
 		const stored = storedScopes.get(nodeId);
 		return Boolean(ingestScope && stored && !matchesScope(stored, ingestScope));
@@ -58,12 +59,15 @@ export async function resolveGraphPayload(graphPayload, graphStore, { scope = ""
 			};
 		}
 		const storedScope = storedScopes.get(node.id);
-		const proposedScope = formatScope(node.scope);
-		if (storedScope && proposedScope && storedScope !== proposedScope) {
-			next = {
-				...next,
-				metadata: appendSignal(next.metadata, `AMBIGUITY: scope of "${node.name}" changes from ${storedScope} to ${proposedScope}. Confirm the new scope.`),
-			};
+		const storedDimensions = scopeByDimension(storedScope);
+		for (const [dimension, values] of scopeByDimension(node.scope)) {
+			const before = storedDimensions.get(dimension) ?? [];
+			if (before.length > 0 && before.join(",") !== values.join(",")) {
+				next = {
+					...next,
+					metadata: appendSignal(next.metadata, `AMBIGUITY: ${dimension || "scope"} of "${node.name}" changes from ${before.join(",")} to ${values.join(",")}. Confirm the new scope.`),
+				};
+			}
 		}
 		if (outsideScope(node.id)) {
 			next = {

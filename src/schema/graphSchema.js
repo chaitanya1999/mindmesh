@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 import { toSnakeCase } from "../ingestion/graphPayload.js";
-import { scopeEnabled } from "./scope.js";
+import { rememberScopeDimensions, scopeEnabled } from "./scope.js";
 
 function readJson(filePath) {
 	if (!filePath || !fs.existsSync(filePath)) {
@@ -113,6 +113,7 @@ export function saveEditableGraphSchema(config, { rawJson, schema } = {}) {
 
 export function loadGraphSchema(config) {
 	const raw = readJson(schemaPathFromConfig(config));
+	rememberScopeDimensions(raw);
 
 	return {
 		...raw,
@@ -154,7 +155,12 @@ function formatPropertyGuidance(title, propertyFields = []) {
 	const lines = propertyFields.map((field) => {
 		const description = field.description || "No description.";
 		const constraints = formatConstraintText(field.constraints);
-		return `- ${field.name}: ${description}${constraints}`;
+		// Scope dimensions: one line each, with the values it allows.
+		const dimensions = Array.isArray(field.dimensions) ? field.dimensions : [];
+		return [
+			`- ${field.name}: ${description}${constraints}`,
+			...dimensions.map((dimension) => `  - ${dimension.name}: ${dimension.description || "No description."}${formatConstraintText({ allowedValues: dimension.allowedValues })}`),
+		].join("\n");
 	});
 
 	return [title, ...lines].join("\n");
@@ -176,6 +182,20 @@ export function formatSchemaCatalog(schema) {
 // A switched-off scope (config scope.nodes / scope.relations) is left out of the guidance.
 function guidanceFields(fields = [], kind) {
 	return fields.filter((field) => field?.name !== "scope" || scopeEnabled(kind));
+}
+
+// Domain scope rules for {{SCOPE_GUIDANCE}}: the `guidance` lines of the `scope` field descriptors (naming
+// conventions, how each dimension is used), one bullet each, for the kinds of scope switched on. The prompt file
+// keeps only the generic scope rules. Empty when there are none.
+export function formatScopeGuidance(schema) {
+	const kinds = [["node", schema?.nodeProperties?.fields], ["relation", schema?.relationshipProperties?.fields]];
+	return kinds
+		.filter(([kind]) => scopeEnabled(kind))
+		.flatMap(([, fields]) => (fields ?? []).find((field) => field?.name === "scope")?.guidance ?? [])
+		.map((line) => String(line ?? "").trim())
+		.filter(Boolean)
+		.map((line) => `- ${line}`)
+		.join("\n");
 }
 
 export function formatFieldGuidance(schema) {

@@ -2815,15 +2815,23 @@ pre.admin-code {
 /* Scope: picker (Ask / Ingest), form toggles, chips, HITL checklist */
 .scope-picker {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
-	gap: 8px;
+	gap: 8px 14px;
 	padding: 8px 14px 0;
 	color: var(--muted);
 	font-size: 0.78rem;
 }
 
-.scope-picker select {
-	min-width: 110px;
+.scope-picker label {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.scope-picker select,
+.scope-picker input {
+	min-width: 90px;
 	padding: 4px 8px;
 	border: 1px solid var(--line);
 	border-radius: 6px;
@@ -2832,7 +2840,18 @@ pre.admin-code {
 	font: inherit;
 }
 
-.scope-field,
+.scope-field {
+	display: grid;
+	gap: 6px;
+}
+
+.scope-dimension-label {
+	min-width: 64px;
+	color: var(--muted);
+	font-size: 0.74rem;
+}
+
+.scope-dimension,
 .scope-chips {
 	display: flex;
 	flex-wrap: wrap;

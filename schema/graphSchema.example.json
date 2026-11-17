@@ -33,10 +33,38 @@
 			},
 			{
 				"name": "scope",
-				"description": "Business units the node belongs to, comma-separated (for example uc or uc,nc). Set it for business-unit specific concepts and when the input states which units use the node; otherwise leave it empty. Use common only when the input says every unit shares the node; never combine common with other values.",
-				"constraints": {
-					"allowedValues": ["uc", "nc", "tw", "cv", "tr", "common"]
-				}
+				"description": "Where the node belongs, in independent dimensions: dimension:values groups separated by semicolons, for example bu:uc,nc;module:sbd. A dimension left out is not stated.",
+				"guidance": [
+					"A business-unit specific concept (a screen, section, field, rule, or process of one unit) gets the unit as a name prefix and as its bu scope, for example NODE_CREATE|uc_qde_screen|QDE Screen|screen||bu:uc|. Keep the prefix out of the label.",
+					"The same concept in two units is two different nodes (uc_qde_screen and nc_qde_screen). Reuse another unit's node only when the input explicitly refers to that unit's item; otherwise create or reuse the selected unit's own node.",
+					"Shared technical artefacts (Apex classes, Aura and LWC components, flows, objects, custom metadata, labels, settings, APIs) keep their exact API name without a prefix. Leave bu out unless the input states which units use them.",
+					"An item owned by a horizontal module team (SBD, HZT, Mandate, PAI) gets the module dimension (module:sbd) and no name prefix; add bu only for the units the input names."
+				],
+				"dimensions": [
+					{
+						"name": "bu",
+						"label": "Business unit",
+						"description": "Business units the node applies to, for example bu:uc or bu:uc,nc. Set it for business-unit specific concepts and when the input states which units use the node; list every unit it applies to (there is no value for all units). Leave it out when that is not known.",
+						"allowedValues": [
+							"uc",
+							"nc",
+							"tw",
+							"cv",
+							"tr"
+						]
+					},
+					{
+						"name": "module",
+						"label": "Module",
+						"description": "Horizontal module team that owns the node (SBD, HZT, Mandate, PAI), for example module:sbd. Independent of bu: set it when the input says a module team owns or builds the item.",
+						"allowedValues": [
+							"sbd",
+							"hzt",
+							"mandate",
+							"pai"
+						]
+					}
+				]
 			}
 		]
 	},
@@ -84,10 +112,35 @@
 			},
 			{
 				"name": "scope",
-				"description": "Business units the relation applies to, comma-separated. Empty in almost all cases: a relation touching a unit-specific node already belongs to that unit, so never repeat the unit here. Set it only when both endpoints are shared (unscoped or common) and the input says the relation exists only for some units.",
-				"constraints": {
-					"allowedValues": ["uc", "nc", "tw", "cv", "tr", "common"]
-				}
+				"description": "Where the relation belongs, same syntax as node scope. Empty in almost all cases.",
+				"guidance": [
+					"A relation that touches a unit-specific node already belongs to that unit, so never repeat the unit on the relation. Set relation bu only when both endpoints state no business unit and the input says the relation exists only for some units."
+				],
+				"dimensions": [
+					{
+						"name": "bu",
+						"label": "Business unit",
+						"description": "Business units the relation applies to. Leave it out in almost all cases: a relation touching a unit-specific node already belongs to that unit. Set it only when both endpoints state no business unit and the input says the relation exists only for some units.",
+						"allowedValues": [
+							"uc",
+							"nc",
+							"tw",
+							"cv",
+							"tr"
+						]
+					},
+					{
+						"name": "module",
+						"label": "Module",
+						"description": "Horizontal module team the relation belongs to. Leave it out in almost all cases.",
+						"allowedValues": [
+							"sbd",
+							"hzt",
+							"mandate",
+							"pai"
+						]
+					}
+				]
 			},
 			{
 				"name": "metadata",
@@ -95,10 +148,6 @@
 			}
 		]
 	},
-	"nodeTypes": [
-		
-	],
-	"relationshipTypes": [
-		
-	]
+	"nodeTypes": [],
+	"relationshipTypes": []
 }

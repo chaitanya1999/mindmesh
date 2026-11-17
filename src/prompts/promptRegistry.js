@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { formatFieldGuidance, formatSchemaCatalog, loadGraphSchema } from "../schema/graphSchema.js";
+import { formatFieldGuidance, formatSchemaCatalog, formatScopeGuidance, loadGraphSchema } from "../schema/graphSchema.js";
 import { scopeEnabled } from "../schema/scope.js";
 
 const GRAPH_SCHEMA_PLACEHOLDER = "{{GRAPH_SCHEMA}}";
@@ -8,6 +8,8 @@ const USER_INPUT_PLACEHOLDER = "{{USER_INPUT}}";
 const FIELD_GUIDANCE_PLACEHOLDER = "{{FIELD_GUIDANCE}}";
 const REVIEWER_REVISION_PLACEHOLDER = "{{REVIEWER_REVISION}}";
 const INGEST_SCOPE_PLACEHOLDER = "{{INGEST_SCOPE}}";
+// Domain scope rules from the schema (formatScopeGuidance()).
+const SCOPE_GUIDANCE_PLACEHOLDER = "{{SCOPE_GUIDANCE}}";
 
 // Conditional blocks for the scope switches: {{#SCOPE_NODES}}...{{/SCOPE_NODES}} is kept when node scopes are
 // on, {{^SCOPE_NODES}}...{{/SCOPE_NODES}} when they are off; the same for SCOPE_RELATIONS.
@@ -43,6 +45,7 @@ export function loadPrompts(config) {
 		extractionSystem: renderScopeSections(extractionSystemTemplate)
 			.replaceAll(GRAPH_SCHEMA_PLACEHOLDER, schemaCatalog)
 			.replaceAll(FIELD_GUIDANCE_PLACEHOLDER, fieldGuidance)
+			.replaceAll(SCOPE_GUIDANCE_PLACEHOLDER, formatScopeGuidance(graphSchema))
 			.replaceAll(EXISTING_GRAPH_CONTEXT_PLACEHOLDER, "No existing graph context was retrieved.")
 			.replaceAll(USER_INPUT_PLACEHOLDER, "")
 			.replaceAll(INGEST_SCOPE_PLACEHOLDER, formatIngestScope(""))
@@ -85,6 +88,7 @@ export function buildExtractionPrompt(template, {
 	return renderTemplate(renderScopeSections(template), {
 		[GRAPH_SCHEMA_PLACEHOLDER]: formatSchemaCatalog(graphSchema),
 		[FIELD_GUIDANCE_PLACEHOLDER]: formatFieldGuidance(graphSchema),
+		[SCOPE_GUIDANCE_PLACEHOLDER]: formatScopeGuidance(graphSchema),
 		[EXISTING_GRAPH_CONTEXT_PLACEHOLDER]: existingGraphContext,
 		[INGEST_SCOPE_PLACEHOLDER]: formatIngestScope(scope),
 		[USER_INPUT_PLACEHOLDER]: userInput,
@@ -101,7 +105,7 @@ export function formatIngestScope(scope) {
 	if (!scope) {
 		return "Selected scope for this input: none. Set a scope only where the input itself states it.";
 	}
-	return `Selected scope for this input: ${scope}. Read the input as ${scope} knowledge. Existing graph context covers every scope; each node shows its own.`;
+	return `Selected scope for this input: ${scope}. Read the input as knowledge of that scope, in each dimension it names. Existing graph context covers every scope; each node shows its own.`;
 }
 
 // Section appended when a HITL reviewer regenerates a proposal; empty for normal ingestion.

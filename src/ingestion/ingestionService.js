@@ -4,7 +4,7 @@ import { createDebugLogger, errorDetails, logStep } from "../logging/debugLogger
 import { buildExtractionPrompt } from "../prompts/promptRegistry.js";
 import { formatExtractionGraphContext } from "../rag/graphContext.js";
 import { loadGraphSchema } from "../schema/graphSchema.js";
-import { normalizeScopeFilter } from "../schema/scope.js";
+import { formatScope, normalizeScopeFilter } from "../schema/scope.js";
 
 function previewText(value, maxLength = 180) {
 	const text = String(value ?? "").replace(/\s+/g, " ").trim();
@@ -80,7 +80,7 @@ function formatPendingHitlContext({ notes = [], graph = { nodes: [], relations: 
 		const details = [
 			`name: ${node.name || node.id}`,
 			node.type ? `type: ${node.type}` : "",
-			node.scope?.length ? `scope: ${node.scope.join(", ")}` : "",
+			formatScope(node.scope) ? `scope: ${formatScope(node.scope)}` : "",
 			`pending: ${node.operation || "upsert"}`,
 			note?.userName ? `ingested by: ${note.userName}` : "",
 		].filter(Boolean);
@@ -387,7 +387,7 @@ export class IngestionService {
 
 	// Extracts graph records from text. `submit` (HitlService.submit) decides whether to apply them or store
 	// a HITL proposal; it runs inside this flow so its steps and errors land in the same debug log.
-	// `scope`: the scope picked for this input (one allowed value, or empty).
+	// `scope`: the scope picked for this input ("bu:uc;module:sbd", at most one value per dimension, or empty).
 	async ingestText({ text, source, userName, scope: requestedScope = "", submit }) {
 		if (typeof submit !== "function") {
 			throw new Error("ingestText() needs a submit function; use HitlService.ingestText().");

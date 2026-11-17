@@ -6,8 +6,8 @@ import { relationLabel, displayText } from "../../lib/utils.js";
 export function DetailPanel({
 	graph,
 	nodeTypes = [],
-	nodeScopeValues = null,
-	relationScopeValues = null,
+	nodeScopeDimensions = null,
+	relationScopeDimensions = null,
 	nodeDeleteLabel = "Delete",
 	nodeSaveLabel = "Save node",
 	onDeleteNode,
@@ -56,7 +56,7 @@ export function DetailPanel({
 					deleteLabel={nodeDeleteLabel}
 					node={selectedNode}
 					nodeTypes={nodeTypes}
-					nodeScopeValues={nodeScopeValues}
+					nodeScopeDimensions={nodeScopeDimensions}
 					onDelete={() => onDeleteNode(selectedNode)}
 					onSave={(draft) => onSaveNode(selectedNode.id, draft)}
 					saveLabel={nodeSaveLabel}
@@ -102,7 +102,7 @@ export function DetailPanel({
 					graph={graph}
 					relation={selectedRelation}
 					relationshipTypes={relationshipTypes}
-					relationScopeValues={relationScopeValues}
+					relationScopeDimensions={relationScopeDimensions}
 					onCancel={returnNode ? () => onSelectItem({ type: "node", id: returnNode.id }) : undefined}
 					onDelete={() => onDeleteRelation(selectedRelation)}
 					onSave={(draft) => onSaveRelation(selectedRelation.id, draft)}

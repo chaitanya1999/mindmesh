@@ -84,6 +84,9 @@ async function main() {
 		
 		const tools = await send("tools/list");
 		console.log("tools/list OK:", tools.tools.map((t) => t.name).join(", "));
+		// "No scope" in the shape the ingest tools expect: "" or one empty value per scope dimension.
+		const scopeSchema = tools.tools.find((t) => t.name === "get_ingest_prompt")?.inputSchema?.properties?.scope;
+		const noScope = scopeSchema?.type === "object" ? Object.fromEntries(Object.keys(scopeSchema.properties ?? {}).map((name) => [name, ""])) : "";
 		
 		const resources = await send("resources/list");
 		console.log("resources/list OK:", resources.resources.map((r) => r.uri).join(", "));
@@ -102,7 +105,7 @@ async function main() {
 		const schemaParsed = await callTool("get_schema", {});
 		console.log("get_schema OK: node types =", schemaParsed.nodeTypes?.length ?? 0, "totals =", JSON.stringify(schemaParsed.totals));
 
-		const ingestParsed = await callTool("get_ingest_prompt", { scope: "", text: "EKYC Screen uses PAN Verification API." });
+		const ingestParsed = await callTool("get_ingest_prompt", { scope: noScope, text: "EKYC Screen uses PAN Verification API." });
 		console.log("get_ingest_prompt OK: extractionSystemPrompt length =", ingestParsed.extractionSystemPrompt?.length ?? 0);
 		console.log("get_ingest_prompt OK: retrievedNodes =", ingestParsed.retrievedNodes?.length ?? 0, "ingestionMode =", ingestParsed.ingestionMode);
 
@@ -122,7 +125,7 @@ async function main() {
 					"</end#$#$>",
 				].join("\n"),
 				text: "MCP smoke test node uses the MCP smoke test target.",
-				scope: "",
+				scope: noScope,
 				author: "mcp-smoke-test",
 				source: "mcp-smoke-test",
 			},

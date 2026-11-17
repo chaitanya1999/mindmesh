@@ -1,5 +1,5 @@
 import { ChromaClient } from "chromadb";
-import { formatScope, parseScope, scopeMatchValues } from "../schema/scope.js";
+import { formatScope, knownScopeDimensions, matchesScope, parseScope, scopeByDimension, scopeFilterEntries } from "../schema/scope.js";
 
 function nodeDocument(node) {
 	return [
@@ -20,34 +20,38 @@ function relationDocument(relation) {
 	].filter(Boolean).join("\n");
 }
 
-// Chroma metadata holds no lists, so a scope is stored as one flag per value (scope_uc: true), plus
-// `scoped` (false for unscoped items, which match every filter) and `scope` as text for display.
+// Chroma metadata holds no lists, so a scope is stored as one flag per entry ("scope:bu:uc": true), one
+// "scoped:<dimension>" flag per dimension (false when the item states no value for it, so it matches every
+// filter on that dimension), and `scope` as text for display. The false flags are written for every dimension
+// the schema declares (a filter cannot match a missing key); after adding a dimension, reindex the vectors.
 function scopeMetadata(scope) {
-	const values = parseScope(scope);
+	const entries = parseScope(scope);
+	const stated = scopeByDimension(entries);
+	const dimensions = [...new Set([...knownScopeDimensions(), ...stated.keys()])].filter(Boolean);
 	return {
-		scope: formatScope(values),
-		scoped: values.length > 0,
-		...Object.fromEntries(values.map((value) => [`scope_${value}`, true])),
+		scope: formatScope(entries),
+		...Object.fromEntries(dimensions.map((dimension) => [`scoped:${dimension}`, stated.has(dimension)])),
+		...Object.fromEntries(entries.map((entry) => [`scope:${entry}`, true])),
 	};
 }
 
-// Chroma's upsert merges metadata keys, so a flag of a removed scope value would stay true. Returns the
-// stale scope_* flags of the stored records, set to false, per id.
+// Chroma's upsert merges metadata keys, so a flag of a removed scope entry would stay true. Returns the
+// stale "scope:" / "scoped:" flags of the stored records, set to false, per id.
 async function staleScopeFlags(collection, ids) {
 	const stored = await collection.get({ ids, include: ["metadatas"] });
 	return new Map((stored.ids ?? []).map((id, index) => [id, Object.fromEntries(
 		Object.entries(stored.metadatas?.[index] ?? {})
-			.filter(([key, value]) => key.startsWith("scope_") && value === true)
+			.filter(([key, value]) => (key.startsWith("scope:") || key.startsWith("scoped:")) && value === true)
 			.map(([key]) => [key, false]),
 	)]));
 }
 
+// Per filtered dimension: the item states the filtered value, or states no value for that dimension.
 function scopeWhere(scope, kind) {
-	const values = scopeMatchValues(scope, kind);
-	if (values.length === 0) {
-		return null;
-	}
-	return { $or: [...values.map((value) => ({ [`scope_${value}`]: true })), { scoped: false }] };
+	const conditions = [...scopeByDimension(scopeFilterEntries(scope, kind))].map(([dimension, values]) => ({
+		$or: [...values.map((value) => ({ [`scope:${dimension}:${value}`]: true })), { [`scoped:${dimension}`]: false }],
+	}));
+	return combineWhere(...conditions) ?? null;
 }
 
 // Chroma needs $and for more than one condition.
@@ -422,15 +426,17 @@ export class ChromaVectorStore {
 		}
 	}
 
-	// `scope` keeps proposals ingested for that scope, for "common", and without a scope.
+	// `scope` keeps proposals whose ingest scope matches it like a node scope (a dimension the proposal does
+	// not name matches). Proposals are not rebuildable, so this filters the ingest scope text after the query
+	// instead of relying on per-dimension flags; it over-fetches to keep up to `topK` results.
 	async queryHitlNotes(query, topK, { scope = "" } = {}) {
 		const collection = await this.getHitlCollection();
-		const scopeValues = scopeMatchValues(scope);
+		const filtered = scopeFilterEntries(scope).length > 0;
 		const results = await collection.query({
 			queryTexts: this.embeddingProvider ? undefined : [query],
 			queryEmbeddings: this.embeddingProvider ? [await this.embeddingProvider.embedQuery(query)] : undefined,
-			nResults: topK,
-			where: combineWhere({ status: "pending" }, scopeValues.length > 0 ? { scope: { $in: [...scopeValues, ""] } } : null),
+			nResults: filtered ? topK * 4 : topK,
+			where: { status: "pending" },
 		});
 
 		const ids = results.ids?.[0] ?? [];
@@ -438,7 +444,7 @@ export class ChromaVectorStore {
 		const metadatas = results.metadatas?.[0] ?? [];
 		const distances = results.distances?.[0] ?? [];
 
-		return ids.map((id, index) => ({
+		const notes = ids.map((id, index) => ({
 			...hitlNoteFromRecord(
 				id,
 				documents[index] ?? "",
@@ -446,6 +452,7 @@ export class ChromaVectorStore {
 			),
 			distance: distances[index],
 		}));
+		return filtered ? notes.filter((note) => matchesScope(note.scope, scope)).slice(0, topK) : notes;
 	}
 
 	async upsertGraphIndex(graphPayload) {

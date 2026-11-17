@@ -5,7 +5,7 @@ import { resolveGraphPayload } from "../ingestion/graphResolution.js";
 import { countReviewSignals, reviewReasons } from "../ingestion/reviewSignals.js";
 import { createDebugLogger, errorDetails, logStep } from "../logging/debugLogger.js";
 import { buildApprovalSchema, loadGraphSchema, mergeSchemaTypes } from "../schema/graphSchema.js";
-import { normalizeScopeFilter, parseScope, scopeAllowedValues, scopeEnabled, scopeProblems } from "../schema/scope.js";
+import { matchesScope, mergeScope, normalizeScopeFilter, parseScope, scopeDimensions, scopeEnabled, scopeProblems } from "../schema/scope.js";
 
 // Human-in-the-loop: decides whether a change may enter the graph, and keeps the proposals for the ones that
 // need a reviewer. Owns the proposal lifecycle (submit, list, preview, reviewer notes, regenerate, approve,
@@ -120,7 +120,8 @@ function changesTouchingNode(graphPayload, nodeId) {
 }
 
 // List filters. signal: "ambiguity" | "contradiction"; operation: "create" | "update" | "delete";
-// author / source / scope (the proposal's ingest scope): case-insensitive exact match.
+// author / source: case-insensitive exact match. scope: the proposal's ingest scope matches like a node scope
+// (a dimension it does not name matches).
 function matchesProposalFilter(item, { signal, operation, author, source, scope }) {
 	if (signal === "ambiguity" && !(item.ambiguityCount > 0)) {
 		return false;
@@ -146,7 +147,7 @@ function matchesProposalFilter(item, { signal, operation, author, source, scope 
 	if (source && !same(item.source, source)) {
 		return false;
 	}
-	if (scope && !same(item.scope, scope)) {
+	if (scope && !matchesScope(item.scope, scope)) {
 		return false;
 	}
 
@@ -219,9 +220,9 @@ function approvedSnapshot(existing) {
 	return existing.pendingHitl ? existing.approved : existing;
 }
 
-// A blank scope in a proposal keeps the stored one, so the preview shows the scope that will be kept.
+// Dimensions a proposal does not state keep their stored values, so the preview shows the scope after approval.
 function previewScope(item, existing) {
-	return parseScope(item.scope).length > 0 ? parseScope(item.scope) : parseScope(existing?.scope);
+	return mergeScope(existing?.scope, item.scope);
 }
 
 function mergePendingNode(nodeMap, node, note, operation) {
@@ -374,10 +375,7 @@ export class HitlService {
 	// Form edits: an invalid scope is the user's typo, not something a reviewer could approve, so it is a 400.
 	requireValidScope(record, kind) {
 		const schema = this.currentSchema();
-		const allowed = kind === "relation"
-			? scopeAllowedValues(schema, "relation") ?? scopeAllowedValues(schema, "node")
-			: scopeAllowedValues(schema, "node");
-		const problems = scopeProblems(record.scope, allowed);
+		const problems = scopeProblems(record.scope, scopeDimensions(schema, kind));
 		if (problems.length > 0) {
 			throw httpError(`Invalid scope: ${problems.join("; ")}.`, 400);
 		}
@@ -496,8 +494,9 @@ export class HitlService {
 
 	// Oldest first. llmResponse lets the review list show per-operation counts parsed exactly like the detail view.
 	// Filters (signal, operation, author, source) apply to every pending proposal before the page is cut.
-	async listProposals({ limit, filter = {} }) {
+	async listProposals({ limit, filter: requestedFilter = {} }) {
 		this.requireProposalStore();
+		const filter = { ...requestedFilter, scope: normalizeScopeFilter(requestedFilter.scope, this.currentSchema()) };
 		if (!Object.values(filter).some(Boolean)) {
 			const { notes, total } = await this.vectorStore.listHitlNotePage({ status: "pending", limit });
 			return { notes: notes.map((note) => this.listItem(note)), total };

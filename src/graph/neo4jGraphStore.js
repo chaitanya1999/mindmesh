@@ -1,5 +1,5 @@
 import neo4j from "neo4j-driver";
-import { parseScope, scopeMatchValues } from "../schema/scope.js";
+import { parseScope, scopeByDimension, scopeFilterEntries } from "../schema/scope.js";
 
 // Upper bound on nodes returned by one expansion.
 const EXPANSION_NODE_LIMIT = 2000;
@@ -79,10 +79,22 @@ function compactString(value) {
 	return String(value ?? "").trim();
 }
 
-// Cypher condition for the scope filter on the node or relation bound to `variable`: unscoped items always
-// match. `parameter` holds scopeMatchValues() for that kind; an empty list disables the filter.
-function scopeCondition(variable, parameter = "nodeScopeValues") {
-	return `(size($${parameter}) = 0 OR coalesce(size(${variable}.scope), 0) = 0 OR any(s IN ${variable}.scope WHERE s IN $${parameter}))`;
+// Cypher condition for the scope filter on the node or relation bound to `variable`. `parameter` holds
+// scopeFilterEntries() for that kind ("dimension:value", one per dimension; an empty list disables the filter).
+// Each filtered dimension matches when the item states no value for it or states the filtered one.
+function scopeCondition(variable, parameter = "nodeScopeFilter") {
+	return `all(f IN $${parameter} WHERE f IN coalesce(${variable}.scope, []) OR none(s IN coalesce(${variable}.scope, []) WHERE split(s, ":")[0] = split(f, ":")[0]))`;
+}
+
+// Cypher expression for a payload apply: the dimensions `$scope` states replace the stored ones, the others are
+// kept (`$scopeDimensions` lists the stated dimensions).
+function mergedScope(variable) {
+	return `CASE WHEN size($scope) = 0 THEN ${variable}.scope ELSE [s IN coalesce(${variable}.scope, []) WHERE NOT split(s, ":")[0] IN $scopeDimensions] + $scope END`;
+}
+
+function scopeParameters(scope) {
+	const entries = parseScope(scope);
+	return { scope: entries, scopeDimensions: [...scopeByDimension(entries).keys()] };
 }
 
 function sessionOptions(config) {
@@ -197,14 +209,14 @@ export class Neo4jGraphStore {
 								n.name = $name,
 								n.type = $type,
 								n.description = CASE WHEN $description = "" THEN coalesce(n.description, "") ELSE $description END,
-								n.scope = CASE WHEN size($scope) = 0 THEN n.scope ELSE $scope END,
+								n.scope = ${mergedScope("n")},
 								n.updatedAt = $now
 						RETURN n
 						`,
 						{
 							...node,
 							description: compactString(node.description),
-							scope: parseScope(node.scope),
+							...scopeParameters(node.scope),
 							now,
 						},
 					);
@@ -223,7 +235,7 @@ export class Neo4jGraphStore {
 								r.relation = $relation,
 								r.information = CASE WHEN $information = "" THEN coalesce(r.information, "") ELSE $information END,
 								r.description = CASE WHEN $description = "" THEN coalesce(r.description, "") ELSE $description END,
-								r.scope = CASE WHEN size($scope) = 0 THEN r.scope ELSE $scope END,
+								r.scope = ${mergedScope("r")},
 								r.updatedAt = $now
 						RETURN r, source.id AS sourceId, target.id AS targetId
 						`,
@@ -231,7 +243,7 @@ export class Neo4jGraphStore {
 							...relation,
 							information: compactString(relation.information),
 							description: compactString(relation.description),
-							scope: parseScope(relation.scope),
+							...scopeParameters(relation.scope),
 							now,
 						},
 					);
@@ -262,7 +274,7 @@ export class Neo4jGraphStore {
 	// the number of paths (a variable-length path query explodes on dense graphs). Returns the start nodes,
 	// every node within `depth` hops (each with its hop `distance`), and every relation traversed.
 	// Options (explore_graph): direction "both" | "out" | "in", relationTypes, nodeTypes, limit (max nodes),
-	// scope (a scope filter value: neighbours and relations scoped only to other values are not followed).
+	// scope (a scope filter: neighbours and relations that fail it are not followed).
 	async expandFromNodes(nodeIds, depth, { direction = "both", relationTypes = [], nodeTypes = [], limit = EXPANSION_NODE_LIMIT, scope = "" } = {}) {
 		const safeDepth = Math.max(0, Math.min(Number(depth) || 0, 8));
 		const ids = [...new Set((nodeIds ?? []).filter(Boolean))];
@@ -296,10 +308,10 @@ export class Neo4jGraphStore {
 						WHERE (size($relationTypes) = 0 OR r.relation IN $relationTypes)
 							AND (size($nodeTypes) = 0 OR m.type IN $nodeTypes)
 							AND ${scopeCondition("m")}
-							AND ${scopeCondition("r", "relationScopeValues")}
+							AND ${scopeCondition("r", "relationScopeFilter")}
 						RETURN r, startNode(r).id AS sourceId, endNode(r).id AS targetId, m
 						`,
-						{ frontier, relationTypes, nodeTypes, nodeScopeValues: scopeMatchValues(scope, "node"), relationScopeValues: scopeMatchValues(scope, "relation") },
+						{ frontier, relationTypes, nodeTypes, nodeScopeFilter: scopeFilterEntries(scope, "node"), relationScopeFilter: scopeFilterEntries(scope, "relation") },
 					),
 				);
 				const next = [];
@@ -525,7 +537,7 @@ export class Neo4jGraphStore {
 						n.label ASC
 					LIMIT $limit
 					`,
-					{ query: text, type: compactString(type), nodeScopeValues: scopeMatchValues(scope, "node"), limit: neo4j.int(safeLimit) },
+					{ query: text, type: compactString(type), nodeScopeFilter: scopeFilterEntries(scope, "node"), limit: neo4j.int(safeLimit) },
 				),
 			);
 

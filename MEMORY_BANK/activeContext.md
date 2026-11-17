@@ -17,6 +17,18 @@ At task end, record the outcome under "Last Completed", move unfinished items to
 
 None.
 
+## Last Completed (2026-11-17)
+
+Scope dimensions, plus scope guidance moved into the schema. Owner decisions: named dimensions declared in the schema (LOS: `bu` uc, nc, tw, cv, tr; `module` sbd, hzt, mandate, pai); no `common` (a shared item lists its units; blank = not stated); no rules between dimensions (a module-only node is valid); filtering per dimension (the value, or no value stated); the picker or the agent's `scope` chooses the filter, blank = unscoped search; no open/"more" marker and no scope review job (roadmap ideas); node scopes on, relation scopes off. Behavior: README Graph Schema > Scope; locations: codeMap Scope; rule: core.md.
+
+- Storage: Neo4j keeps one `scope` list of `dimension:value` strings; Chroma flags `scope:<dim>:<value>` plus `scoped:<dim>` for every declared dimension; Ask's pending-proposal filter checks the stored ingest scope text after the query. Records: `bu:nc,uc;module:sbd`. A payload apply replaces only the dimensions a record states.
+- MCP `scope` is an object with one string per dimension (ingest tools require every dimension, `""` = none); `get_schema` returns `scopeDimensions`; the smoke test builds a blank scope object from the tool schema.
+- UI: one select per dimension (new session key, so old single values are not reused), form toggle rows per dimension, chips per dimension, checklist text.
+- Scope guidance: the prompt file keeps only generic SCOPE RULES; the LOS rules (unit prefix naming, shared technical artefacts, module items, relation scope) are `guidance` lines on the schema's `scope` descriptors, rendered into `{{SCOPE_GUIDANCE}}` by `formatScopeGuidance()` for the kinds switched on.
+- The owner's local `schema/graphSchema.json` got the dimension descriptors and the `guidance` lines on both `scope` fields. Only the two `scope` descriptors changed; the rest was rewritten with the same content.
+- Checks: `npm test` 127 pass (`test/scope.test.js` rewritten; switch-off tests moved to dimensions and check that guidance follows the switches); mutation checks (merge replacing every dimension; an unstated dimension not matching) failed 2 and 5 tests; `kg:test-parser`; bundle builds; lint clean apart from the two old findings.
+- Live (real Neo4j + Chroma + hub LLM, throwaway `zztest_*`, stores empty before and after, 0 nodes / 0 relations / 0 proposals): 33 service checks (Neo4j entries, Chroma flags, Cypher and Chroma filters per dimension, expansion, Cypher per-dimension merge and blank-keeps, stale flags on edit, change and out-of-scope signals, proposal list and Ask pending filters, MCP scope object and required dimensions, schema guidance in the prompt and relation guidance left out, `get_schema` dimensions); a real LLM extraction with scope `bu:nc` produced `nc_`-prefixed `bu:nc` nodes, an SBD-owned item as `bu:nc,uc;module:sbd` without prefix, and the link to a UC node flagged. MCP smoke test passed (it cleans up). jsdom UI check on port 3100, 12 checks (two pickers with the right options, session state, Ask sends `bu:uc;module:sbd`, clearing one dimension, node form toggle rows, no script errors; Ask and Ingest intercepted, nothing written).
+
 ## Last Completed (2026-10-23, afternoon)
 
 Scope follow-up, owner decisions after the live run: (1) the ingest scope frames the reasoning and no longer filters the ingest context (filtering made the LLM guess the names of other units' nodes); records touching existing nodes scoped outside the ingest scope get an `AMBIGUITY:` signal. (2) Config switches `scope.nodes` and `scope.relations` (both off when not set; `config.example.json` turns nodes on), implemented now instead of a roadmap item; relation scope is therefore off. Behavior: README Graph Schema > Scope; locations: codeMap Scope.
@@ -69,9 +81,8 @@ Earlier (2026-10-11, pushed): review bugs 1, 2, 5, 6, the Neo4j 5.23+ cleanup, t
 
 ## Open Follow-Ups
 
-- Scope decision for the owner: a scope listing all five BUs is accepted as is; leave it, flag it (`AMBIGUITY:` suggesting common), or rewrite to common? (Evening.)
-- Vectors written before scope existed have no `scoped` flag; reindex before relying on filters if such data is ever restored from a backup.
-- Scope retrofit (owner): admin backup -> settle pending proposals -> wipe -> re-ingest per area with the scope picker or MCP `scope`.
+- Vectors written before a scope dimension was declared have no `scoped:<dim>` flag; reindex after adding a dimension or restoring old data.
+- Scope retrofit (owner): admin backup -> settle pending proposals -> wipe -> re-ingest per area with the scope pickers or MCP `scope`.
 - Scope is not shown in the Sigma renderer (no tooltip there) and the HITL list has no scope filter in the UI (the API and MCP have one).
 - Admin panel: restoring from a backup file is not implemented. Sessions are in memory (a restart logs out). Over plain HTTP the password travels unencrypted; HTTPS or a trusted network is needed for use from other machines. Run wipe and reindex once live on throwaway data when convenient.
 - After pulling on the work laptop, restart the MCP server in VS Code / Agentforce so the agent sees the new tools; agent setups or saved prompts naming the old tools need the new names.

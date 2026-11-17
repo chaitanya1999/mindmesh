@@ -1,5 +1,8 @@
+import { formatScope } from "../schema/scope.js";
+
+// "bu:nc,uc;module:sbd", the record form.
 function scopeText(scope) {
-	return (scope ?? []).join(", ");
+	return formatScope(scope);
 }
 
 export function formatGraphContext(graph, prompts = {}) {
