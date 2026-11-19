@@ -376,20 +376,21 @@ export function createApp(services) {
 		res.json({ note: hitlService.noteDetail(result.note) });
 	}));
 
+	// HITL previews carry the scope switches too: on /hitl they are the only graph responses the UI loads.
 	app.get("/api/hitl/notes/:id/graph", asyncRoute(async (req, res) => {
-		res.json(await hitlService.previewProposal({ noteId: req.params.id, depth: parseDepth(req.query.depth ?? 2) }));
+		res.json(withGraphSchema(await hitlService.previewProposal({ noteId: req.params.id, depth: parseDepth(req.query.depth ?? 2) })));
 	}));
 
 	app.post("/api/hitl/notes/:id/graph", asyncRoute(async (req, res) => {
-		res.json(await hitlService.previewProposal({
+		res.json(withGraphSchema(await hitlService.previewProposal({
 			noteId: req.params.id,
 			depth: parseDepth(req.body?.depth ?? 2),
 			llmResponse: req.body?.llmResponse,
-		}));
+		})));
 	}));
 
 	app.get("/api/hitl/graph", asyncRoute(async (req, res) => {
-		res.json(await hitlService.previewAll(parseLimit(req.query.limit)));
+		res.json(withGraphSchema(await hitlService.previewAll(parseLimit(req.query.limit))));
 	}));
 
 	app.post("/api/hitl/notes/:id/approve", asyncRoute(async (req, res) => {

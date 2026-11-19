@@ -52,9 +52,17 @@ pages/
 
 **Open questions.**
 
-- Keep both graph renderers? NeoVis is the default; dropping Sigma removes about 600 lines.
+- Graph renderers: decided, Sigma goes (item 2); `GraphView.js` then wraps NeoVis only.
 - Per-component CSS files (LWC-style folders) or keep one `styles.css`? esbuild can bundle CSS imports.
 - Keep the Jobs page? Its jobs need the server LLM, which is unavailable at work.
+
+---
+
+## 2. Remove the Sigma renderer: **Planned**
+
+**Goal.** Drop the Graphology + Sigma renderer and keep NeoVis only. Decided by the owner on 2026-11-19: Sigma is no longer maintained (it already lacks the hover tooltip, so it shows no scope), and new graph features target NeoVis only.
+
+**Steps.** Delete `components/graph/GraphPreview.js` and `GraphRendererToggle.js`, the renderer state and toggle in `app.js` (and the four renderer blocks, or do this together with item 1 step 2), the Sigma/Graphology dependencies in `package.json`, the Sigma styles in `styles.css`; update README (Stack, Web UI) and codeMap (Web UI). Check: bundle builds and shrinks, lint, the jsdom render of all routes, manual click-through on `/` and `/hitl`.
 
 ---
 

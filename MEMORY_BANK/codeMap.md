@@ -53,7 +53,7 @@ DELETE /api/hitl/notes/:id                         HitlService.reject()
 Frontend:
 
 - `components/hitl/HitlReviewPanel.js`: list, filters, card counts, detail, reviewer notes, approve/reject/regenerate.
-- `components/hitl/HitlProposalSummary.js`: Create/Update/Delete tree, Current vs Proposed.
+- `components/hitl/HitlProposalSummary.js`: Create/Update/Delete tree, Current vs Proposed. Row click -> `onRowFocus` -> `focusHitlProposalRecord()` in `app.js` (highlight + camera); double click -> `onRowOpen` -> `openHitlProposalRecord()` -> `handleHitlOpenItem()` (the graph's edit dialog).
 - `lib/hitlProposal.js`: client-side proposal parser and counts. Keep it consistent with `src/ingestion/graphPayload.js` (the server now also returns `records`, so this parser can be retired).
 - Draft editing of proposal text from graph/detail edits: pipeline helpers in `src/server/public/app.js`.
 
@@ -115,7 +115,7 @@ README: Graph Schema (Scope).
 
 README: Neo4j Schema (Identity and uniqueness, Write behavior), Commands (reindex).
 
-- Write gate: `src/graph/graphWriteService.js` is the only caller of store write methods (`applyPayload`, `writeNode`, `deleteNode`, `writeRelation`, `deleteRelation`, and the maintenance methods `wipeGraph`, `clearGraphVectors`, `reindexVectors`, `repairVectorIndex`); `test/writeGate.test.js` lists the allowed exceptions.
+- Write gate: `src/graph/graphWriteService.js` is the only caller of store write methods (`applyPayload`, `writeNode`, `deleteNode`, `writeRelation`, `deleteRelation`, and the maintenance methods `wipeGraph`, `clearGraphVectors`, `reindexVectors`, `repairVectorIndex`, `restoreGraph`); `test/writeGate.test.js` lists the allowed exceptions.
 - Ids: built in `src/ingestion/graphPayload.js` (normalization) and `normalizeManualNode()` / `normalizeManualRelation()` in `src/hitl/hitlService.js` (manual and reviewer edits).
 - Constraints: `Neo4jGraphStore.ensureConstraints()` in `src/graph/neo4jGraphStore.js`, called by `applyGraph`, `upsertNode`, `upsertRelation`.
 - Rename guard: `normalizeManualNode()` (HitlService) and `isNameLocked` in `components/entity/NodeForm.js`.
@@ -168,12 +168,15 @@ README: Admin Panel.
             consistency() / repairVectorIndex()    listIds() vs listIndexIds() -> GraphWriteService.repairVectorIndex()
             wipe(target) / reindexVectors()        GraphWriteService.wipeGraph() / clearGraphVectors() / reindexVectors(),
                                                    HitlService.clearAllProposals()
-            backup()                               getGraphSnapshot() + HitlService.exportProposals()
+            backup()                               readEditableGraphSchema() + getGraphSnapshot() + HitlService.exportProposals()
+            restore(backup)                        validateBackup() -> wipe("all") -> saveEditableGraphSchema() ->
+                                                   GraphWriteService.restoreGraph() (Neo4jGraphStore.restoreGraph() +
+                                                   upsertGraphIndex()) -> HitlService.importProposals()
             queryCypher() / vectorMatch()          GraphReadService.queryCypher(), ChromaVectorStore.queryCollections()
 ```
 
 - Auth: `src/admin/adminAuth.js` (`hashPassword`, `verifyPassword`, `AdminSessions`); audit log `src/admin/auditLog.js`; password CLI `src/cli/adminPassword.js` (`npm run kg:admin:password`).
-- Frontend: `components/admin/` (`AdminOverview`, `AdminMaintenance`, `AdminQueryConsole`, `AdminDangerZone`, `AdminAuditLog`, `AdminConfirm`); `app.js` renders `AdminApp` on `/admin`.
+- Frontend: `components/admin/` (`AdminOverview`, `AdminMaintenance`, `AdminQueryConsole`, `AdminDangerZone` (wipes; `RestoreBackup` card), `AdminAuditLog`, `AdminConfirm`); `app.js` renders `AdminApp` on `/admin`.
 - Tests: `test/admin.test.js` (`createTestServices({ adminPassword })`; a separate app with `adminRouteOptions.sessions` for the lockout).
 
 ## Jobs

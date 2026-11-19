@@ -238,6 +238,40 @@ export class MemoryGraphStore {
 		return counts;
 	}
 
+	// Same contract as Neo4jGraphStore.restoreGraph(): exact fields and timestamps, all or nothing.
+	async restoreGraph({ nodes = [], relations = [] }) {
+		const now = this.now();
+		const storedNodes = nodes.map((node) => ({
+			id: node.id,
+			label: node.label,
+			name: node.name,
+			type: node.type,
+			description: String(node.description ?? "").trim(),
+			scope: parseScope(node.scope),
+			createdAt: node.createdAt ?? now,
+			updatedAt: node.updatedAt ?? node.createdAt ?? now,
+		}));
+		const ids = new Set([...this.nodes.keys(), ...storedNodes.map((node) => node.id)]);
+		const missing = relations.filter((relation) => !ids.has(relation.sourceId) || !ids.has(relation.targetId));
+		if (missing.length > 0) {
+			throw httpError(`Only ${relations.length - missing.length} of ${relations.length} relations found their endpoints; nothing was restored.`, 409);
+		}
+		const storedRelations = relations.map((relation) => ({
+			id: relation.id,
+			sourceId: relation.sourceId,
+			targetId: relation.targetId,
+			relation: relation.relation,
+			information: String(relation.information ?? "").trim(),
+			description: String(relation.description ?? "").trim(),
+			scope: parseScope(relation.scope),
+			createdAt: relation.createdAt ?? now,
+			updatedAt: relation.updatedAt ?? relation.createdAt ?? now,
+		}));
+		storedNodes.forEach((node) => this.nodes.set(node.id, node));
+		storedRelations.forEach((relation) => this.relations.set(relation.id, relation));
+		return { nodes: clone(storedNodes), relations: clone(storedRelations) };
+	}
+
 	async listIds() {
 		return { nodeIds: [...this.nodes.keys()], relationIds: [...this.relations.keys()] };
 	}

@@ -11,7 +11,7 @@ const SRC = path.join(ROOT, "src");
 
 // Stores are always referenced as `...Store` (graphStore, vectorStore, this.graphStore, ...); GraphWriteService
 // has methods with the same names, so only calls on a store object count.
-const WRITE_CALL = /[sS]tore\.(applyGraph|upsertNode|deleteNode|upsertRelation|deleteRelation|upsertGraphIndex|deleteNodes|deleteRelations|deleteRelationsForNodes|clearGraphIndex|deleteAllKnowledge|deleteCollections)\(/g;
+const WRITE_CALL = /[sS]tore\.(applyGraph|upsertNode|deleteNode|upsertRelation|deleteRelation|upsertGraphIndex|deleteNodes|deleteRelations|deleteRelationsForNodes|clearGraphIndex|deleteAllKnowledge|restoreGraph|deleteCollections)\(/g;
 
 // Files allowed to write directly, each with the reason.
 const ALLOWED = new Map([

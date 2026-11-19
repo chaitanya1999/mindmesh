@@ -637,6 +637,76 @@ export class Neo4jGraphStore {
 		}
 	}
 
+	// Admin restore into an emptied graph: writes nodes and relations exactly as backed up, timestamps included,
+	// in one transaction, so a failed restore leaves the graph empty instead of half written.
+	async restoreGraph({ nodes = [], relations = [] }) {
+		await this.ensureConstraints();
+		const session = this.driver.session(this.sessionOptions);
+		const nodeRows = nodes.map((node) => ({
+			id: node.id,
+			label: compactString(node.label),
+			name: compactString(node.name),
+			type: compactString(node.type),
+			description: compactString(node.description),
+			scope: parseScope(node.scope),
+			createdAt: node.createdAt ?? null,
+			updatedAt: node.updatedAt ?? null,
+		}));
+		const relationRows = relations.map((relation) => ({
+			id: relation.id,
+			sourceId: relation.sourceId,
+			targetId: relation.targetId,
+			relation: compactString(relation.relation),
+			information: compactString(relation.information),
+			description: compactString(relation.description),
+			scope: parseScope(relation.scope),
+			createdAt: relation.createdAt ?? null,
+			updatedAt: relation.updatedAt ?? null,
+		}));
+
+		try {
+			const stored = await session.executeWrite(async (tx) => {
+				const nodeResult = await tx.run(
+					`
+					UNWIND $rows AS row
+					CREATE (n:KnowledgeNode {
+						id: row.id, label: row.label, name: row.name, type: row.type, description: row.description,
+						scope: CASE WHEN size(row.scope) = 0 THEN null ELSE row.scope END,
+						createdAt: coalesce(row.createdAt, $now), updatedAt: coalesce(row.updatedAt, row.createdAt, $now)
+					})
+					RETURN n
+					`,
+					{ rows: nodeRows, now: new Date().toISOString() },
+				);
+				const relationResult = await tx.run(
+					`
+					UNWIND $rows AS row
+					MATCH (source:KnowledgeNode {id: row.sourceId})
+					MATCH (target:KnowledgeNode {id: row.targetId})
+					CREATE (source)-[r:RELATES_TO {
+						id: row.id, sourceId: row.sourceId, targetId: row.targetId, relation: row.relation,
+						information: row.information, description: row.description,
+						scope: CASE WHEN size(row.scope) = 0 THEN null ELSE row.scope END,
+						createdAt: coalesce(row.createdAt, $now), updatedAt: coalesce(row.updatedAt, row.createdAt, $now)
+					}]->(target)
+					RETURN r
+					`,
+					{ rows: relationRows, now: new Date().toISOString() },
+				);
+				if (relationResult.records.length !== relationRows.length) {
+					throw httpError(`Only ${relationResult.records.length} of ${relationRows.length} relations found their endpoints; nothing was restored.`, 409);
+				}
+				return {
+					nodes: nodeResult.records.map((record) => formatNode(record.get("n"))),
+					relations: relationResult.records.map((record) => formatRelationship(record.get("r"))),
+				};
+			});
+			return stored;
+		} finally {
+			await session.close();
+		}
+	}
+
 	// Every node and relation id, for the admin consistency check against the vector index.
 	async listIds() {
 		const session = this.driver.session(this.sessionOptions);

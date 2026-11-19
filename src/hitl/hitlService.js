@@ -530,6 +530,34 @@ export class HitlService {
 		}));
 	}
 
+	// Admin restore: writes backed-up proposals with their ids, authors and review history. The list counts are
+	// recomputed from the text against the current (restored) schema; text that no longer parses keeps zeros.
+	async importProposals(proposals = []) {
+		if (typeof this.vectorStore.upsertHitlNote !== "function") {
+			throw new Error("The configured vector store does not support HITL notes.");
+		}
+		for (const proposal of proposals) {
+			let counts = {};
+			try {
+				const { graphPayload } = this.parseRecords(proposal.llmResponse);
+				const reviewSignals = countReviewSignals(graphPayload);
+				counts = {
+					nodeCount: graphPayload.nodes.length,
+					relationCount: graphPayload.relations.length,
+					nodeDeleteCount: graphPayload.nodeDeletes.length,
+					relationDeleteCount: graphPayload.relationDeletes.length,
+					schemaSuggestionCount: countSchemaSuggestions(graphPayload.schemaSuggestions),
+					ambiguityCount: reviewSignals.ambiguityCount,
+					contradictionCount: reviewSignals.contradictionCount,
+				};
+			} catch {
+				// unparseable text is still restored; the reviewer sees the parse error when opening it
+			}
+			await this.vectorStore.upsertHitlNote({ ...proposal, status: "pending", ...counts });
+		}
+		return { restoredProposals: proposals.length };
+	}
+
 	// Drops the whole proposal collection (admin wipe).
 	async clearAllProposals() {
 		const count = (await this.vectorStore.listHitlNotePage({ status: "", limit: 1 })).total;

@@ -117,6 +117,7 @@ export function HitlReviewPanel({
 	onEditedResponseChange,
 	onGraphRefresh,
 	onProposalFocus,
+	onProposalOpen,
 	onChangeReviewerName,
 	onCloseSelectedNote,
 	onSelectNote,
@@ -303,6 +304,11 @@ export function HitlReviewPanel({
 		onProposalFocus?.(record);
 	}
 
+	function openProposalRow(record) {
+		setActiveProposalRowKey(record.key);
+		onProposalOpen?.(record);
+	}
+
 	function backToList() {
 		if (isProposalDirty && !window.confirm("Discard unsaved edits to this HITL proposal?")) {
 			return;
@@ -465,6 +471,7 @@ export function HitlReviewPanel({
 							onCreateSchemaSuggestion={createSchemaSuggestion}
 							onDeleteSchemaSuggestion={removeSchemaSuggestion}
 							onRowFocus={focusProposalRow}
+							onRowOpen={openProposalRow}
 							onUpdateSchemaSuggestion={editSchemaSuggestion}
 							proposal={proposal}
 						/>

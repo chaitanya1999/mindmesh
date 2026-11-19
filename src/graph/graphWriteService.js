@@ -122,6 +122,18 @@ export class GraphWriteService {
 		return { ...deleted, clearedCollections };
 	}
 
+	// Admin restore: writes a backed-up graph into the emptied graph (AdminService.restore() wipes first) and
+	// indexes what Neo4j stored.
+	async restoreGraph({ nodes = [], relations = [] }) {
+		const stored = await this.graphStore.restoreGraph({ nodes, relations });
+		await this.syncVectors(async () => {
+			if (stored.nodes.length > 0 || stored.relations.length > 0) {
+				await this.vectorStore.upsertGraphIndex(stored);
+			}
+		});
+		return { nodes: stored.nodes.length, relations: stored.relations.length };
+	}
+
 	// Drops the node and relation vectors only; reindexVectors() rebuilds them from Neo4j.
 	async clearGraphVectors() {
 		return { clearedCollections: await this.vectorStore.clearGraphIndex() };

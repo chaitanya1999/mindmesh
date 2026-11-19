@@ -1506,8 +1506,9 @@ function App() {
 				return;
 			}
 
+			// The camera moves to the node, as it does to a relation's endpoints.
 			setSelectedItem(null);
-			setFocusedItem({ type: "node", id: node.id, skipCamera: true });
+			setFocusedItem({ type: "node", id: node.id });
 			setHighlight({ nodeIds: [node.id], relationIds: [] });
 			return;
 		}
@@ -1535,6 +1536,26 @@ function App() {
 
 		showStatus("Schema suggestions do not map to a graph item.");
 	}, [normalizedGraph.nodes, normalizedGraph.relations, showStatus]);
+
+	// Double click on a proposal card: the same edit dialog as a double click on the item in the graph.
+	const openHitlProposalRecord = useCallback((record) => {
+		if (record?.entity === "node" || record?.entity === "nodeDelete") {
+			if (normalizedGraph.nodes.some((entry) => entry.id === record.id)) {
+				handleHitlOpenItem({ type: "node", id: record.id });
+			}
+			return;
+		}
+		if (record?.entity === "relation" || record?.entity === "relationDelete") {
+			const relation = normalizedGraph.relations.find((entry) => (
+				entry.sourceId === record.sourceId
+				&& entry.targetId === record.targetId
+				&& entry.relation === record.relation
+			));
+			if (relation) {
+				handleHitlOpenItem({ type: "relation", id: relation.id });
+			}
+		}
+	}, [handleHitlOpenItem, normalizedGraph.nodes, normalizedGraph.relations]);
 
 	const saveHitlDraftNode = useCallback(async (nodeId, draft) => {
 		const node = normalizedGraph.nodes.find((entry) => entry.id === nodeId);
@@ -2067,6 +2088,7 @@ function App() {
 						onEditedResponseChange={changeHitlEditedResponse}
 						onGraphRefresh={loadGraph}
 						onProposalFocus={focusHitlProposalRecord}
+						onProposalOpen={openHitlProposalRecord}
 						onSelectNote={selectHitlNote}
 						onStatus={showStatus}
 						previewMessage={hitlPreviewMessage}

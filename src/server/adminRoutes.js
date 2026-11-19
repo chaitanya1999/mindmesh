@@ -4,7 +4,7 @@ import { AdminAuditLog } from "../admin/auditLog.js";
 import { CONFIRM_WORD } from "../admin/adminService.js";
 
 // /api/admin/*: the admin panel's API. Every route except status and login needs an admin session (cookie);
-// wipes also need the password again and a typed confirmation word. Every action that changes data is written
+// wipes and restores also need the password again and a typed confirmation word. Every action that changes data is written
 // to the audit log. The admin panel is disabled until `npm run kg:admin:password` has stored a password hash.
 
 const COOKIE_NAME = "mm_admin";
@@ -140,6 +140,14 @@ export function registerAdminRoutes(app, { config, adminService, asyncRoute, ses
 		const stamp = backup.exportedAt.replace(/[:.]/g, "-");
 		res.setHeader("Content-Disposition", `attachment; filename="mindmesh-backup-${stamp}.json"`);
 		res.json(backup);
+	}));
+
+	// Restore replaces everything, so it needs the same confirmation as a wipe.
+	app.post("/api/admin/restore", asyncRoute(async (req, res) => {
+		requireConfirmation(req);
+		const backup = req.body?.backup;
+		const details = { exportedAt: String(backup?.exportedAt ?? ""), version: backup?.version ?? null };
+		res.json(await audited(req, "restore", details, () => adminService.restore(backup)));
 	}));
 
 	app.post("/api/admin/query/cypher", asyncRoute(async (req, res) => {

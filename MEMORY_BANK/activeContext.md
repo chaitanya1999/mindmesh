@@ -17,6 +17,16 @@ At task end, record the outcome under "Last Completed", move unfinished items to
 
 None.
 
+## Last Completed (2026-11-19)
+
+HITL and admin follow-ups. Owner decisions: Sigma is no longer maintained (roadmap item 2: remove it); the NeoVis tooltip is enough for scope; the relation scope field stays hidden while relation scope is off; backups need the schema, and version 1 files are not restorable. Behavior: README Admin Panel and Web UI (HITL workspace); locations: codeMap Admin Panel, HITL Review, Graph Identity.
+
+- Bug: on `/hitl` the edit dialogs never showed the scope field, because the UI learns the scope switches only from graph responses and the HITL preview endpoints did not send `scopeSettings`. They do now (`withGraphSchema()` in `server.js`).
+- HITL proposal rows: click highlights the item and moves the camera to it (nodes no longer pass `skipCamera`); double click opens the graph's edit dialog (`openHitlProposalRecord()` -> `handleHitlOpenItem()`).
+- Backup `version: 2` with `schema`. Restore: `POST /api/admin/restore` (password + `DELETE`, audited) -> `AdminService.restore()`: `validateBackup()` checks the whole file before anything changes, then wipe all, write the schema, `GraphWriteService.restoreGraph()` (one Neo4j transaction, fields and timestamps as backed up, vectors from what Neo4j stored), `HitlService.importProposals()` (ids, authors, notes and regeneration history kept; counts recomputed). Danger zone card with a file picker and a summary. `restoreGraph` is in the write-gate list.
+- Checks: `npm test` 131 pass (new: scope settings on all three HITL previews, failing without the fix; backup schema; restore round trip with scopes, timestamps, vectors in sync, proposal fields and audit; password and word; six bad files refused with nothing changed). Bundle builds; lint clean apart from the old `_ids`. jsdom UI check against an in-memory test server on port 3100 (Neo4j and Chroma were not running): 16/16 (card title, click marks the card without a dialog, double click opens the node dialog with the scope field and the stored `uc` selected, relation dialog without scope, admin login, backup v2 with schema, version 1 file refused in the UI, summary, restore runs and reports, no script errors). Server stopped and its temp folder removed.
+- Live (real Neo4j + Chroma, stores empty before and after, throwaway `zztest_*` data, schema file byte-identical afterwards): 24 checks. Backup v2; changes after the backup; a bad file refused with nothing changed; the admin route on port 3100 (throwaway password hash in memory only) restored 3 nodes, 2 relations, 1 proposal and the schema, replacing 4 nodes, 1 relation, 1 proposal; Neo4j graph identical to the backup (fields, scope lists, timestamps); vectors in sync; scoped vector search per `bu`; relation vectors; proposal id, author, scope, notes and text kept, counts recomputed, searchable by meaning, scope filter; a relation without an endpoint makes `Neo4jGraphStore.restoreGraph()` fail with 409 and leave the graph empty; audit entry without the password (the run added login/restore entries to the real `logs/admin-audit.log`).
+
 ## Last Completed (2026-11-17)
 
 Scope dimensions, plus scope guidance moved into the schema. Owner decisions: named dimensions declared in the schema (LOS: `bu` uc, nc, tw, cv, tr; `module` sbd, hzt, mandate, pai); no `common` (a shared item lists its units; blank = not stated); no rules between dimensions (a module-only node is valid); filtering per dimension (the value, or no value stated); the picker or the agent's `scope` chooses the filter, blank = unscoped search; no open/"more" marker and no scope review job (roadmap ideas); node scopes on, relation scopes off. Behavior: README Graph Schema > Scope; locations: codeMap Scope; rule: core.md.
@@ -83,8 +93,10 @@ Earlier (2026-10-11, pushed): review bugs 1, 2, 5, 6, the Neo4j 5.23+ cleanup, t
 
 - Vectors written before a scope dimension was declared have no `scoped:<dim>` flag; reindex after adding a dimension or restoring old data.
 - Scope retrofit (owner): admin backup -> settle pending proposals -> wipe -> re-ingest per area with the scope pickers or MCP `scope`.
-- Scope is not shown in the Sigma renderer (no tooltip there) and the HITL list has no scope filter in the UI (the API and MCP have one).
-- Admin panel: restoring from a backup file is not implemented. Sessions are in memory (a restart logs out). Over plain HTTP the password travels unencrypted; HTTPS or a trusted network is needed for use from other machines. Run wipe and reindex once live on throwaway data when convenient.
+- Click a HITL card in a real browser to see the camera move (jsdom cannot show it).
+- Backups taken before 2026-11-19 are version 1 (no schema) and cannot be restored; download a new one.
+- The HITL list has no scope filter in the UI (the API and MCP have one).
+- Admin panel: sessions are in memory (a restart logs out). Over plain HTTP the password travels unencrypted; HTTPS or a trusted network is needed for use from other machines. Run wipe and reindex once live on throwaway data when convenient.
 - After pulling on the work laptop, restart the MCP server in VS Code / Agentforce so the agent sees the new tools; agent setups or saved prompts naming the old tools need the new names.
 - The client-side parser `lib/hitlProposal.js` can now be replaced by the server's `records` (review finding F; part of roadmap item 1).
 - `src/cli/testParser.js` still holds many assertions in one script; move them into `test/` gradually.

@@ -45,6 +45,22 @@ describe("Relation scopes switched off", () => {
 		assert.deepEqual(response.body.scopeSettings, { nodes: true, relations: false });
 	});
 
+	it("sends the scope settings with the HITL previews too (the only graphs /hitl loads)", async () => {
+		services.ingestionService.ingestion.mode = "hitl";
+		try {
+			services.llmProvider.nextResponse = records("NODE_CREATE|uc_a_screen|A|screen||bu:uc|");
+			const id = (await http.post("/api/ingest", { text: "A.", userName: "tester", scope: "bu:uc" })).body.hitlNote.id;
+			const noteGraph = `/api/hitl/notes/${encodeURIComponent(id)}/graph`;
+
+			for (const response of [await http.get("/api/hitl/graph"), await http.get(noteGraph), await http.post(noteGraph, { depth: 2 })]) {
+				assert.deepEqual(response.body.scopeSettings, { nodes: true, relations: false });
+				assert.ok(response.body.schema?.nodeTypes?.length > 0);
+			}
+		} finally {
+			services.ingestionService.ingestion.mode = "auto";
+		}
+	});
+
 	it("drops relation scopes from records with a warning and keeps node scopes", async () => {
 		services.graphStore.seed({ nodes: [node("b_api", "api")] });
 		services.llmProvider.nextResponse = records("NODE_CREATE|uc_a_screen|A|screen||bu:uc|", "RELATION_CREATE|uc_a_screen|b_api|uses|||bu:uc|");

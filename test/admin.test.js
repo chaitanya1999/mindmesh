@@ -287,6 +287,84 @@ describe("admin maintenance", () => {
 		assert.equal(backup.body.proposals.length, 1);
 		assert.equal(backup.body.proposals[0].userInput, "pending input");
 		assert.match(backup.body.proposals[0].llmResponse, /NODE_CREATE\|c_screen/);
+		assert.equal(backup.body.version, 2);
+		assert.deepEqual(backup.body.schema.nodeTypes.map((type) => type.name), services.readSchema().nodeTypes.map((type) => type.name).sort());
+	});
+
+	describe("restore", () => {
+		const restore = (backup, confirmation = { password: PASSWORD, confirm: "DELETE" }) => http.post("/api/admin/restore", { backup, ...confirmation });
+		const graphState = async () => {
+			const { nodes, relations } = await services.graphStore.getGraphSnapshot(100);
+			const byId = (left, right) => left.id.localeCompare(right.id);
+			return { nodes: nodes.sort(byId), relations: relations.sort(byId) };
+		};
+
+		// A graph, a proposal with reviewer notes, and a schema with an extra type; returns the downloaded backup.
+		async function backedUpState() {
+			fs.writeFileSync(services.schemaPath, `${JSON.stringify({ ...services.readSchema(), nodeTypes: [...services.readSchema().nodeTypes, { name: "flow", description: "A flow." }] }, null, "\t")}\n`);
+			await seedGraph({
+				nodes: [{ ...node("uc_a_screen", "screen", "A", "Screen A."), scope: ["bu:uc"] }, node("b_api", "api")],
+				relations: [relation("uc_a_screen", "uses", "b_api", "calls on save")],
+			});
+			const proposal = await propose("pending input", "NODE_CREATE|c_screen|C|screen|||", "NODE_UPDATE|b_api|B|api|||AMBIGUITY: which API?");
+			await services.hitlService.saveReviewerNotes({ noteId: proposal.hitlNote.id, reviewerNotes: "check the API" });
+			return (await http.get("/api/admin/backup")).body;
+		}
+
+		it("replaces schema, graph, vectors and proposals with the backup", async () => {
+			const backup = await backedUpState();
+			const before = await graphState();
+			const [proposalBefore] = await services.vectorStore.listHitlNotes({ status: "pending", limit: 0 });
+			// Changes after the backup, which the restore must undo.
+			services.reset();
+			await seedGraph({ nodes: [node("later_screen", "screen")] });
+			await propose("later input", "NODE_CREATE|d_screen|D|screen|||");
+
+			const result = await restore(backup);
+
+			assert.equal(result.status, 200, JSON.stringify(result.body));
+			assert.deepEqual(result.body.deleted, { nodes: 1, relations: 0, proposals: 1 });
+			assert.deepEqual(result.body.restored, { schema: true, nodes: 2, relations: 1, proposals: 1 });
+			assert.deepEqual(await graphState(), before, "same fields, scopes and timestamps");
+			assert.ok(services.readSchema().nodeTypes.some((type) => type.name === "flow"));
+			assert.equal((await http.get("/api/admin/consistency")).body.inSync, true, "vectors indexed from the restored graph");
+			const proposals = await services.vectorStore.listHitlNotes({ status: "pending", limit: 0 });
+			assert.equal(proposals.length, 1);
+			for (const field of ["id", "userName", "source", "createdAt", "userInput", "llmResponse", "reviewerNotes"]) {
+				assert.equal(proposals[0][field], proposalBefore[field], field);
+			}
+			assert.equal(proposals[0].ambiguityCount, 1, "list counts recomputed from the text");
+			const audit = (await http.get("/api/admin/audit")).body.entries;
+			assert.ok(audit.some((entry) => entry.action === "restore" && entry.ok === true));
+		});
+
+		it("needs the password and the confirmation word", async () => {
+			const backup = await backedUpState();
+			assert.equal((await restore(backup, { confirm: "DELETE" })).status, 401);
+			assert.equal((await restore(backup, { password: PASSWORD, confirm: "delete" })).status, 400);
+		});
+
+		it("refuses a bad file without changing anything", async () => {
+			const backup = await backedUpState();
+			const before = await graphState();
+			const schemaBefore = services.readSchema();
+			const broken = [
+				[{ ...backup, version: 1, schema: undefined }, /version 1 cannot be restored/],
+				[{ ...backup, format: "other" }, /Not a MindMesh backup/],
+				[{ ...backup, schema: [] }, /schema is invalid/],
+				[{ ...backup, graph: { ...backup.graph, relations: [{ ...backup.graph.relations[0], targetId: "node:gone" }] } }, /targetId node:gone is not a node in the backup/],
+				[{ ...backup, graph: { ...backup.graph, nodes: [...backup.graph.nodes, { ...backup.graph.nodes[0], id: "node:other" }] } }, /id must be node:<name>/],
+				[{ ...backup, proposals: [{ id: "" }] }, /proposal 1: id is empty; proposal 1 \(\): llmResponse must be text/],
+			];
+			for (const [file, message] of broken) {
+				const result = await restore(file);
+				assert.equal(result.status, 400, JSON.stringify(result.body));
+				assert.match(result.body.error, message);
+			}
+			assert.deepEqual(await graphState(), before);
+			assert.deepEqual(services.readSchema(), schemaBefore);
+			assert.equal((await services.vectorStore.listHitlNotes({ status: "pending", limit: 0 })).length, 1);
+		});
 	});
 
 	it("query console runs read-only Cypher and vector matches across selected collections", async () => {

@@ -120,13 +120,16 @@ function CurrentProposed({ current: previewItem, proposed, type }) {
 	);
 }
 
-function ProposalRow({ activeRowKey, children, current, graphItem, onFocus, record, type }) {
+// Click: select the item and move the graph to it. Double click: open its edit dialog, like in the graph.
+function ProposalRow({ activeRowKey, children, current, graphItem, onFocus, onOpen, record, type }) {
 	const isActive = activeRowKey === record.key;
 	return (
 		<button
 			type="button"
 			class={`proposal-row${isActive ? " active" : ""}`}
 			onClick={() => onFocus?.(record)}
+			onDblClick={() => onOpen?.(record)}
+			title="Click to show in the graph, double click to edit"
 		>
 			<span class={operationClass(record.operation)}>{operationLabel(record.operation)}</span>
 			<span class="proposal-row-main">
@@ -231,6 +234,7 @@ export function HitlProposalSummary({
 	onCreateSchemaSuggestion,
 	onDeleteSchemaSuggestion,
 	onRowFocus,
+	onRowOpen,
 	onUpdateSchemaSuggestion,
 	proposal,
 }) {
@@ -263,6 +267,7 @@ export function HitlProposalSummary({
 				graphItem={current}
 				key={record.key}
 				onFocus={onRowFocus}
+				onOpen={onRowOpen}
 				record={record}
 				type="node"
 			>
@@ -284,6 +289,7 @@ export function HitlProposalSummary({
 				graphItem={current}
 				key={record.key}
 				onFocus={onRowFocus}
+				onOpen={onRowOpen}
 				record={record}
 				type="relation"
 			>

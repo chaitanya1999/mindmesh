@@ -87,7 +87,7 @@ export function AdminMaintenance({ request, onMessage, onChanged }) {
 
 			<section class="admin-card">
 				<h3>Backup</h3>
-				<p class="muted-copy">Downloads the graph and every pending proposal as JSON. Vectors are not included; they are rebuilt from the graph. Proposals exist nowhere else, so back up before deleting them.</p>
+				<p class="muted-copy">Downloads the graph schema, the graph and every pending proposal as JSON. Vectors are not included; they are rebuilt from the graph. Proposals exist nowhere else, so back up before deleting them.</p>
 				<div class="admin-toolbar">
 					<button type="button" class="primary" disabled={Boolean(busy)} onClick={() => run("backup", async () => onMessage(`Saved ${await downloadBackup()}.`))}>
 						{busy === "backup" ? "Preparing..." : "Download backup"}
